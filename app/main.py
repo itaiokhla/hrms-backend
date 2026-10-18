@@ -1,5 +1,5 @@
 from app.routes import payroll
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -7,11 +7,10 @@ from datetime import timedelta
 from app.routes import dashboard
 from app.schemas import ChangePasswordRequest
 from app.routes import salary_structure
-from app.core.security import get_current_user
+from app.core.security import get_current_user, hash_password, get_user_id_from_token, create_access_token
 from app.routes import audit_logs
 
 from app.services.audit_log_service import AuditLogService
-from fastapi import Request
 
 import app.routes.notifications as notifications
 import logging
@@ -25,9 +24,9 @@ from app.schemas import ResetPasswordRequest
 
 from app.config import settings
 from app.schemas import VerifyOTPRequest
-from app.database.db import get_db, engine
+from app.database.db import get_db, engine, SessionLocal
 from app.models.base import Base
-import app.models.user
+from app.models.user import User
 import app.models.employee
 import app.models.attendance
 import app.models.leave
@@ -42,7 +41,6 @@ from app.routes import face_recognition
 from app.routes import leaves
 from app.schemas import LoginRequest, UserCreate, LoginResponse, TokenRefresh, TokenResponse
 from app.services.auth_service import AuthService
-from app.core.security import get_user_id_from_token, create_access_token
 from app.routes import settings as settings_router
 from app.schemas import ForgotPasswordRequest
 from app.services.password_reset_service import PasswordResetService
@@ -92,6 +90,26 @@ app.include_router(
 async def startup_event():
     logger.info("Application startup")
     Base.metadata.create_all(bind=engine)
+    # Ensure default admin user exists if database has no admin
+    db = SessionLocal()
+    try:
+        admin_user = db.query(User).filter(User.username.in_(["admin", "ADMIN"])).first()
+        if not admin_user:
+            default_admin = User(
+                username="admin",
+                email="admin@hrms.com",
+                password_hash=hash_password("Admin@123"),
+                role="admin",
+                is_active=True,
+            )
+            db.add(default_admin)
+            db.commit()
+            logger.info("Default admin user created: username='admin', password='Admin@123'")
+    except Exception as e:
+        logger.error(f"Error checking/creating default admin user: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 
 @app.on_event("shutdown")
@@ -104,7 +122,10 @@ async def health_check():
     return {"status": "healthy", "app": settings.app_name}
 
 
-@app.post("/api/v1/auth/register", response_model=LoginResponse)
+auth_router = APIRouter(tags=["Authentication"])
+
+
+@auth_router.post("/register", response_model=LoginResponse)
 async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     new_user = AuthService.register_user(db, user_data)
     tokens = AuthService.get_tokens(new_user)
@@ -116,19 +137,23 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     }
 
 
-@app.post("/api/v1/auth/login", response_model=LoginResponse)
-async def login( request: Request, credentials: LoginRequest, db: Session = Depends(get_db)):
+@auth_router.post("/login", response_model=LoginResponse)
+async def login(request: Request, credentials: LoginRequest, db: Session = Depends(get_db)):
     user = AuthService.authenticate_user(db, credentials.username, credentials.password)
     tokens = AuthService.get_tokens(user)
-    AuditLogService.create_log(
-    db=db,
-    user_id=user.id,
-    username=user.username,
-    module="Authentication",
-    action="LOGIN",
-    description=f"{user.username} logged into the system",
-    ip_address=request.client.host if request.client else None,
-)
+    try:
+        AuditLogService.create_log(
+            db=db,
+            user_id=user.id,
+            username=user.username,
+            module="Authentication",
+            action="LOGIN",
+            description=f"{user.username} logged into the system",
+            ip_address=request.client.host if request.client else None,
+        )
+    except Exception as log_err:
+        logger.warning(f"Failed to record audit log: {log_err}")
+
     return {
         "access_token": tokens["access_token"],
         "refresh_token": tokens["refresh_token"],
@@ -136,7 +161,8 @@ async def login( request: Request, credentials: LoginRequest, db: Session = Depe
         "user": user.to_dict()
     }
 
-@app.post("/api/v1/auth/forgot-password")
+
+@auth_router.post("/forgot-password")
 async def forgot_password(
     data: ForgotPasswordRequest,
     db: Session = Depends(get_db),
@@ -146,7 +172,8 @@ async def forgot_password(
         email=data.email,
     )
 
-@app.post("/api/v1/auth/verify-otp")
+
+@auth_router.post("/verify-otp")
 async def verify_otp(
     data: VerifyOTPRequest,
     db: Session = Depends(get_db),
@@ -156,7 +183,9 @@ async def verify_otp(
         email=data.email,
         otp=data.otp,
     )
-@app.post("/api/v1/auth/reset-password")
+
+
+@auth_router.post("/reset-password")
 async def reset_password(
     data: ResetPasswordRequest,
     db: Session = Depends(get_db),
@@ -167,7 +196,8 @@ async def reset_password(
         new_password=data.new_password,
     )
 
-@app.put("/api/v1/auth/change-password")
+
+@auth_router.put("/change-password")
 async def change_password(
     data: ChangePasswordRequest,
     db: Session = Depends(get_db),
@@ -179,7 +209,9 @@ async def change_password(
         current_password=data.current_password,
         new_password=data.new_password,
     )
-@app.post("/api/v1/auth/refresh-token", response_model=TokenResponse)
+
+
+@auth_router.post("/refresh-token", response_model=TokenResponse)
 async def refresh_token(token_data: TokenRefresh):
     result = AuthService.refresh_access_token(token_data.refresh_token)
     return {
@@ -189,8 +221,8 @@ async def refresh_token(token_data: TokenRefresh):
     }
 
 
-@app.get("/api/v1/auth/me")
-async def get_current_user(token: str = None, db: Session = Depends(get_db)):
+@auth_router.get("/me")
+async def get_current_user_info(token: str = None, db: Session = Depends(get_db)):
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -206,6 +238,11 @@ async def get_current_user(token: str = None, db: Session = Depends(get_db)):
 
     current_user = AuthService.get_user_by_id(db, user_id)
     return current_user.to_dict()
+
+
+# Mount auth router under both /api/v1/auth and /api/auth for full frontend compatibility
+app.include_router(auth_router, prefix="/api/v1/auth")
+app.include_router(auth_router, prefix="/api/auth")
 
 
 @app.exception_handler(HTTPException)

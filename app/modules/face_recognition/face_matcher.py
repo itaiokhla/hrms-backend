@@ -1,7 +1,10 @@
 import numpy as np
 import logging
 from typing import List, Tuple, Optional
-import face_recognition as fr
+try:
+    import face_recognition as fr
+except (ImportError, Exception):
+    fr = None
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +33,13 @@ class FaceMatcher:
     ) -> float:
 
         try:
-
-            distance = fr.face_distance(
-                [encoding2],
-                encoding1
-            )[0]
+            if fr is not None:
+                distance = fr.face_distance(
+                    [encoding2],
+                    encoding1
+                )[0]
+            else:
+                distance = float(np.linalg.norm(encoding1 - encoding2))
 
             return float(distance)
 

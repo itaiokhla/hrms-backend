@@ -1,6 +1,7 @@
 import os
 from functools import lru_cache
-from typing import Optional, List
+from typing import Optional, List, Union
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -20,7 +21,7 @@ class Settings(BaseSettings):
 
     database_url: str = os.getenv(
         "DATABASE_URL",
-        "postgresql://salary_user:secure_password@localhost:5432/salary_management"
+        "sqlite:///./hrms.db"
     )
     db_pool_size: int = 20
     db_echo: bool = False
@@ -44,11 +45,28 @@ class Settings(BaseSettings):
     smtp_username: str = os.getenv("SMTP_USERNAME", "")
     smtp_password: str = os.getenv("SMTP_PASSWORD", "")
 
-    allowed_origins: List[str] = [
-    "http://localhost:3000",
-    "http://localhost:8000",
-    "https://salary-management-system-5bmz.vercel.app",
-]
+    allowed_origins: Union[List[str], str] = [
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:3001",
+        "https://salary-management-system-5bmz.vercel.app",
+    ]
+
+    @field_validator("allowed_origins", mode="after")
+    @classmethod
+    def _parse_origins(cls, v):
+        if isinstance(v, str):
+            if v.strip().startswith("["):
+                import json
+                try:
+                    return json.loads(v)
+                except Exception:
+                    pass
+            return [o.strip() for o in v.split(",") if o.strip()]
+        return v
 
     log_level: str = "INFO"
     log_file: str = "./logs/app.log"

@@ -1,6 +1,9 @@
 import cv2
 import numpy as np
-import face_recognition as fr
+try:
+    import face_recognition as fr
+except (ImportError, Exception):
+    fr = None
 from typing import Optional, Tuple, List
 import logging
 

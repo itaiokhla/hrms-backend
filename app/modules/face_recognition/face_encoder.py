@@ -1,4 +1,7 @@
-import face_recognition as fr
+try:
+    import face_recognition as fr
+except (ImportError, Exception):
+    fr = None
 import numpy as np
 import json
 import base64
