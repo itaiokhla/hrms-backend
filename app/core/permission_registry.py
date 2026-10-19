@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Iterable, List, Tuple
 
-REGISTRY_VERSION = "2026.10.1"
+REGISTRY_VERSION = "2026.10.2"
 
 
 class Scope(str, Enum):
@@ -83,6 +83,15 @@ PERMISSIONS: List[PermissionDef] = [
     PermissionDef("attendance:mark", "Attendance", "Mark own attendance", "Check in and out after face verification.", _SELF),
     PermissionDef("attendance:kiosk", "Attendance", "Operate face kiosk", "Run the shared check-in kiosk for the company.", _COMPANY),
     PermissionDef("attendance:regularize", "Attendance", "Correct attendance", "Record or correct attendance manually.", _TEAM),
+    # Precise location is authorised separately from attendance and directory access.
+    PermissionDef(
+        "location:read", "Attendance", "View location data",
+        "View coordinates and accuracy recorded at punches, lunch and during shifts.", _ALL, "restricted",
+    ),
+    PermissionDef(
+        "location:review", "Attendance", "Review location flags",
+        "Approve location exceptions and acknowledge movement flags.", _TEAM, "confidential",
+    ),
     # Leave
     PermissionDef("leave:read", "Leave", "View leave", "View leave requests and balances.", _ALL),
     PermissionDef("leave:apply", "Leave", "Apply for leave", "Submit and cancel own leave requests.", _SELF),
@@ -162,6 +171,7 @@ SELF_SERVICE = [
     ("profile:update", _S),
     ("attendance:read", _S),
     ("attendance:mark", _S),
+    ("location:read", _S),
     ("leave:read", _S),
     ("leave:apply", _S),
     ("holiday:read", _C),
@@ -200,7 +210,7 @@ DEFAULT_ROLES: List[DefaultRole] = [
             for code in (
                 "employee:read", "employee:read_confidential", "employee:create", "employee:update",
                 "employee:deactivate", "org:manage_hierarchy", "department:manage", "face:enroll",
-                "attendance:read", "attendance:regularize", "attendance:kiosk", "leave:read",
+                "attendance:read", "attendance:regularize", "attendance:kiosk", "location:read", "location:review", "leave:read",
                 "leave:approve", "leave:manage_policy", "holiday:manage", "asset:read", "asset:manage",
                 "asset:assign", "report:read", "report:export", "user:read", "user:invite",
                 "user:update", "user:deactivate", "user:assign_role", "role:read",
@@ -231,6 +241,8 @@ DEFAULT_ROLES: List[DefaultRole] = [
             ("employee:read", _RT),
             ("attendance:read", _RT),
             ("attendance:regularize", _DR),
+            ("location:read", _DR),
+            ("location:review", _DR),
             ("leave:read", _RT),
             ("leave:approve", _RT),
             ("asset:read", _DR),

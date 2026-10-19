@@ -13,13 +13,14 @@ from typing import Optional
 from sqlalchemy import extract, func
 from sqlalchemy.orm import Session
 
-from app.core import authz
+from app.core import authz, clock
 from app.core.errors import bad_request, forbidden
 from app.core.principal import Principal
 from app.models.attendance import Attendance
 from app.models.employee import Department, Employee
 from app.models.leave import Leave, LeaveType
 from app.models.payroll import Payroll
+from app.services import attendance_hours, attendance_service
 
 
 def _require(principal: Principal, permission: str = "report:read") -> None:
@@ -64,7 +65,14 @@ def attendance_report(db: Session, principal: Principal, start: date, end: date,
     rows = query.order_by(Attendance.date.desc(), Employee.first_name).limit(20000).all()
     summary = {"total_present": 0, "total_absent": 0, "total_late": 0, "total_half_day": 0}
     records = []
+    # Hours come from the canonical calculator, so the report reconciles with the
+    # attendance views and the payroll snapshot to the second.
+    now = clock.utcnow().replace(microsecond=0)
+    breaks = attendance_service.breaks_by_session(db, [record.id for record, _ in rows])
+    session_hours = []
     for record, employee in rows:
+        hours = attendance_service.hours_for(record, breaks[record.id], now)
+        session_hours.append(hours)
         records.append(
             {
                 "employee_id": employee.id,
@@ -75,11 +83,26 @@ def attendance_report(db: Session, principal: Principal, start: date, end: date,
                 "check_out_time": record.check_out_time.isoformat() if record.check_out_time else None,
                 "status": record.status,
                 "face_match_score": record.face_match_score,
+                "gross_seconds": hours.gross_seconds,
+                "lunch_seconds": hours.lunch_seconds,
+                "excluded_seconds": hours.excluded_seconds,
+                "net_seconds": hours.net_seconds,
+                "hours_complete": hours.complete,
+                "hours_provisional": hours.provisional,
             }
         )
         key = {"present": "total_present", "absent": "total_absent", "late": "total_late", "half-day": "total_half_day"}.get(record.status)
         if key:
             summary[key] += 1
+    totals = attendance_hours.total(session_hours)
+    summary.update({
+        "total_gross_seconds": totals["gross_seconds"],
+        "total_lunch_seconds": totals["lunch_seconds"],
+        "total_excluded_seconds": totals["excluded_seconds"],
+        "total_net_seconds": totals["net_seconds"],
+        "incomplete_sessions": totals["incomplete_sessions"],
+        "provisional_sessions": totals["provisional_sessions"],
+    })
     return {"period": f"{start} to {end}", "total_records": len(records), "records": records, "summary": summary}
 
 

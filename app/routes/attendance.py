@@ -1,16 +1,20 @@
 from datetime import date, timedelta
-from typing import Optional
+from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.core import authz, storage
-from app.core.principal import Principal, get_principal, require
+from app.core.errors import bad_request
+from app.core.principal import Principal, get_principal, require, require_any
 from app.core.rate_limit import client_ip
 from app.database.db import get_db
 from app.modules.face_recognition import engine as face_engine
 from app.schemas.admin import ManualAttendance
-from app.services import attendance_service
+from app.schemas.attendance import EventMeta, ReviewDecision, SampleSubmission
+from app.services import attendance_policy, attendance_service, location_service, settings_service
 
 router = APIRouter(prefix="/api/v1", tags=["Attendance"])
 
@@ -22,27 +26,73 @@ async def _optional_image(file: Optional[UploadFile]) -> Optional[bytes]:
     return data
 
 
-@router.post("/attendance/me/check-in")
-async def check_in(request: Request, file: Optional[UploadFile] = File(None),
-                   principal: Principal = Depends(require("attendance:mark")), db: Session = Depends(get_db)):
+def _parse_meta(raw: Optional[str]) -> Optional[EventMeta]:
+    """The JSON `meta` form field (idempotency key, location attempt, confirmations)."""
+    if not raw:
+        return None
+    if len(raw) > 8192:
+        raise bad_request("The request metadata is too large.")
+    try:
+        return EventMeta.model_validate_json(raw)
+    except ValidationError as exc:
+        raise RequestValidationError([{**err, "loc": ("meta", *err["loc"])} for err in exc.errors()])
+
+
+async def _act(action: str, request: Request, file, meta, principal: Principal, db: Session) -> dict:
     image = await _optional_image(file)
-    result = attendance_service.self_check(db, principal, "check_in", image, client_ip(request))
+    result = attendance_service.perform(db, principal, action, image, _parse_meta(meta), client_ip(request))
     db.commit()
     return result
+
+
+@router.post("/attendance/me/check-in")
+async def check_in(request: Request, file: Optional[UploadFile] = File(None), meta: Optional[str] = Form(None),
+                   principal: Principal = Depends(require("attendance:mark")), db: Session = Depends(get_db)):
+    """Punch In."""
+    return await _act("PUNCH_IN", request, file, meta, principal, db)
 
 
 @router.post("/attendance/me/check-out")
-async def check_out(request: Request, file: Optional[UploadFile] = File(None),
+async def check_out(request: Request, file: Optional[UploadFile] = File(None), meta: Optional[str] = Form(None),
                     principal: Principal = Depends(require("attendance:mark")), db: Session = Depends(get_db)):
-    image = await _optional_image(file)
-    result = attendance_service.self_check(db, principal, "check_out", image, client_ip(request))
-    db.commit()
-    return result
+    """Punch Out."""
+    return await _act("PUNCH_OUT", request, file, meta, principal, db)
+
+
+@router.post("/attendance/me/lunch-in")
+async def lunch_in(request: Request, file: Optional[UploadFile] = File(None), meta: Optional[str] = Form(None),
+                   principal: Principal = Depends(require("attendance:mark")), db: Session = Depends(get_db)):
+    """Lunch In: start a lunch break."""
+    return await _act("LUNCH_IN", request, file, meta, principal, db)
+
+
+@router.post("/attendance/me/lunch-out")
+async def lunch_out(request: Request, file: Optional[UploadFile] = File(None), meta: Optional[str] = Form(None),
+                    principal: Principal = Depends(require("attendance:mark")), db: Session = Depends(get_db)):
+    """Lunch Out: end the lunch break and resume work."""
+    return await _act("LUNCH_OUT", request, file, meta, principal, db)
 
 
 @router.get("/attendance/me/today")
 def my_today(principal: Principal = Depends(get_principal), db: Session = Depends(get_db)):
-    return attendance_service.my_today(db, principal)
+    result = attendance_service.my_today(db, principal)
+    db.commit()  # a shift left open past the company's limit is closed when first seen
+    return result
+
+
+@router.get("/attendance/me/tracking")
+def my_tracking(principal: Principal = Depends(require("attendance:mark")), db: Session = Depends(get_db)):
+    result = location_service.tracking_status(db, principal)
+    db.commit()  # missed slots are recorded as soon as they are observed
+    return result
+
+
+@router.post("/attendance/me/location-samples")
+def submit_location(data: SampleSubmission, principal: Principal = Depends(require("attendance:mark")),
+                    db: Session = Depends(get_db)):
+    result = location_service.submit_sample(db, principal, data)
+    db.commit()
+    return result
 
 
 @router.get("/attendance/me/history")
@@ -53,6 +103,28 @@ def my_history(start_date: Optional[date] = None, end_date: Optional[date] = Non
     start = start_date or end - timedelta(days=30)
     total, items = attendance_service.list_records(db, principal, start, end, employee_id=employee.id, limit=200)
     return {"total": total, "items": items}
+
+
+@router.get("/attendance/policy")
+def get_policy(principal: Principal = Depends(require_any("attendance:mark", "attendance:read", "settings:manage")),
+               db: Session = Depends(get_db)):
+    """The effective attendance and location policy (every member may see what is collected about them)."""
+    result = {"policy": attendance_policy.load(db, principal.company_id).client_view()}
+    if principal.has("settings:manage"):
+        result["settings"] = attendance_policy.settings_view(db, principal.company_id)
+    return result
+
+
+@router.patch("/attendance/policy")
+def update_policy(data: Dict[str, Any] = Body(...), principal: Principal = Depends(require("settings:manage")),
+                  db: Session = Depends(get_db)):
+    unknown = set(data) - settings_service.ATTENDANCE_POLICY_KEYS
+    if unknown:
+        raise bad_request(f"Not an attendance policy setting: {', '.join(sorted(unknown))}")
+    settings_service.update(db, principal, data, only=settings_service.ATTENDANCE_POLICY_KEYS)
+    db.commit()
+    return {"policy": attendance_policy.load(db, principal.company_id).client_view(),
+            "settings": attendance_policy.settings_view(db, principal.company_id)}
 
 
 @router.post("/attendance/kiosk/scan")
@@ -77,6 +149,36 @@ def list_attendance(
 ):
     total, items = attendance_service.list_records(db, principal, start_date, end_date, employee_id, department_id, skip, limit)
     return {"total": total, "items": items, "skip": skip, "limit": limit}
+
+
+@router.get("/attendance/hours")
+def hours_summary(start_date: date, end_date: date, employee_id: Optional[int] = None,
+                  department_id: Optional[int] = None, principal: Principal = Depends(require("attendance:read")),
+                  db: Session = Depends(get_db)):
+    return attendance_service.hours_summary(db, principal, start_date, end_date, employee_id, department_id)
+
+
+@router.get("/attendance/sessions/{attendance_id}")
+def session_detail(attendance_id: int, include_locations: bool = False,
+                   principal: Principal = Depends(require("attendance:read")), db: Session = Depends(get_db)):
+    result = attendance_service.session_detail(db, principal, attendance_id, include_locations)
+    db.commit()  # records the access audit when coordinates were returned
+    return result
+
+
+@router.get("/attendance/location-review")
+def location_review_queue(status: str = Query("PENDING", pattern=r"^(PENDING|APPROVED|REJECTED|ACKNOWLEDGED)$"),
+                          limit: int = Query(100, ge=1, le=500),
+                          principal: Principal = Depends(require("location:review")), db: Session = Depends(get_db)):
+    return location_service.review_queue(db, principal, status, limit)
+
+
+@router.post("/attendance/location-review/{sample_id}")
+def review_location(sample_id: int, data: ReviewDecision, principal: Principal = Depends(require("location:review")),
+                    db: Session = Depends(get_db)):
+    result = location_service.review(db, principal, sample_id, data)
+    db.commit()
+    return result
 
 
 @router.get("/attendance/summary/today")
@@ -106,7 +208,8 @@ def manual_entry(data: ManualAttendance, principal: Principal = Depends(require(
                  db: Session = Depends(get_db)):
     record = attendance_service.record_manual(db, principal, data)
     db.commit()
-    return attendance_service.serialize(record)
+    breaks = attendance_service.breaks_by_session(db, [record.id])[record.id]
+    return attendance_service.serialize(record, breaks=breaks)
 
 
 @router.get("/face/status")

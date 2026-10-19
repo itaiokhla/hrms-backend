@@ -13,14 +13,14 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.config import settings
 from app.core.errors import bad_request, conflict, forbidden, not_found
-from app.core.principal import Principal
+from app.core.principal import Principal, load_grants
 from app.core.security import utcnow
 from app.database.db import system_session
 from app.models.company import Company
 from app.models.employee import Employee
 from app.models.rbac import Role, ScopeAssignment, UserRoleAssignment
 from app.models.user import User, UserSession
-from app.services import auth_service, rbac_service
+from app.services import auth_service, location_service, rbac_service
 from app.services.audit_log_service import AuditLogService
 from app.services.email_service import EmailService
 
@@ -198,6 +198,7 @@ def set_status(db: Session, principal: Principal, user_id: int, status: str) -> 
     if status != "active":
         rbac_service.assert_not_last_admin(db, principal.company_id, user.id)
         auth_service.revoke_user_sessions(db, user.id, f"account_{status}")
+        location_service.stop_for_employee(db, principal.company_id, _employee_id_of(db, user), f"ACCOUNT_{status.upper()}")
     previous = user.status
     user.status = status
     user.permission_version += 1
@@ -212,9 +213,17 @@ def revoke_sessions(db: Session, principal: Principal, user_id: int) -> int:
     return count
 
 
+def _employee_id_of(db: Session, user: User) -> Optional[int]:
+    return db.query(Employee.id).filter(Employee.user_id == user.id).scalar()
+
+
 def set_roles(db: Session, principal: Principal, user_id: int, role_ids: List[int]) -> None:
     user = _get(db, principal, user_id)
     rbac_service.set_user_roles(db, principal, user, role_ids)
+    db.flush()
+    if "attendance:mark" not in load_grants(db, user.id)[0]:
+        # Without the right to mark attendance, no further location is collected for the running shift.
+        location_service.stop_for_employee(db, principal.company_id, _employee_id_of(db, user), "PERMISSION_REVOKED")
 
 
 def set_assigned_employees(db: Session, principal: Principal, user_id: int, employee_ids: List[int]) -> None:

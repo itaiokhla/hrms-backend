@@ -53,7 +53,8 @@ class Api:
 
 SELF_SERVICE = [
     ("employee:read", "SELF"), ("employee:read_confidential", "SELF"), ("profile:update", "SELF"),
-    ("attendance:read", "SELF"), ("attendance:mark", "SELF"), ("leave:read", "SELF"), ("leave:apply", "SELF"),
+    ("attendance:read", "SELF"), ("attendance:mark", "SELF"), ("location:read", "SELF"), ("leave:read", "SELF"),
+    ("leave:apply", "SELF"),
     ("holiday:read", "COMPANY"), ("payroll:read", "SELF"), ("compensation:read", "SELF"),
     ("asset:read", "SELF"), ("asset:acknowledge", "SELF"),
 ]

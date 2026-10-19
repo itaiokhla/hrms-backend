@@ -3,6 +3,7 @@
     python -m app.cli setup-db-roles --app-role hrms_app      (run as owner, after migrations)
     python -m app.cli create-platform-admin --email ops@example.com --name "Ops"
     python -m app.cli rls-status
+    python -m app.cli attendance-sweep                         (schedule every ~15 minutes)
 """
 
 import argparse
@@ -27,6 +28,8 @@ def grant_app_role(connection, role: str) -> None:
     connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
     for table in TENANT_TABLES:
         connection.execute(text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO {role}"))
+    # Attendance events are append-only (a trigger also refuses changes).
+    connection.execute(text(f"REVOKE UPDATE, DELETE ON attendance_events FROM {role}"))
     # Companies are created by the system role during signup; tenants may only
     # read and edit their own row (RLS restricts which row).
     connection.execute(text(f"REVOKE ALL ON companies FROM {role}"))
@@ -73,6 +76,33 @@ def create_platform_admin(email: str, name: str, password: str) -> None:
     print(f"Platform administrator {email} created.")
 
 
+def attendance_sweep() -> None:
+    """Close shifts past their company's limit, record missed location slots, redact expired coordinates.
+
+    Runs as the RLS-restricted application role, one company at a time, so a
+    sweep can never touch another tenant's rows. It only detects what happened;
+    it cannot obtain a position from a browser.
+    """
+    from app.database.db import SessionLocal, bind_tenant, system_session
+    from app.models.company import Company
+    from app.services import location_service
+
+    with system_session() as db:
+        company_ids = [cid for (cid,) in db.query(Company.id).filter(Company.status == "active").order_by(Company.id)]
+    for company_id in company_ids:
+        db = SessionLocal()
+        try:
+            bind_tenant(db, company_id)
+            result = location_service.sweep(db, company_id)
+            db.commit()
+            print(result)
+        except Exception as exc:  # one company's failure must not stop the others
+            db.rollback()
+            print(f"company {company_id}: sweep failed: {exc}", file=sys.stderr)
+        finally:
+            db.close()
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -85,6 +115,7 @@ def main(argv=None) -> None:
     admin.add_argument("--name", required=True)
 
     sub.add_parser("rls-status", help="Show whether the app role is subject to row-level security")
+    sub.add_parser("attendance-sweep", help="Detect expired shifts and missed location checks; apply retention")
 
     args = parser.parse_args(argv)
     if args.command == "setup-db-roles":
@@ -97,6 +128,8 @@ def main(argv=None) -> None:
         from app.database.db import rls_status
 
         print(rls_status())
+    elif args.command == "attendance-sweep":
+        attendance_sweep()
 
 
 if __name__ == "__main__":

@@ -69,6 +69,13 @@ class Payroll(TenantMixin, BaseModel):
     present_days = Column(Integer, default=0, nullable=False)
     absent_days = Column(Integer, default=0, nullable=False)
     leave_days = Column(Integer, default=0, nullable=False)
+    # Snapshot of the month's canonical attendance hours when the run was generated, finished
+    # shifts only (NULL for runs generated before hours were recorded). Informational: pay is
+    # unchanged. break_seconds is all recorded lunch time; net = gross - unpaid breaks.
+    gross_work_seconds = Column(Integer, nullable=True)
+    break_seconds = Column(Integer, nullable=True)
+    net_work_seconds = Column(Integer, nullable=True)
+    incomplete_sessions = Column(Integer, nullable=True)
     status = Column(String(20), default="draft", nullable=False, index=True)
     remarks = Column(Text, nullable=True)
     # Separation of duties: preparer, approver and payer are recorded and checked.

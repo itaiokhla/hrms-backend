@@ -219,9 +219,13 @@ def update_role(
         current = role_grants(role)
         # Both additions and removals require delegation authority.
         _assert_can_delegate_all(principal, wanted ^ current)
-        role.permissions = [
-            RolePermission(company_id=principal.company_id, permission_code=c, scope=s) for c, s in sorted(wanted)
-        ]
+        # Change only the difference: re-adding a kept grant would be inserted before the old row
+        # is deleted in the same flush and violate uq_role_permission_scope.
+        for permission in list(role.permissions):
+            if (permission.permission_code, permission.scope) not in wanted:
+                role.permissions.remove(permission)
+        for code, scope in sorted(wanted - current):
+            role.permissions.append(RolePermission(company_id=principal.company_id, permission_code=code, scope=scope))
         bump_permission_versions_for_role(db, role.id)
     AuditLogService.log(db, principal, "Roles", "UPDATE", f"Updated role '{role.name}'", "role", role.id)
     return role

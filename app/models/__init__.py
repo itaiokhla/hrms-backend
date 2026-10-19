@@ -11,7 +11,7 @@ from .employee import (
     SecondaryReportingLine,
     Shift,
 )
-from .attendance import Attendance
+from .attendance import Attendance, AttendanceBreak, AttendanceEvent, LocationSample
 from .leave import ApprovalChainStep, Leave, LeaveApproval, LeaveType
 from .payroll import Payroll, SalaryStructure
 from .holiday import Holiday

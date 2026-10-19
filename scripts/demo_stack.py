@@ -2,6 +2,8 @@
 
     python scripts/demo_stack.py            # reuse the existing local database
     python scripts/demo_stack.py --fresh    # drop and recreate it first
+    python scripts/demo_stack.py --fresh --data-dir .local-postgres-e2e --port 8100
+                                            # an isolated second stack (e.g. for browser tests)
 
 What it does:
   1. starts PostgreSQL from ./.local-postgres (created on first run),
@@ -48,7 +50,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fresh", action="store_true", help="drop and recreate the database")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--data-dir", default=None, help="PostgreSQL data directory (default: .local-postgres)")
     args = parser.parse_args()
+    global DATA_DIR, LOG_FILE
+    if args.data_dir:
+        DATA_DIR = (ROOT / args.data_dir).resolve()
+        LOG_FILE = ROOT / "logs" / f"{DATA_DIR.name.lstrip('.')}-backend.log"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     server = pgserver.get_server(str(DATA_DIR), cleanup_mode="stop")
     base = server.get_uri()
@@ -83,10 +91,13 @@ def main() -> None:
         DATABASE_URL=owner_url,
         HRMS_APP_DB_PASSWORD=app_password,
         HRMS_PLATFORM_ADMIN_PASSWORD=os.environ.get("HRMS_PLATFORM_ADMIN_PASSWORD", "Platform@12345"),
-        UPLOAD_DIR=str(ROOT / "uploads" / "demo"),
+        UPLOAD_DIR=str(ROOT / "uploads" / ("demo" if DATA_DIR.name == ".local-postgres" else DATA_DIR.name.lstrip("."))),
         # Never send real email from the demo stack.
         SMTP_HOST="",
         AUTH_RATE_LIMIT_SCALE=os.environ.get("AUTH_RATE_LIMIT_SCALE", "20"),
+        # Accelerated test policy: lets browser tests use 1-minute tracking intervals.
+        # Refused by the configuration in staging and production (minimum 15 minutes).
+        LOCATION_TRACKING_MIN_INTERVAL_MINUTES=os.environ.get("LOCATION_TRACKING_MIN_INTERVAL_MINUTES", "1"),
         FRONTEND_URL=os.environ.get("FRONTEND_URL", "http://localhost:3000"),
     )
     python = sys.executable
