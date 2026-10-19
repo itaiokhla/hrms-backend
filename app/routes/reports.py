@@ -1,221 +1,102 @@
-from fastapi import APIRouter, Depends, Query
+from datetime import date
+from typing import Annotated, Optional
+
+from fastapi import APIRouter, Depends, Path, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from datetime import date
+
+from app.core.errors import forbidden
+from app.core.principal import Principal, require
 from app.database.db import get_db
-from app.services.reports_service import ReportsService
+from app.services import reports_service
+from app.services.audit_log_service import AuditLogService
 from app.utils.excel_exporter import ExcelExporter
-from app.utils.pdf_generator import AttendanceReportGenerator, PayrollReportGenerator, LeaveReportGenerator
-from typing import Optional
+from app.utils.pdf_generator import AttendanceReportGenerator, LeaveReportGenerator, PayrollReportGenerator
 
-router = APIRouter(prefix="/api/v1", tags=["reports"])
+router = APIRouter(prefix="/api/v1/reports", tags=["Reports"])
 
-
-@router.get("/reports/attendance")
-async def get_attendance_report(
-    start_date: date = Query(...),
-    end_date: date = Query(...),
-    employee_id: int = Query(None),
-    department_id: int = Query(None),
-    db: Session = Depends(get_db),
-):
-    """Get attendance report for a date range"""
-    return ReportsService.get_attendance_report(
-        db, start_date, end_date, employee_id, department_id
-    )
+ExportFormat = Annotated[str, Path(pattern=r"^(excel|pdf)$")]
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-@router.get("/reports/attendance/export/excel")
-async def export_attendance_excel(
-    start_date: date = Query(...),
-    end_date: date = Query(...),
-    employee_id: int = Query(None),
-    department_id: int = Query(None),
-    db: Session = Depends(get_db),
-):
-    """Export attendance report to Excel"""
-    report = ReportsService.get_attendance_report(
-        db, start_date, end_date, employee_id, department_id
-    )
-    excel_file = ExcelExporter.export_attendance_report(report["records"])
-    return StreamingResponse(
-        excel_file,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={
-            "Content-Disposition": f"attachment; filename=attendance_report_{start_date}_{end_date}.xlsx"
-        },
-    )
+def _download(content, media_type: str, filename: str) -> StreamingResponse:
+    return StreamingResponse(content, media_type=media_type,
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
-@router.get("/reports/attendance/export/pdf")
-async def export_attendance_pdf(
-    start_date: date = Query(...),
-    end_date: date = Query(...),
-    employee_id: int = Query(None),
-    department_id: int = Query(None),
-    db: Session = Depends(get_db),
-):
-    """Export attendance report to PDF"""
-    report = ReportsService.get_attendance_report(
-        db, start_date, end_date, employee_id, department_id
-    )
-    pdf_file = AttendanceReportGenerator.generate_pdf(report)
-    return StreamingResponse(
-        pdf_file,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"attachment; filename=attendance_report_{start_date}_{end_date}.pdf"
-        },
-    )
+def _export_guard(principal: Principal) -> None:
+    if not principal.has("report:export"):
+        raise forbidden()
 
 
-@router.get("/reports/payroll")
-async def get_payroll_report(
-    year: int = Query(...),
-    month: int = Query(None, ge=1, le=12),
-    department_id: int = Query(None),
-    db: Session = Depends(get_db),
-):
-    """Get payroll report for a period"""
-    return ReportsService.get_payroll_report(db, year, month, department_id)
+@router.get("/attendance")
+def attendance(start_date: date, end_date: date, employee_id: Optional[int] = None, department_id: Optional[int] = None,
+               principal: Principal = Depends(require("report:read")), db: Session = Depends(get_db)):
+    return reports_service.attendance_report(db, principal, start_date, end_date, employee_id, department_id)
 
 
-@router.get("/reports/payroll/export/excel")
-async def export_payroll_excel(
-    year: int = Query(...),
-    month: int = Query(None, ge=1, le=12),
-    department_id: int = Query(None),
-    db: Session = Depends(get_db),
-):
-    """Export payroll report to Excel"""
-    report = ReportsService.get_payroll_report(db, year, month, department_id)
-    excel_file = ExcelExporter.export_payroll_report(report["records"])
-    return StreamingResponse(
-        excel_file,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={
-            "Content-Disposition": f"attachment; filename=payroll_report_{year}_{month or 'all'}.xlsx"
-        },
-    )
+@router.get("/attendance/export/{fmt}")
+def export_attendance(fmt: ExportFormat, start_date: date, end_date: date, employee_id: Optional[int] = None,
+                      department_id: Optional[int] = None, principal: Principal = Depends(require("report:export")),
+                      db: Session = Depends(get_db)):
+    report = reports_service.attendance_report(db, principal, start_date, end_date, employee_id, department_id)
+    AuditLogService.log(db, principal, "Reports", "EXPORT", f"Attendance report {start_date}..{end_date} ({fmt})")
+    db.commit()
+    if fmt == "excel":
+        return _download(ExcelExporter.export_attendance_report(report["records"]), XLSX, f"attendance_{start_date}_{end_date}.xlsx")
+    return _download(AttendanceReportGenerator.generate_pdf(report), "application/pdf", f"attendance_{start_date}_{end_date}.pdf")
 
 
-@router.get("/reports/payroll/export/pdf")
-async def export_payroll_pdf(
-    year: int = Query(...),
-    month: int = Query(None, ge=1, le=12),
-    department_id: int = Query(None),
-    db: Session = Depends(get_db),
-):
-    """Export payroll report to PDF"""
-    report = ReportsService.get_payroll_report(db, year, month, department_id)
-    pdf_file = PayrollReportGenerator.generate_pdf(report)
-    return StreamingResponse(
-        pdf_file,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"attachment; filename=payroll_report_{year}_{month or 'all'}.pdf"
-        },
-    )
+@router.get("/payroll")
+def payroll(year: int = Query(..., ge=2000, le=2100), month: Optional[int] = Query(None, ge=1, le=12),
+            department_id: Optional[int] = None, principal: Principal = Depends(require("report:read")),
+            db: Session = Depends(get_db)):
+    return reports_service.payroll_report(db, principal, year, month, department_id)
 
 
-@router.get("/reports/leaves")
-async def get_leave_report(
-    year: int = Query(None),
-    employee_id: int = Query(None),
-    db: Session = Depends(get_db),
-):
-    """Get leave analytics report"""
-    return ReportsService.get_leave_report(db, year, employee_id)
+@router.get("/payroll/export/{fmt}")
+def export_payroll(fmt: ExportFormat, year: int = Query(..., ge=2000, le=2100), month: Optional[int] = Query(None, ge=1, le=12),
+                   department_id: Optional[int] = None, principal: Principal = Depends(require("report:export")),
+                   db: Session = Depends(get_db)):
+    if not principal.has_company_scope("payroll:export"):
+        raise forbidden("Exporting payroll requires the Export payroll permission.")
+    report = reports_service.payroll_report(db, principal, year, month, department_id)
+    AuditLogService.log(db, principal, "Reports", "EXPORT", f"Payroll report {year}-{month or 'all'} ({fmt})")
+    db.commit()
+    if fmt == "excel":
+        return _download(ExcelExporter.export_payroll_report(report["records"]), XLSX, f"payroll_{year}_{month or 'all'}.xlsx")
+    return _download(PayrollReportGenerator.generate_pdf(report), "application/pdf", f"payroll_{year}_{month or 'all'}.pdf")
 
 
-@router.get("/reports/leaves/export/excel")
-async def export_leave_excel(
-    year: int = Query(None),
-    employee_id: int = Query(None),
-    db: Session = Depends(get_db),
-):
-    """Export leave report to Excel"""
-    report = ReportsService.get_leave_report(db, year, employee_id)
-    excel_file = ExcelExporter.export_leave_report(report["records"])
-    return StreamingResponse(
-        excel_file,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={
-            "Content-Disposition": f"attachment; filename=leave_report_{year or 'all'}.xlsx"
-        },
-    )
+@router.get("/leaves")
+def leaves(year: Optional[int] = Query(None, ge=2000, le=2100), employee_id: Optional[int] = None,
+           principal: Principal = Depends(require("report:read")), db: Session = Depends(get_db)):
+    return reports_service.leave_report(db, principal, year, employee_id)
 
 
-@router.get("/reports/leaves/export/pdf")
-async def export_leave_pdf(
-    year: int = Query(None),
-    employee_id: int = Query(None),
-    db: Session = Depends(get_db),
-):
-    """Export leave report to PDF"""
-    report = ReportsService.get_leave_report(db, year, employee_id)
-    pdf_file = LeaveReportGenerator.generate_pdf(report)
-    return StreamingResponse(
-        pdf_file,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"attachment; filename=leave_report_{year or 'all'}.pdf"
-        },
-    )
+@router.get("/leaves/export/{fmt}")
+def export_leaves(fmt: ExportFormat, year: Optional[int] = Query(None, ge=2000, le=2100), employee_id: Optional[int] = None,
+                  principal: Principal = Depends(require("report:export")), db: Session = Depends(get_db)):
+    report = reports_service.leave_report(db, principal, year, employee_id)
+    AuditLogService.log(db, principal, "Reports", "EXPORT", f"Leave report {year or 'current'} ({fmt})")
+    db.commit()
+    if fmt == "excel":
+        return _download(ExcelExporter.export_leave_report(report["records"]), XLSX, f"leave_{year or 'current'}.xlsx")
+    return _download(LeaveReportGenerator.generate_pdf(report), "application/pdf", f"leave_{year or 'current'}.pdf")
 
 
-@router.get("/reports/department-analytics")
-async def get_department_analytics(
-    year: int = Query(None),
-    month: int = Query(None, ge=1, le=12),
-    db: Session = Depends(get_db),
-):
-    """Get department-wise analytics"""
-    return ReportsService.get_department_analytics(db, year, month)
+@router.get("/department-analytics")
+def department_analytics(year: Optional[int] = Query(None, ge=2000, le=2100), month: Optional[int] = Query(None, ge=1, le=12),
+                         principal: Principal = Depends(require("report:read")), db: Session = Depends(get_db)):
+    return reports_service.department_analytics(db, principal, year, month)
 
 
-@router.get("/reports/employee-analytics/{employee_id}")
-async def get_employee_analytics(
-    employee_id: int,
-    year: int = Query(None),
-    db: Session = Depends(get_db),
-):
-    """Get individual employee analytics"""
-    return ReportsService.get_employee_analytics(db, employee_id, year)
+@router.get("/employee-analytics/{employee_id}")
+def employee_analytics(employee_id: int, year: Optional[int] = Query(None, ge=2000, le=2100),
+                       principal: Principal = Depends(require("report:read")), db: Session = Depends(get_db)):
+    return reports_service.employee_analytics(db, principal, employee_id, year)
 
 
-@router.get("/reports/dashboard")
-async def get_dashboard_statistics(db: Session = Depends(get_db)):
-    """Get dashboard statistics for quick overview"""
-    return ReportsService.get_dashboard_statistics(db)
-
-
-@router.get("/reports/summary")
-async def get_report_summary(
-    report_type: str = Query("all"),
-    year: int = Query(None),
-    month: int = Query(None, ge=1, le=12),
-    db: Session = Depends(get_db),
-):
-    """Get comprehensive report summary"""
-    summaries = {}
-
-    if report_type in ["all", "attendance"]:
-        from datetime import date as date_cls
-        start = date_cls(year or date_cls.today().year, month or 1, 1)
-        end = date_cls.today()
-        summaries["attendance"] = ReportsService.get_attendance_report(db, start, end)
-
-    if report_type in ["all", "payroll"]:
-        summaries["payroll"] = ReportsService.get_payroll_report(db, year or date.today().year, month)
-
-    if report_type in ["all", "leaves"]:
-        summaries["leaves"] = ReportsService.get_leave_report(db, year or date.today().year)
-
-    if report_type in ["all", "department"]:
-        summaries["department"] = ReportsService.get_department_analytics(db, year or date.today().year, month)
-
-    if report_type in ["all", "dashboard"]:
-        summaries["dashboard"] = ReportsService.get_dashboard_statistics(db)
-
-    return summaries
+@router.get("/dashboard")
+def dashboard(principal: Principal = Depends(require("report:read")), db: Session = Depends(get_db)):
+    return reports_service.dashboard_statistics(db, principal)

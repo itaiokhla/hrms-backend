@@ -1,12 +1,25 @@
-from .base import Base, BaseModel
-
-from .user import User
-from .employee import Employee, Department
+from .base import Base, BaseModel, TenantMixin
+from .company import Company, PlatformAdmin, PlatformSession
+from .user import PasswordResetOTP, User, UserInvitation, UserSession
+from .rbac import Role, RolePermission, ScopeAssignment, UserRoleAssignment
+from .employee import (
+    ApprovalDelegation,
+    Department,
+    Employee,
+    FaceEncoding,
+    ManagerHistory,
+    SecondaryReportingLine,
+    Shift,
+)
 from .attendance import Attendance
-from .leave import Leave, LeaveBalance
-from .payroll import Payroll
-
-from .system_settings import SystemSetting
-from .password_reset import PasswordResetOTP
+from .leave import ApprovalChainStep, Leave, LeaveApproval, LeaveType
+from .payroll import Payroll, SalaryStructure
+from .holiday import Holiday
+from .asset import Asset, AssetAssignment
 from .notification import Notification
 from .audit_log import AuditLog
+from .system_settings import CompanySetting
+
+TENANT_TABLES = sorted(
+    m.__tablename__ for m in BaseModel.__subclasses__() if issubclass(m, TenantMixin)
+)

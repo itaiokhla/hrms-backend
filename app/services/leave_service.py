@@ -1,334 +1,611 @@
-from sqlalchemy.orm import Session
-from sqlalchemy import and_
-from fastapi import HTTPException, status
-from app.models.leave import Leave, LeaveBalance
-from app.models.employee import Employee
-from datetime import date, datetime , timedelta
-from calendar import monthrange
-import logging
+"""Leave requests with configurable, hierarchy-aware approval routing.
+
+Routing rules (explicit, so behaviour after organisational change is predictable):
+* A request instantiates the company's approval chain at submission time;
+  steps with ``min_days`` only apply to requests of at least that length.
+* Hierarchy steps (primary manager, skip-level manager, department head)
+  resolve their approver *when evaluated*, so a manager change re-routes
+  pending steps automatically and removes the previous manager's authority.
+  Decided steps are history and never change.
+* A step with no eligible approver (no manager, approver is the requester,
+  role without members) is skipped. If every step is skipped, a Company
+  Administrator step is appended so a human always decides.
+* Nobody approves their own request. Approvers must currently hold
+  ``leave:approve`` covering the requester; delegates act for an approver
+  only during an active delegation window and only while that approver
+  still has authority. Company-wide approvers may override, which is
+  recorded as such.
+"""
+
+from datetime import date, timedelta
+from typing import Dict, List, Optional
+
+from sqlalchemy import extract, func
+from sqlalchemy.orm import Session, joinedload, selectinload
+
+from app.core import authz
+from app.core.errors import bad_request, conflict, forbidden, not_found
+from app.core.principal import Principal, build_principal
+from app.core.security import utcnow
+from app.models.company import Company
+from app.models.employee import Department, Employee
+from app.models.leave import ApprovalChainStep, Leave, LeaveApproval, LeaveType
+from app.models.rbac import Role, UserRoleAssignment
+from app.models.user import User
 from app.services.audit_log_service import AuditLogService
+from app.services.company_service import today_for
+from app.services.notification_service import NotificationService
 
-logger = logging.getLogger(__name__)
+APPROVER_LABELS = {
+    "primary_manager": "Reporting manager",
+    "skip_level_manager": "Manager's manager",
+    "department_head": "Department head",
+    "role": "Role",
+}
 
 
-class LeaveService:
-    LEAVE_TYPES = {
-        "sick": 12,
-        "casual": 10,
-        "earned": 15,
-        "unpaid": 999,
-        "maternity": 90,
-        "paternity": 7,
+# ---------------------------------------------------------------------------
+# Leave types and balances
+# ---------------------------------------------------------------------------
+def leave_types(db: Session, company_id: int, include_inactive: bool = False) -> List[LeaveType]:
+    query = db.query(LeaveType).filter(LeaveType.company_id == company_id)
+    if not include_inactive:
+        query = query.filter(LeaveType.is_active.is_(True))
+    return query.order_by(LeaveType.name).all()
+
+
+def balances(db: Session, company_id: int, employee_id: int, year: Optional[int] = None) -> Dict[str, dict]:
+    year = year or date.today().year
+    sums = (
+        db.query(Leave.leave_type, Leave.status, func.coalesce(func.sum(Leave.number_of_days), 0))
+        .filter(
+            Leave.company_id == company_id,
+            Leave.employee_id == employee_id,
+            extract("year", Leave.start_date) == year,
+            Leave.status.in_(("approved", "pending")),
+        )
+        .group_by(Leave.leave_type, Leave.status)
+        .all()
+    )
+    used: Dict[str, int] = {}
+    pending: Dict[str, int] = {}
+    for code, status, days in sums:
+        (used if status == "approved" else pending)[code] = int(days)
+    result = {}
+    for lt in leave_types(db, company_id):
+        u, p = used.get(lt.code, 0), pending.get(lt.code, 0)
+        result[lt.code] = {
+            "name": lt.name,
+            "is_paid": lt.is_paid,
+            "is_unlimited": lt.is_unlimited,
+            "total": lt.annual_quota,
+            "used": u,
+            "pending": p,
+            "remaining": None if lt.is_unlimited else max(lt.annual_quota - u, 0),
+            "available": None if lt.is_unlimited else max(lt.annual_quota - u - p, 0),
+        }
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Approver resolution
+# ---------------------------------------------------------------------------
+def _active_employee(db: Session, employee_id: Optional[int]) -> Optional[Employee]:
+    if employee_id is None:
+        return None
+    employee = db.get(Employee, employee_id)
+    return employee if employee is not None and employee.is_active else None
+
+
+def resolve_step_employee(db: Session, requester: Employee, step: LeaveApproval) -> Optional[Employee]:
+    if step.approver_type == "primary_manager":
+        approver = _active_employee(db, requester.manager_id)
+    elif step.approver_type == "skip_level_manager":
+        manager = db.get(Employee, requester.manager_id) if requester.manager_id else None
+        approver = _active_employee(db, manager.manager_id) if manager else None
+    elif step.approver_type == "department_head":
+        department = db.get(Department, requester.department_id) if requester.department_id else None
+        approver = _active_employee(db, department.head_employee_id) if department else None
+    else:
+        return None
+    if approver is None or approver.id == requester.id:
+        return None
+    return approver
+
+
+def role_member_user_ids(db: Session, role_id: int, exclude_user_id: Optional[int] = None) -> List[int]:
+    now = utcnow()
+    query = (
+        db.query(UserRoleAssignment.user_id)
+        .join(User, User.id == UserRoleAssignment.user_id)
+        .filter(
+            UserRoleAssignment.role_id == role_id,
+            User.status == "active",
+            UserRoleAssignment.effective_from <= now,
+        )
+        .filter((UserRoleAssignment.effective_until.is_(None)) | (UserRoleAssignment.effective_until > now))
+    )
+    if exclude_user_id:
+        query = query.filter(UserRoleAssignment.user_id != exclude_user_id)
+    return [r[0] for r in query.all()]
+
+
+def _step_has_approver(db: Session, requester: Employee, step: LeaveApproval) -> bool:
+    if step.approver_type == "role":
+        return bool(role_member_user_ids(db, step.role_id, exclude_user_id=requester.user_id))
+    return resolve_step_employee(db, requester, step) is not None
+
+
+def _notify_step(db: Session, leave: Leave, requester: Employee, step: LeaveApproval) -> None:
+    title = "Leave request awaiting your approval"
+    message = f"{requester.full_name} requested {leave.number_of_days} day(s) of {leave.leave_type} leave."
+    if step.approver_type == "role":
+        for user_id in role_member_user_ids(db, step.role_id, exclude_user_id=requester.user_id)[:25]:
+            NotificationService.create(db, user_id, title, message, "leave", "/leaves")
+    else:
+        approver = resolve_step_employee(db, requester, step)
+        if approver and approver.user_id:
+            NotificationService.create(db, approver.user_id, title, message, "leave", "/leaves")
+
+
+def _admin_role(db: Session, company_id: int) -> Role:
+    return db.query(Role).filter(Role.company_id == company_id, Role.system_key == "company_admin").one()
+
+
+def _finalize(db: Session, leave: Leave, requester: Employee, status: str, actor_user_id: Optional[int]) -> None:
+    leave.status = status
+    leave.current_step = None
+    leave.decided_at = utcnow()
+    leave.decided_by_user_id = actor_user_id
+    if requester.user_id:
+        NotificationService.create(
+            db, requester.user_id, f"Leave request {status}",
+            f"Your {leave.leave_type} leave from {leave.start_date} to {leave.end_date} was {status}.",
+            "leave", "/employee/leaves",
+        )
+
+
+def advance(db: Session, leave: Leave, requester: Employee, actor_user_id: Optional[int] = None) -> None:
+    """Move a pending request to its next actionable step, or finish it."""
+    for step in leave.approvals:
+        if step.status in ("approved", "skipped"):
+            continue
+        if step.status in ("rejected", "cancelled"):
+            return
+        if _step_has_approver(db, requester, step):
+            if step.status == "waiting":
+                step.status = "pending"
+                _notify_step(db, leave, requester, step)
+            leave.current_step = step.step_order
+            return
+        step.status = "skipped"
+
+    if not any(s.status == "approved" for s in leave.approvals):
+        admin_role = _admin_role(db, leave.company_id)
+        admin_step = next(
+            (s for s in leave.approvals if s.approver_type == "role" and s.role_id == admin_role.id), None
+        )
+        if admin_step is None:
+            fallback = LeaveApproval(
+                company_id=leave.company_id,
+                step_order=(max((s.step_order for s in leave.approvals), default=0) + 1),
+                approver_type="role",
+                role_id=admin_role.id,
+                status="pending",
+            )
+            leave.approvals.append(fallback)
+            leave.current_step = fallback.step_order
+            _notify_step(db, leave, requester, fallback)
+            return
+        # Only the requester could approve: keep it pending for another administrator.
+        admin_step.status = "pending"
+        leave.current_step = admin_step.step_order
+        return
+    _finalize(db, leave, requester, "approved", actor_user_id)
+
+
+def reroute_pending_for(db: Session, company_id: int, employee_ids: List[int]) -> None:
+    """Re-evaluate pending requests after a reporting-line change."""
+    if not employee_ids:
+        return
+    affected = set(employee_ids)
+    affected.update(
+        r[0] for r in db.query(Employee.id).filter(Employee.manager_id.in_(employee_ids)).all()
+    )
+    pending = (
+        db.query(Leave)
+        .options(selectinload(Leave.approvals))
+        .filter(Leave.company_id == company_id, Leave.status == "pending", Leave.employee_id.in_(affected))
+        .all()
+    )
+    for leave in pending:
+        advance(db, leave, db.get(Employee, leave.employee_id))
+
+
+# ---------------------------------------------------------------------------
+# Authorisation to act on a step
+# ---------------------------------------------------------------------------
+def _current_step(leave: Leave) -> Optional[LeaveApproval]:
+    return next((s for s in leave.approvals if s.status == "pending"), None)
+
+
+def _approver_can_act(db: Session, principal: Principal, requester: Employee) -> bool:
+    return principal.has("leave:approve") and authz.can_access_employee(db, principal, "leave:approve", requester.id)
+
+
+def can_act(db: Session, principal: Principal, leave: Leave, requester: Employee) -> Optional[str]:
+    if leave.status != "pending" or principal.employee_id == leave.employee_id:
+        return None
+    step = _current_step(leave)
+    if step is None:
+        return None
+    if step.approver_type == "role":
+        if step.role_id in principal.role_ids and _approver_can_act(db, principal, requester):
+            return "approver"
+    else:
+        approver = resolve_step_employee(db, requester, step)
+        if approver is not None:
+            if approver.id == principal.employee_id and _approver_can_act(db, principal, requester):
+                return "approver"
+            from app.services.org_service import active_delegators_for
+
+            if approver.id in active_delegators_for(db, principal.employee_id) and approver.user_id:
+                approver_user = db.get(User, approver.user_id)
+                if approver_user and approver_user.status == "active":
+                    delegator = build_principal(db, approver_user, None, db.get(Company, leave.company_id))
+                    if _approver_can_act(db, delegator, requester):
+                        return "delegate"
+    if principal.has_company_scope("leave:approve"):
+        return "override"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+def apply(db: Session, principal: Principal, data) -> Leave:
+    if not principal.has("leave:apply"):
+        raise forbidden()
+    employee = authz.own_employee(db, principal)
+    company = db.get(Company, principal.company_id)
+    if data.start_date > data.end_date:
+        raise bad_request("Start date must be on or before the end date.")
+    if data.start_date < today_for(company):
+        raise bad_request("Leave cannot start in the past.")
+    if (data.end_date - data.start_date).days > 365:
+        raise bad_request("A single request cannot exceed one year.")
+    leave_type = (
+        db.query(LeaveType)
+        .filter(LeaveType.company_id == principal.company_id, LeaveType.code == data.leave_type, LeaveType.is_active.is_(True))
+        .first()
+    )
+    if leave_type is None:
+        raise bad_request("Unknown leave type.", "INVALID_LEAVE_TYPE")
+
+    days = (data.end_date - data.start_date).days + 1
+    if not leave_type.is_unlimited:
+        balance = balances(db, principal.company_id, employee.id, data.start_date.year)[leave_type.code]
+        if balance["available"] < days:
+            raise bad_request(
+                f"Insufficient {leave_type.name} balance. Available: {balance['available']} day(s).",
+                "INSUFFICIENT_BALANCE",
+            )
+    overlap = db.query(Leave.id).filter(
+        Leave.employee_id == employee.id,
+        Leave.status.in_(("pending", "approved")),
+        Leave.start_date <= data.end_date,
+        Leave.end_date >= data.start_date,
+    ).first()
+    if overlap:
+        raise conflict("You already have leave booked on some of these dates.", "LEAVE_OVERLAP")
+
+    leave = Leave(
+        company_id=principal.company_id,
+        employee_id=employee.id,
+        leave_type=leave_type.code,
+        start_date=data.start_date,
+        end_date=data.end_date,
+        number_of_days=days,
+        reason=data.reason,
+        status="pending",
+    )
+    db.add(leave)
+    db.flush()
+    chain = (
+        db.query(ApprovalChainStep)
+        .filter(ApprovalChainStep.company_id == principal.company_id, ApprovalChainStep.module == "leave")
+        .order_by(ApprovalChainStep.step_order)
+        .all()
+    )
+    order = 0
+    for step in chain:
+        if step.min_days is not None and days < step.min_days:
+            continue
+        order += 1
+        leave.approvals.append(
+            LeaveApproval(
+                company_id=principal.company_id,
+                step_order=order,
+                approver_type=step.approver_type,
+                role_id=step.role_id,
+                status="waiting",
+            )
+        )
+    db.flush()
+    advance(db, leave, employee)
+    AuditLogService.log(
+        db, principal, "Leave", "APPLY", f"{employee.full_name} applied for {days} day(s) of {leave_type.code} leave",
+        "leave", leave.id,
+    )
+    return leave
+
+
+def _load_leave(db: Session, principal: Principal, leave_id: int, lock: bool = False) -> Leave:
+    query = db.query(Leave).options(selectinload(Leave.approvals)).filter(
+        Leave.company_id == principal.company_id, Leave.id == leave_id
+    )
+    if lock:
+        query = query.with_for_update(of=Leave)
+    leave = query.first()
+    if leave is None:
+        raise not_found("Leave request")
+    return leave
+
+
+def decide(db: Session, principal: Principal, leave_id: int, approve: bool, remarks: Optional[str]) -> Leave:
+    leave = _load_leave(db, principal, leave_id, lock=True)
+    requester = db.get(Employee, leave.employee_id)
+    visible = authz.can_access_employee(db, principal, "leave:read", requester.id)
+    acted_as = can_act(db, principal, leave, requester)
+    if acted_as is None:
+        if leave.employee_id == principal.employee_id:
+            raise forbidden("You cannot approve your own leave.")
+        if not visible:
+            raise not_found("Leave request")
+        if leave.status != "pending":
+            raise bad_request(f"This request is already {leave.status}.")
+        raise forbidden("This request is not awaiting your approval.")
+
+    step = _current_step(leave)
+    step.status = "approved" if approve else "rejected"
+    step.acted_by_user_id = principal.user_id
+    step.acted_as = acted_as
+    step.acted_at = utcnow()
+    step.remarks = remarks
+    if approve:
+        advance(db, leave, requester, principal.user_id)
+    else:
+        for later in leave.approvals:
+            if later.status in ("waiting", "pending"):
+                later.status = "cancelled"
+        _finalize(db, leave, requester, "rejected", principal.user_id)
+    leave.remarks = remarks or leave.remarks
+    AuditLogService.log(
+        db, principal, "Leave", "APPROVE" if approve else "REJECT",
+        f"{'Approved' if approve else 'Rejected'} step {step.step_order} of leave #{leave.id} for {requester.full_name}"
+        + (" (override)" if acted_as == "override" else " (delegated)" if acted_as == "delegate" else ""),
+        "leave", leave.id,
+    )
+    return leave
+
+
+def cancel(db: Session, principal: Principal, leave_id: int) -> Leave:
+    leave = _load_leave(db, principal, leave_id, lock=True)
+    if leave.employee_id != principal.employee_id:
+        raise not_found("Leave request")
+    if leave.status != "pending":
+        raise bad_request("Only pending requests can be cancelled.")
+    leave.status = "cancelled"
+    leave.current_step = None
+    for step in leave.approvals:
+        if step.status in ("waiting", "pending"):
+            step.status = "cancelled"
+    AuditLogService.log(db, principal, "Leave", "CANCEL", f"Cancelled leave #{leave.id}", "leave", leave.id)
+    return leave
+
+
+# ---------------------------------------------------------------------------
+# Queries
+# ---------------------------------------------------------------------------
+def serialize(db: Session, leave: Leave, requester: Employee, can_act_as: Optional[str] = None) -> dict:
+    roles = {}
+    steps = []
+    for step in leave.approvals:
+        if step.approver_type == "role":
+            if step.role_id not in roles:
+                role = db.get(Role, step.role_id)
+                roles[step.role_id] = role.name if role else "Role"
+            approver = roles[step.role_id]
+        elif step.status in ("waiting", "pending"):
+            resolved = resolve_step_employee(db, requester, step)
+            approver = resolved.full_name if resolved else None
+        else:
+            approver = None
+        actor = db.get(User, step.acted_by_user_id).full_name if step.acted_by_user_id else None
+        steps.append(
+            {
+                "step_order": step.step_order,
+                "approver_type": step.approver_type,
+                "approver_label": APPROVER_LABELS.get(step.approver_type, step.approver_type),
+                "approver": approver,
+                "status": step.status,
+                "acted_by": actor,
+                "acted_as": step.acted_as,
+                "acted_at": step.acted_at.isoformat() if step.acted_at else None,
+                "remarks": step.remarks,
+            }
+        )
+    return {
+        "id": leave.id,
+        "employee_id": requester.id,
+        "employee_name": requester.full_name,
+        "department": requester.department.name if requester.department else None,
+        "leave_type": leave.leave_type,
+        "start_date": leave.start_date.isoformat(),
+        "end_date": leave.end_date.isoformat(),
+        "number_of_days": leave.number_of_days,
+        "reason": leave.reason,
+        "status": leave.status,
+        "remarks": leave.remarks,
+        "created_at": leave.created_at.isoformat(),
+        "decided_at": leave.decided_at.isoformat() if leave.decided_at else None,
+        "steps": steps,
+        "can_act": can_act_as is not None,
+        "acting_as": can_act_as,
     }
 
-    @staticmethod
-    def get_leave_balance(db: Session, employee_id: int, leave_type: str, year: int):
-        """Get leave balance for employee"""
-        balance = db.query(LeaveBalance).filter(
-            and_(
-                LeaveBalance.employee_id == employee_id,
-                LeaveBalance.leave_type == leave_type,
-                LeaveBalance.year == year,
-            )
-        ).first()
 
-        if not balance:
-            total_days = LeaveService.LEAVE_TYPES.get(leave_type, 0)
-            balance = LeaveBalance(
-                employee_id=employee_id,
-                leave_type=leave_type,
-                year=year,
-                total_days=total_days,
-                used_days=0,
-                remaining_days=total_days,
-            )
-            db.add(balance)
-            db.commit()
-            db.refresh(balance)
+def list_leaves(db: Session, principal: Principal, status: Optional[str], employee_id: Optional[int], skip: int, limit: int):
+    scope = authz.employee_scope(db, principal, "leave:read")
+    query = (
+        db.query(Leave)
+        .options(selectinload(Leave.approvals), joinedload(Leave.employee))
+        .join(Employee, Employee.id == Leave.employee_id)
+        .filter(Leave.company_id == principal.company_id, scope.clause(Leave.employee_id))
+    )
+    if status:
+        query = query.filter(Leave.status == status)
+    if employee_id:
+        query = query.filter(Leave.employee_id == employee_id)
+    total = query.order_by(None).count()
+    rows = query.order_by(Leave.created_at.desc(), Leave.id.desc()).offset(skip).limit(limit).all()
+    return total, [serialize(db, leave, leave.employee) for leave in rows]
 
-        return balance
 
-    @staticmethod
-    def apply_leave(
-        db: Session,
-        employee_id: int,
-        leave_type: str,
-        start_date: date,
-        end_date: date,
-        reason: str = None,
-    ) -> Leave:
-        """Apply for leave"""
-        employee = db.query(Employee).filter(Employee.id == employee_id).first()
-        print("=" * 50)
-        print("Employee ID :", employee_id)
-        print("Leave Type  :", leave_type)
-        print("Start Date  :", start_date)
-        print("End Date    :", end_date)
-        print("Today       :", date.today())
-        if not employee:
-            raise HTTPException(status_code=404, detail="Employee not found")
+def approval_inbox(db: Session, principal: Principal) -> List[dict]:
+    if principal.employee_id is None and not principal.has("leave:approve"):
+        return []
+    pending = (
+        db.query(Leave)
+        .options(selectinload(Leave.approvals), joinedload(Leave.employee))
+        .filter(Leave.company_id == principal.company_id, Leave.status == "pending")
+        .order_by(Leave.start_date)
+        .limit(500)
+        .all()
+    )
+    result = []
+    for leave in pending:
+        acting = can_act(db, principal, leave, leave.employee)
+        if acting:
+            result.append(serialize(db, leave, leave.employee, acting))
+    return result
 
-        if leave_type not in LeaveService.LEAVE_TYPES:
-            print("Leave Type:", leave_type)
-            print("Available:", LeaveService.LEAVE_TYPES.keys())
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid leave type. Available: {', '.join(LeaveService.LEAVE_TYPES.keys())}",
-            )
 
-        if start_date > end_date:
-            raise HTTPException(status_code=400, detail="Start date must be before end date")
+def my_leaves(db: Session, principal: Principal) -> List[dict]:
+    employee = authz.own_employee(db, principal)
+    rows = (
+        db.query(Leave)
+        .options(selectinload(Leave.approvals))
+        .filter(Leave.employee_id == employee.id)
+        .order_by(Leave.created_at.desc())
+        .limit(200)
+        .all()
+    )
+    return [serialize(db, leave, employee) for leave in rows]
 
-        if start_date < date.today():
-            raise HTTPException(status_code=400, detail="Cannot apply for past dates")
 
-        number_of_days = (end_date - start_date).days + 1
-
-        if leave_type != "unpaid":
-            balance = LeaveService.get_leave_balance(
-                db, employee_id, leave_type, start_date.year
-            )
-            print("Remaining Balance :", balance.remaining_days)
-            print("Requested Days    :", number_of_days)
-
-            if balance.remaining_days < number_of_days:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Insufficient {leave_type} leave balance. Available: {balance.remaining_days} days",
-                )
-
-        existing_leave = db.query(Leave).filter(
-            and_(
-                Leave.employee_id == employee_id,
-                Leave.start_date <= end_date,
-                Leave.end_date >= start_date,
-                Leave.status != "rejected",
-            )
-        ).first()
-        if existing_leave:
-            print("Existing Leave Found")
-            print("ID :", existing_leave.id)
-            print("Employee :", existing_leave.employee_id)
-            print("Start :", existing_leave.start_date)
-            print("End :", existing_leave.end_date)
-            print("Status :", existing_leave.status)
-        else:
-            print("No Existing Leave")
-        if existing_leave:
-            raise HTTPException(
-                status_code=400, detail="Leave already exists for these dates"
-            )
-
-        leave_application = Leave(
-            employee_id=employee_id,
-            leave_type=leave_type,
-            start_date=start_date,
-            end_date=end_date,
-            number_of_days=number_of_days,
-            reason=reason,
-            status="pending",
+def upcoming_approved(db: Session, principal: Principal, days: int = 30) -> List[dict]:
+    scope = authz.employee_scope(db, principal, "leave:read")
+    today = date.today()
+    rows = (
+        db.query(Leave, Employee)
+        .join(Employee, Employee.id == Leave.employee_id)
+        .filter(
+            Leave.company_id == principal.company_id,
+            Leave.status == "approved",
+            Leave.end_date >= today,
+            Leave.start_date <= today + timedelta(days=days),
+            scope.clause(Leave.employee_id),
         )
+        .order_by(Leave.start_date)
+        .limit(10)
+        .all()
+    )
+    return [
+        {
+            "employee_name": e.full_name,
+            "leave_type": leave.leave_type,
+            "start_date": leave.start_date.isoformat(),
+            "end_date": leave.end_date.isoformat(),
+        }
+        for leave, e in rows
+    ]
 
-        db.add(leave_application)
-        db.commit()
-        db.refresh(leave_application)
 
-        AuditLogService.create_log(
-            db=db,
-            user_id=employee.user_id,
-            username=employee.email,
-            module="Leave",
-            action="APPLY",
-            description=f"{employee.first_name} {employee.last_name} applied for {leave_type} leave ({number_of_days} day(s))",
-        )
-        return leave_application
+# ---------------------------------------------------------------------------
+# Policy configuration
+# ---------------------------------------------------------------------------
+def save_leave_type(db: Session, principal: Principal, data, type_id: Optional[int] = None) -> LeaveType:
+    clash = db.query(LeaveType.id).filter(LeaveType.company_id == principal.company_id, LeaveType.code == data.code)
+    if type_id:
+        clash = clash.filter(LeaveType.id != type_id)
+    if clash.first():
+        raise conflict("A leave type with this code already exists.")
+    if type_id:
+        lt = db.query(LeaveType).filter(LeaveType.company_id == principal.company_id, LeaveType.id == type_id).first()
+        if lt is None:
+            raise not_found("Leave type")
+    else:
+        lt = LeaveType(company_id=principal.company_id)
+        db.add(lt)
+    for key, value in data.model_dump().items():
+        setattr(lt, key, value)
+    db.flush()
+    AuditLogService.log(db, principal, "Leave", "TYPE_SAVED", f"Saved leave type {lt.code}", "leave_type", lt.id)
+    return lt
 
-    @staticmethod
-    def approve_leave(db: Session, leave_id: int, remarks: str = None) -> Leave:
-        """Approve leave application"""
-        leave = db.query(Leave).filter(Leave.id == leave_id).first()
-        if not leave:
-            raise HTTPException(status_code=404, detail="Leave application not found")
 
-        if leave.status != "pending":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot approve leave with status: {leave.status}",
+def get_chain(db: Session, company_id: int) -> List[dict]:
+    steps = (
+        db.query(ApprovalChainStep)
+        .filter(ApprovalChainStep.company_id == company_id, ApprovalChainStep.module == "leave")
+        .order_by(ApprovalChainStep.step_order)
+        .all()
+    )
+    roles = {r.id: r.name for r in db.query(Role).filter(Role.company_id == company_id).all()}
+    return [
+        {
+            "step_order": s.step_order,
+            "approver_type": s.approver_type,
+            "approver_label": APPROVER_LABELS.get(s.approver_type),
+            "role_id": s.role_id,
+            "role_name": roles.get(s.role_id),
+            "min_days": s.min_days,
+        }
+        for s in steps
+    ]
+
+
+def save_chain(db: Session, principal: Principal, steps) -> List[dict]:
+    if len(steps) > 10:
+        raise bad_request("An approval chain can have at most 10 steps.")
+    for step in steps:
+        if step.approver_type == "role":
+            if step.role_id is None:
+                raise bad_request("Choose a role for role-based steps.")
+            role = db.query(Role.id).filter(Role.company_id == principal.company_id, Role.id == step.role_id).first()
+            if role is None:
+                raise not_found("Role")
+        elif step.role_id is not None:
+            raise bad_request("Only role-based steps take a role.")
+    db.query(ApprovalChainStep).filter(
+        ApprovalChainStep.company_id == principal.company_id, ApprovalChainStep.module == "leave"
+    ).delete(synchronize_session=False)
+    db.flush()
+    for index, step in enumerate(steps, start=1):
+        db.add(
+            ApprovalChainStep(
+                company_id=principal.company_id,
+                module="leave",
+                step_order=index,
+                approver_type=step.approver_type,
+                role_id=step.role_id,
+                min_days=step.min_days,
             )
-
-        leave.status = "approved"
-        leave.approval_date = datetime.now()
-        leave.remarks = remarks
-
-        if leave.leave_type != "unpaid":
-            balance = LeaveService.get_leave_balance(
-                db, leave.employee_id, leave.leave_type, leave.start_date.year
-            )
-            balance.used_days += leave.number_of_days
-            balance.remaining_days = balance.total_days - balance.used_days
-
-        db.commit()
-        db.refresh(leave)
-
-        employee = db.query(Employee).filter(
-            Employee.id == leave.employee_id
-        ).first()
-
-        AuditLogService.create_log(
-            db=db,
-            user_id=employee.user_id,
-            username=employee.email,
-            module="Leave",
-            action="APPROVE",
-            description=f"Approved {leave.leave_type} leave for {employee.first_name} {employee.last_name}",
         )
-
-
-        return leave
-
-    @staticmethod
-    def reject_leave(db: Session, leave_id: int, remarks: str = None) -> Leave:
-        """Reject leave application"""
-        leave = db.query(Leave).filter(Leave.id == leave_id).first()
-        if not leave:
-            raise HTTPException(status_code=404, detail="Leave application not found")
-
-        if leave.status != "pending":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot reject leave with status: {leave.status}",
-            )
-
-        leave.status = "rejected"
-        leave.remarks = remarks
-        db.commit()
-        db.refresh(leave)
-
-        employee = db.query(Employee).filter(
-            Employee.id == leave.employee_id
-        ).first()
-
-        AuditLogService.create_log(
-            db=db,
-            user_id=employee.user_id,
-            username=employee.email,
-            module="Leave",
-            action="REJECT",
-            description=f"Rejected {leave.leave_type} leave for {employee.first_name} {employee.last_name}",
-        )
-
-
-        return leave
-
-    @staticmethod
-    def get_employee_leaves(
-        db: Session, employee_id: int, skip: int = 0, limit: int = 50
-    ):
-        """Get all leave applications for employee"""
-        return (
-            db.query(Leave)
-            .filter(Leave.employee_id == employee_id)
-            .order_by(Leave.created_at.desc())
-            .offset(skip)
-            .limit(limit)
-            .all()
-        )
-
-    @staticmethod
-    def get_pending_leaves(db: Session, skip: int = 0, limit: int = 50):
-
-        records = (
-            db.query(Leave, Employee)
-            .join(Employee, Leave.employee_id == Employee.id)
-            .filter(Leave.status == "pending")
-            .order_by(Leave.created_at.asc())
-            .offset(skip)
-            .limit(limit)
-            .all()
-        )
-
-        result = []
-
-        for leave, employee in records:
-            result.append({
-                "id": leave.id,
-                "employee_id": employee.id,
-                "employee_name": f"{employee.first_name} {employee.last_name}",
-                "leave_type": leave.leave_type,
-                "start_date": leave.start_date,
-                "end_date": leave.end_date,
-                "number_of_days": leave.number_of_days,
-                "reason": leave.reason,
-                "status": leave.status,
-                "created_at": leave.created_at,
-            })
-
-        return result
-
-    @staticmethod
-    def get_leave_summary(db: Session, employee_id: int, year: int = None) -> dict:
-        """Get leave summary for employee"""
-        if year is None:
-            year = date.today().year
-
-        summary = {}
-        for leave_type in LeaveService.LEAVE_TYPES.keys():
-            balance = LeaveService.get_leave_balance(
-                db, employee_id, leave_type, year
-            )
-            summary[leave_type] = {
-                "total": balance.total_days,
-                "used": balance.used_days,
-                "remaining": balance.remaining_days,
-            }
-
-        return summary
-
-    @staticmethod
-    def get_leave_calendar(db: Session, employee_id: int, year: int, month: int):
-        """Get leaves in a calendar format"""
-        first_day = date(year, month, 1)
-        if month == 12:
-            last_day = date(year + 1, 1, 1)
-        else:
-            last_day = date(year, month + 1, 1)
-
-        leaves = db.query(Leave).filter(
-            and_(
-                Leave.employee_id == employee_id,
-                Leave.start_date < last_day,
-                Leave.end_date >= first_day,
-                Leave.status == "approved",
-            )
-        ).all()
-
-        calendar_data = {}
-        for leave in leaves:
-            current_date = max(leave.start_date, first_day)
-            while current_date < min(leave.end_date + timedelta(days=1), last_day):
-                date_str = current_date.isoformat()
-                calendar_data[date_str] = {
-                    "leave_type": leave.leave_type,
-                    "leave_id": leave.id,
-                }
-                current_date += timedelta(days=1)
-
-        return calendar_data
-
-    @staticmethod
-    def get_employee_by_user_id(db: Session, user_id: int):
-        employee = (
-            db.query(Employee)
-            .filter(Employee.user_id == user_id)
-            .first()
-        )
-
-        if not employee:
-            raise HTTPException(
-                status_code=404,
-                detail="Employee not found"
-            )
-
-        return employee
-        
-        
+    db.flush()
+    AuditLogService.log(
+        db, principal, "Leave", "CHAIN_UPDATED",
+        "Approval chain: " + " -> ".join(s.approver_type for s in steps) if steps else "Approval chain cleared",
+    )
+    return get_chain(db, principal.company_id)

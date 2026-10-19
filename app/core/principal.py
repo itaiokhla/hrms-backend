@@ -1,0 +1,275 @@
+"""Authenticated principal resolution.
+
+Company identity is derived exclusively from the server-issued session:
+the signed access token names the session, the session row is checked for
+revocation/expiry, and the company comes from the stored user record. No
+request body, query parameter or header can choose the tenant.
+"""
+
+from dataclasses import dataclass, field
+from datetime import timedelta
+from typing import Dict, FrozenSet, Optional
+
+from fastapi import Depends, Request, status
+from sqlalchemy import or_
+from sqlalchemy.orm import Session
+
+from app.core.errors import AppError, forbidden, unauthorized
+from app.core.permission_registry import PERMISSIONS, Scope, scope_covers
+from app.core.security import (
+    ACCESS_COOKIE,
+    CSRF_COOKIE,
+    CSRF_HEADER,
+    PLATFORM_ACCESS_COOKIE,
+    decode_jwt,
+    tokens_equal,
+    utcnow,
+)
+from app.database.db import bind_tenant, get_db
+from app.models.company import Company, PlatformAdmin, PlatformSession
+from app.models.employee import Employee
+from app.models.rbac import Role, RolePermission, UserRoleAssignment
+from app.models.user import User, UserSession
+
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+ACTIVE_SUBSCRIPTIONS = {"trialing", "active"}
+
+
+@dataclass
+class Principal:
+    user_id: int
+    company_id: int
+    session_id: Optional[str]
+    email: str
+    full_name: str
+    employee_id: Optional[int]
+    grants: Dict[str, FrozenSet[str]]
+    role_ids: FrozenSet[int]
+    role_keys: FrozenSet[str]
+    is_company_admin: bool
+    permission_version: int
+    subscription_active: bool = True
+    extra: dict = field(default_factory=dict)
+
+    def scopes(self, code: str) -> FrozenSet[str]:
+        return self.grants.get(code, frozenset())
+
+    def has(self, code: str, scope: Optional[str] = None) -> bool:
+        held = self.scopes(code)
+        if not held:
+            return False
+        return True if scope is None else scope_covers(held, scope)
+
+    def has_company_scope(self, code: str) -> bool:
+        return Scope.COMPANY.value in self.scopes(code)
+
+
+@dataclass
+class PlatformPrincipal:
+    admin_id: int
+    email: str
+    full_name: str
+    session_id: str
+
+
+def _extract_token(request: Request, cookie_name: str):
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip(), False
+    token = request.cookies.get(cookie_name)
+    return (token, True) if token else (None, False)
+
+
+def _check_csrf(request: Request) -> None:
+    if request.method in SAFE_METHODS:
+        return
+    cookie = request.cookies.get(CSRF_COOKIE)
+    header = request.headers.get(CSRF_HEADER)
+    if not cookie or not header or not tokens_equal(cookie, header):
+        raise AppError(status.HTTP_403_FORBIDDEN, "CSRF validation failed", "CSRF_FAILED")
+
+
+def subscription_is_active(company: Company) -> bool:
+    if company.subscription_status not in ACTIVE_SUBSCRIPTIONS:
+        return False
+    if company.subscription_status == "trialing" and company.trial_ends_at is not None:
+        return company.trial_ends_at > utcnow()
+    return True
+
+
+def load_grants(db: Session, user_id: int):
+    """Effective permissions: the additive union of all active role grants."""
+    now = utcnow()
+    rows = (
+        db.query(
+            Role.id,
+            Role.system_key,
+            Role.is_full_access,
+            Role.is_protected,
+            RolePermission.permission_code,
+            RolePermission.scope,
+        )
+        .join(UserRoleAssignment, UserRoleAssignment.role_id == Role.id)
+        .outerjoin(RolePermission, RolePermission.role_id == Role.id)
+        .filter(
+            UserRoleAssignment.user_id == user_id,
+            UserRoleAssignment.effective_from <= now,
+            or_(UserRoleAssignment.effective_until.is_(None), UserRoleAssignment.effective_until > now),
+        )
+        .all()
+    )
+    grants: Dict[str, set] = {}
+    role_ids, role_keys = set(), set()
+    full_access = False
+    is_admin = False
+    for role_id, system_key, is_full, is_protected, code, scope in rows:
+        role_ids.add(role_id)
+        if system_key:
+            role_keys.add(system_key)
+        if is_full:
+            full_access = True
+            if is_protected:
+                is_admin = True
+        if code and scope:
+            grants.setdefault(code, set()).add(scope)
+    if full_access:
+        for perm in PERMISSIONS:
+            grants.setdefault(perm.code, set()).update(s.value for s in perm.scopes)
+    return (
+        {code: frozenset(scopes) for code, scopes in grants.items()},
+        frozenset(role_ids),
+        frozenset(role_keys),
+        is_admin,
+    )
+
+
+def build_principal(db: Session, user: User, session_id: Optional[str], company: Company) -> Principal:
+    grants, role_ids, role_keys, is_admin = load_grants(db, user.id)
+    employee_id = db.query(Employee.id).filter(Employee.user_id == user.id).scalar()
+    return Principal(
+        user_id=user.id,
+        company_id=user.company_id,
+        session_id=session_id,
+        email=user.email,
+        full_name=user.full_name,
+        employee_id=employee_id,
+        grants=grants,
+        role_ids=role_ids,
+        role_keys=role_keys,
+        is_company_admin=is_admin,
+        permission_version=user.permission_version,
+        subscription_active=subscription_is_active(company),
+    )
+
+
+def _resolve_principal(request: Request, db: Session) -> Principal:
+    token, via_cookie = _extract_token(request, ACCESS_COOKIE)
+    if not token:
+        raise unauthorized()
+    claims = decode_jwt(token, "access")
+    if not claims or claims.get("pt") != "user":
+        raise unauthorized("Session expired", "SESSION_EXPIRED")
+    try:
+        company_id = int(claims["cid"])
+        user_id = int(claims["sub"])
+        session_id = str(claims["sid"])
+    except (KeyError, TypeError, ValueError):
+        raise unauthorized("Session expired", "SESSION_EXPIRED")
+
+    if via_cookie:
+        _check_csrf(request)
+
+    bind_tenant(db, company_id)
+    now = utcnow()
+    session_row = db.get(UserSession, session_id)
+    if (
+        session_row is None
+        or session_row.user_id != user_id
+        or session_row.revoked_at is not None
+        or session_row.expires_at <= now
+    ):
+        raise unauthorized("Session expired", "SESSION_EXPIRED")
+
+    user = db.get(User, user_id)
+    if user is None or user.company_id != company_id:
+        raise unauthorized("Session expired", "SESSION_EXPIRED")
+    if user.status != "active":
+        raise unauthorized("This account is not active", "ACCOUNT_INACTIVE")
+
+    company = db.get(Company, company_id)
+    if company is None or company.status != "active":
+        raise AppError(status.HTTP_403_FORBIDDEN, "Your organization's workspace is suspended.", "COMPANY_SUSPENDED")
+
+    if session_row.last_seen_at is None or now - session_row.last_seen_at > timedelta(minutes=5):
+        session_row.last_seen_at = now
+        db.commit()
+
+    principal = build_principal(db, user, session_id, company)
+    request.state.principal = principal
+    return principal
+
+
+def get_principal_any_subscription(request: Request, db: Session = Depends(get_db)) -> Principal:
+    """For session/billing endpoints that must work while a subscription lapses."""
+    return _resolve_principal(request, db)
+
+
+def get_principal(request: Request, db: Session = Depends(get_db)) -> Principal:
+    principal = _resolve_principal(request, db)
+    if not principal.subscription_active:
+        raise AppError(
+            status.HTTP_402_PAYMENT_REQUIRED,
+            "Your organization's subscription is inactive. Contact your administrator.",
+            "SUBSCRIPTION_INACTIVE",
+        )
+    return principal
+
+
+def require(*codes: str):
+    """Function-level authorization: caller must hold every listed permission."""
+
+    def dependency(principal: Principal = Depends(get_principal)) -> Principal:
+        for code in codes:
+            if not principal.has(code):
+                raise forbidden()
+        return principal
+
+    return dependency
+
+
+def require_any(*codes: str):
+    def dependency(principal: Principal = Depends(get_principal)) -> Principal:
+        if not any(principal.has(code) for code in codes):
+            raise forbidden()
+        return principal
+
+    return dependency
+
+
+# ---------------------------------------------------------------------------
+# Platform administrators (separate principal type, separate cookies)
+# ---------------------------------------------------------------------------
+def get_platform_principal(request: Request) -> PlatformPrincipal:
+    from app.database.db import system_session
+
+    token, via_cookie = _extract_token(request, PLATFORM_ACCESS_COOKIE)
+    if not token:
+        raise unauthorized()
+    claims = decode_jwt(token, "access")
+    if not claims or claims.get("pt") != "platform":
+        raise unauthorized("Session expired", "SESSION_EXPIRED")
+    if via_cookie:
+        _check_csrf(request)
+    with system_session() as db:
+        session_row = db.get(PlatformSession, str(claims.get("sid")))
+        admin = db.get(PlatformAdmin, int(claims.get("sub", 0)))
+        if (
+            session_row is None
+            or admin is None
+            or session_row.admin_id != admin.id
+            or session_row.revoked_at is not None
+            or session_row.expires_at <= utcnow()
+            or not admin.is_active
+        ):
+            raise unauthorized("Session expired", "SESSION_EXPIRED")
+        return PlatformPrincipal(admin.id, admin.email, admin.full_name, session_row.id)

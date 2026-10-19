@@ -173,7 +173,9 @@ class ExcelExporter:
             details.cell(row=row_idx, column=5).value = record.get("check_out_time")
             status_value = record.get("status")
             details.cell(row=row_idx, column=6).value = status_value
-            details.cell(row=row_idx, column=7).value = f"{float(record.get('face_match_score', 0)) * 100:.1f}%"
+            # Manual and button check-ins have no face match, which is not the same as a 0% match.
+            score = record.get("face_match_score")
+            details.cell(row=row_idx, column=7).value = f"{float(score) * 100:.1f}%" if score is not None else "-"
 
             if status_value == "present":
                 summary["Total Present"] += 1
@@ -231,16 +233,12 @@ class ExcelExporter:
             cell.value = header
             ExcelExporter._apply_header(cell)
 
-        summary = {
-            "Total Records": len(leaves_data),
-            "Sick Leave": 0,
-            "Casual Leave": 0,
-            "Earned Leave": 0,
-            "Maternity Leave": 0,
-        }
+        # Leave types are configured per company, so count whichever types occur.
+        summary = {"Total Records": len(leaves_data)}
 
         for row_idx, leave in enumerate(leaves_data, 2):
-            leave_type = leave.get("leave_type", "Unknown")
+            leave_type = leave.get("leave_type_name") or leave.get("leave_type") or "Unknown"
+            summary[leave_type] = summary.get(leave_type, 0) + 1
             details.cell(row=row_idx, column=1).value = leave.get("employee_id")
             details.cell(row=row_idx, column=2).value = leave.get("employee_name")
             details.cell(row=row_idx, column=3).value = leave_type
@@ -249,11 +247,6 @@ class ExcelExporter:
             details.cell(row=row_idx, column=6).value = leave.get("days")
             details.cell(row=row_idx, column=7).value = leave.get("reason")
             details.cell(row=row_idx, column=8).value = leave.get("status")
-
-            normalized_type = leave_type.lower().replace(" ", "_")
-            if normalized_type in summary:
-                summary_key = " ".join(word.capitalize() for word in normalized_type.split("_"))
-                summary[summary_key] = summary.get(summary_key, 0) + 1
 
             for col in range(1, 9):
                 cell = details.cell(row=row_idx, column=col)
