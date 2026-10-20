@@ -1,8 +1,10 @@
 """Branded transactional email templates (01-white-label §5.6, §7.3).
 
 Every email uses one shared layout (HTML plus a plain-text alternative): the tenant's
-email logo on a header bar in the exact brand colour, the content, then a footer with
-the legal footer, support contact and the optional "Powered by" line.
+email logo on a white header above a strip in the exact brand colour (a deviation from
+01 §5.6's coloured header bar: logos are designed for light backgrounds and vanished on
+a bar of their own colour), the content, then a footer with the legal footer, support
+contact and the optional "Powered by" line.
 
 Tenants may change the subject, intro paragraph and signature per template and
 locale, never the layout. Their text is rendered in a sandboxed Jinja2 environment
@@ -205,12 +207,14 @@ def _layout_html(brand: dict, intro: str, detail: str, signature: str, cta: Opti
     colour = brand.get("header_color") or "#4F46E5"
     button_bg, button_fg = brand.get("button_colors") or (colour, "#FFFFFF")
     logo = brand.get("email_logo_url")
+    # Logos are made for light backgrounds (01 §5.2), so the header is white with a strip of the
+    # exact brand colour below it, like the payslip; the name falls back to text in the button colour.
     header = (
         f'<img src="{e(logo)}" alt="{e(brand["display_name"])}" height="40" style="display:block;max-height:40px;border:0">'
-        if logo else f'<span style="font-size:20px;font-weight:700;color:#FFFFFF">{e(brand["display_name"])}</span>'
+        if logo else f'<span style="font-size:20px;font-weight:700;color:{button_bg}">{e(brand["display_name"])}</span>'
     )
     detail_block = "".join(
-        f'<p style="margin:0 0 12px;color:#374151;font-size:14px;line-height:1.6">{line}</p>'
+        f'<p dir="auto" style="margin:0 0 12px;color:#374151;font-size:14px;line-height:1.6">{line}</p>'
         for line in detail.split("\n") if line.strip()
     )
     button = (
@@ -232,11 +236,11 @@ def _layout_html(brand: dict, intro: str, detail: str, signature: str, cta: Opti
 <body style="margin:0;padding:0;background:#F3F4F6;font-family:'Segoe UI',Roboto,'Noto Sans',Arial,sans-serif">
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#F3F4F6;padding:24px 0"><tr><td align="center">
 <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#FFFFFF;border-radius:14px;overflow:hidden">
-<tr><td style="background:{colour};padding:20px 28px">{header}</td></tr>
+<tr><td style="background:#FFFFFF;padding:20px 28px;border-bottom:4px solid {colour}">{header}</td></tr>
 <tr><td style="padding:28px">
-<p style="margin:0 0 16px;color:#111827;font-size:15px;line-height:1.6">{intro}</p>
+<p dir="auto" style="margin:0 0 16px;color:#111827;font-size:15px;line-height:1.6">{intro}</p>
 {detail_block}{button}
-<p style="margin:24px 0 0;color:#111827;font-size:14px">{signature}</p>
+<p dir="auto" style="margin:24px 0 0;color:#111827;font-size:14px">{signature}</p>
 </td></tr>
 <tr><td style="padding:18px 28px;background:#F9FAFB;color:#6B7280;font-size:12px;line-height:1.6">{footer}</td></tr>
 </table></td></tr></table></body></html>"""
