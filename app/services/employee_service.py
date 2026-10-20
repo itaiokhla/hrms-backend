@@ -261,6 +261,9 @@ def deactivate_employee(db: Session, principal: Principal, employee_id: int) -> 
             user.status = "deactivated"
             auth_service.revoke_user_sessions(db, user.id, "employment_ended")
 
+    from app.services import location_service
+
+    location_service.stop_for_employee(db, principal.company_id, employee.id, "EMPLOYMENT_ENDED")
     # Historical attendance, leave and payroll stay untouched.
     employee.is_active = False
     employee.termination_date = date.today()

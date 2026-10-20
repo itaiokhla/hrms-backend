@@ -206,3 +206,14 @@ def test_duplicate_login_email_rejected_across_companies(app):
     r = b.post("/api/v1/users/invite", json={"email": "person@shared.io", "full_name": "Clash"})
     assert r.status_code == 409
     assert a.me()["user"]["email"] == "person@shared.io"
+
+
+def test_editing_a_role_can_keep_some_of_its_grants(app):
+    # Regression: replacing the whole grant list inserted kept grants before deleting the old
+    # rows, so any edit that kept a permission failed with a unique-constraint error.
+    admin = signup_company(app, "Role Edit Co")
+    grant = lambda code: {"permission": code, "scope": "SELF"}  # noqa: E731
+    role = admin.post("/api/v1/roles", json={"name": "Field staff", "grants": [grant("employee:read"), grant("leave:read")]}).json()
+    r = admin.patch(f"/api/v1/roles/{role['id']}", json={"grants": [grant("employee:read"), grant("location:read")]})
+    assert r.status_code == 200, r.text
+    assert {(g["permission"], g["scope"]) for g in r.json()["grants"]} == {("employee:read", "SELF"), ("location:read", "SELF")}

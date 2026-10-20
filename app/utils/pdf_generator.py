@@ -14,6 +14,26 @@ from io import BytesIO
 from decimal import Decimal
 
 
+def _hm(seconds) -> str:
+    """Whole hours and minutes (seconds are truncated, never rounded up)."""
+    if seconds is None:
+        return "-"
+    seconds = int(seconds)
+    return f"{seconds // 3600}h {seconds % 3600 // 60:02d}m"
+
+
+def _clock(value) -> str:
+    """HH:MM UTC from an ISO timestamp."""
+    if not value:
+        return "-"
+    try:
+        from datetime import timezone
+
+        return datetime.fromisoformat(value).astimezone(timezone.utc).strftime("%H:%M UTC")
+    except ValueError:
+        return str(value)
+
+
 class SalarySlipGenerator:
     @staticmethod
     def generate_pdf(payroll_data: dict, employee_data: dict) -> BytesIO:
@@ -204,7 +224,10 @@ class AttendanceReportGenerator:
         summary = report.get("summary", {})
         summary_data = [["Metric", "Value"]]
         for key, value in summary.items():
-            summary_data.append([str(key).replace("_", " ").title(), str(value)])
+            if str(key).endswith("_seconds"):
+                summary_data.append([str(key)[: -len("_seconds")].replace("_", " ").title(), _hm(value)])
+            else:
+                summary_data.append([str(key).replace("_", " ").title(), str(value)])
 
         summary_table = Table(summary_data, colWidths=[3 * inch, 3 * inch])
         summary_table.setStyle(
@@ -223,17 +246,19 @@ class AttendanceReportGenerator:
 
         records = report.get("records", [])
         if records:
-            table_data = [["Employee", "Date", "Status", "Check-In", "Check-Out"]]
+            table_data = [["Employee", "Date", "Status", "Check-In", "Check-Out", "Lunch", "Net"]]
             for record in records:
                 table_data.append([
                     record.get("employee_name", "N/A"),
                     record.get("date", "N/A"),
                     record.get("status", "N/A"),
-                    record.get("check_in_time", "N/A") or "N/A",
-                    record.get("check_out_time", "N/A") or "N/A",
+                    _clock(record.get("check_in_time")),
+                    _clock(record.get("check_out_time")),
+                    _hm(record.get("lunch_seconds")),
+                    _hm(record.get("net_seconds")),
                 ])
 
-            table = Table(table_data, colWidths=[2.2 * inch, 1.2 * inch, 1.1 * inch, 1.2 * inch, 1.2 * inch])
+            table = Table(table_data, colWidths=[1.7 * inch, 0.9 * inch, 0.8 * inch, 0.9 * inch, 0.9 * inch, 0.7 * inch, 0.7 * inch])
             table.setStyle(
                 TableStyle(
                     [

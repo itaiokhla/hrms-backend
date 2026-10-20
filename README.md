@@ -15,6 +15,7 @@ leave, payroll, assets and reports without ever seeing another company's data.
 | Hierarchy | `employees.manager_id` (primary line), `secondary_reporting_lines`, `approval_delegations`; cycles blocked in the service and by a DB trigger |
 | Delegated admin | `app/services/rbac_service.py` — no privilege escalation, protected Company Administrator role, last-admin protection |
 | Platform operators | Separate principal (`platform_admins`), separate cookies, `/api/v1/platform/*`, no access to tenant HR records |
+| Attendance, lunch & location | `app/services/attendance_service.py` (state machine), `attendance_hours.py` (the only hours calculator), `location_service.py` (location evidence and the periodic schedule), `geo.py` (WGS-84 geodesic distances); see "Attendance, lunch and location" below |
 
 ## Setup with Neon
 
@@ -118,6 +119,47 @@ Sameer Khan (intern → Arjun) is an employee record without a login.
 **Orbit Logistics** (`@orbitlogistics.io`) is not seeded: the first browser test
 signs it up in the UI (`daniel.dsouza`, then invites `fatima.khan` as Manager and
 `joseph.mathew` as Employee).
+
+## Attendance, lunch and location
+
+* **State machine** (server-enforced): `NOT_PUNCHED_IN → WORKING → ON_LUNCH → WORKING → … → PUNCHED_OUT`
+  (Punch In `POST /attendance/me/check-in`, Lunch In `…/lunch-in`, Lunch Out `…/lunch-out`, Punch Out `…/check-out`).
+  Each action takes a per-employee transaction lock, is written to the append-only `attendance_events`
+  table with the server's time, and accepts an `idempotency_key` (retries return the first result).
+  One *live* session per employee is enforced by a partial unique index, so overnight shifts punch out
+  the next day. A shift left open past `maxShiftHours` is closed **without** inventing a punch-out and
+  flagged for an HR correction. Punch-out during lunch asks for confirmation (or is blocked, by policy).
+* **Hours**: `gross = out − in`, `net = gross − unpaid lunch`, whole UTC seconds, computed only by
+  `attendance_hours.compute`. Views, reports, Excel/PDF exports and the payroll run snapshot
+  (`payroll.net_work_seconds`) all use it, so they reconcile to the second. Pay amounts are unchanged.
+* **Location** (off until a Company Administrator enables it under *Company settings → Attendance &
+  location*): per-event policy OFF / OPTIONAL / REQUIRED for punches and for lunch; REQUIRED can only
+  be bypassed through an explicit, manager-reviewed exception. Readings are the browser's estimate with
+  its accuracy radius; failures are stored as failures and never carry coordinates. Movement is a
+  straight-line distance from the punch-in reading, flagged for review only beyond both accuracy radii.
+  Coordinates need the separate `location:read` permission (managers: direct reports) and every view by
+  someone else is audited. Coordinates are redacted after `locationRetentionDays`.
+* **Periodic checks** (best effort, web only): due every `trackingIntervalMinutes` (default 120) after
+  the latest reading or lunch end; paused at lunch; stopped at punch-out, suspension, role removal or
+  when disabled. A slot with no reading by due + grace is recorded as MISSED and the next reading is
+  marked as a recovery; nothing is back-filled. Browsers pause hidden or closed pages, so schedule the
+  sweep that detects missed slots (it cannot obtain positions):
+  ```bash
+  python -m app.cli attendance-sweep      # e.g. every 15 minutes (also applies location retention)
+  ```
+* `LOCATION_TRACKING_MIN_INTERVAL_MINUTES` (default 15) is the shortest interval a company may choose;
+  values below 15 are refused in staging and production and exist only for accelerated browser tests.
+* Migration `0004_attendance_gps_tracking` is additive. After upgrading, re-run
+  `python -m app.cli setup-db-roles` so the application role gets the (append-only) grants.
+
+### Three-company location browser tests
+
+```bash
+python scripts/demo_stack.py --fresh --data-dir .local-postgres-e2e --port 8100   # isolated stack
+python scripts/seed_gps_e2e.py --api http://localhost:8100/api/v1                  # Alpha, Beta, Gamma
+```
+The seed generates a random password per run and writes it, with the account list, to
+`.local-secrets/gps-e2e.json` (git-ignored). See the frontend README to run the Chrome suite.
 
 ## Keeping the frontend in sync
 

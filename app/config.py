@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     # Subscription
     trial_days: int = 14
 
+    # Attendance location tracking. Companies choose an interval between this
+    # floor and 8 hours. Lowering it below 15 minutes is only for accelerated
+    # end-to-end tests and is refused in staging and production.
+    location_tracking_min_interval_minutes: int = 15
+
     @field_validator("allowed_origins", mode="after")
     @classmethod
     def _parse_origins(cls, v):
@@ -122,6 +127,10 @@ class Settings(BaseSettings):
             self.secret_key = secrets.token_urlsafe(48)
         if self.environment == "production" and not self.cookie_secure:
             raise ValueError("COOKIE_SECURE must be true in production")
+        if self.location_tracking_min_interval_minutes < 1 or (
+            self.environment in ("production", "staging") and self.location_tracking_min_interval_minutes < 15
+        ):
+            raise ValueError("LOCATION_TRACKING_MIN_INTERVAL_MINUTES must be at least 15 in staging and production")
         return self
 
     @property

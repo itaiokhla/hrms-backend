@@ -4,6 +4,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+from app.services.attendance_hours import decimal_hours
+
 
 class ExcelExporter:
     HEADER_FILL = PatternFill(start_color="1e3a8a", end_color="1e3a8a", fill_type="solid")
@@ -150,6 +152,9 @@ class ExcelExporter:
             "Check-out Time",
             "Status",
             "Face Match Score",
+            "Gross Hours",
+            "Lunch Hours",
+            "Net Hours",
         ]
 
         for col, header in enumerate(headers, 1):
@@ -164,6 +169,8 @@ class ExcelExporter:
             "Total Late": 0,
             "Total Half Day": 0,
         }
+        totals = {"gross_seconds": 0, "lunch_seconds": 0, "net_seconds": 0}
+        incomplete = 0
 
         for row_idx, record in enumerate(attendance_data, 2):
             details.cell(row=row_idx, column=1).value = record.get("employee_id")
@@ -176,6 +183,15 @@ class ExcelExporter:
             # Manual and button check-ins have no face match, which is not the same as a 0% match.
             score = record.get("face_match_score")
             details.cell(row=row_idx, column=7).value = f"{float(score) * 100:.1f}%" if score is not None else "-"
+            # Hours from the canonical calculator; a missing punch-out is left blank, never estimated.
+            for column, key in ((8, "gross_seconds"), (9, "lunch_seconds"), (10, "net_seconds")):
+                details.cell(row=row_idx, column=column).value = decimal_hours(record.get(key))
+                details.cell(row=row_idx, column=column).number_format = "0.00"
+            if record.get("hours_complete", True):
+                for key in totals:
+                    totals[key] += record.get(key) or 0
+            else:
+                incomplete += 1
 
             if status_value == "present":
                 summary["Total Present"] += 1
@@ -186,14 +202,20 @@ class ExcelExporter:
             elif status_value == "half-day":
                 summary["Total Half Day"] += 1
 
-            for col in range(1, 8):
+            for col in range(1, 11):
                 cell = details.cell(row=row_idx, column=col)
-                if col == 7:
+                if col >= 7:
                     cell.alignment = Alignment(horizontal="right")
                 else:
                     cell.alignment = Alignment(horizontal="left")
                 cell.border = ExcelExporter.BORDER
 
+        # Totals are summed in seconds and converted once, so they match the API to the second.
+        summary["Total Gross Hours"] = decimal_hours(totals["gross_seconds"])
+        summary["Total Lunch Hours"] = decimal_hours(totals["lunch_seconds"])
+        summary["Total Net Hours"] = decimal_hours(totals["net_seconds"])
+        summary["Total Net Seconds"] = totals["net_seconds"]
+        summary["Sessions Missing Punch-out"] = incomplete
         ExcelExporter._create_summary_sheet(wb, "Attendance Summary", summary)
         ExcelExporter._finalize_sheet(details, {
             1: 12,
@@ -203,6 +225,9 @@ class ExcelExporter:
             5: 18,
             6: 12,
             7: 16,
+            8: 12,
+            9: 12,
+            10: 12,
         })
 
         buffer = BytesIO()

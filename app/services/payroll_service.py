@@ -113,6 +113,10 @@ def calculate(db: Session, principal: Principal, employee_id: int, year: int, mo
     overtime_amount = _money((per_day / hours_per_day) * _money(overtime_hours)) if hours_per_day else Decimal("0")
     total_deductions = absent_deduction + half_day_deduction + late_penalty
     net = gross + overtime_amount + _money(bonus) - total_deductions
+    # Same canonical calculator as attendance views and reports; informational, pay rules are unchanged.
+    from app.services.attendance_service import month_hours
+
+    hours = month_hours(db, employee.id, first, last, include_provisional=False)
     return {
         "employee_id": employee.id,
         "employee_name": employee.full_name,
@@ -124,6 +128,12 @@ def calculate(db: Session, principal: Principal, employee_id: int, year: int, mo
         "total_deductions": float(total_deductions), "net_salary": float(max(net, Decimal("0"))),
         "working_days": wdays, "present_days": present + late, "absent_days": absent,
         "half_days": half, "late_days": late,
+        "attendance_hours": {
+            "gross_seconds": hours["gross_seconds"], "lunch_seconds": hours["lunch_seconds"],
+            "excluded_seconds": hours["excluded_seconds"], "net_seconds": hours["net_seconds"],
+            "complete_sessions": hours["complete_sessions"], "incomplete_sessions": hours["incomplete_sessions"],
+            "provisional_sessions": hours["provisional_sessions"],
+        },
     }
 
 
@@ -153,6 +163,10 @@ def generate(db: Session, principal: Principal, employee_id: int, year: int, mon
         present_days=data["present_days"],
         absent_days=data["absent_days"],
         leave_days=data["half_days"],
+        gross_work_seconds=data["attendance_hours"]["gross_seconds"],
+        break_seconds=data["attendance_hours"]["lunch_seconds"],
+        net_work_seconds=data["attendance_hours"]["net_seconds"],
+        incomplete_sessions=data["attendance_hours"]["incomplete_sessions"],
         status="draft",
         created_by_user_id=principal.user_id,
     )
@@ -293,6 +307,7 @@ def serialize(payroll: Payroll, employee: Optional[Employee] = None) -> dict:
         "total_deductions": float(payroll.total_deductions),
         "net_salary": float(payroll.net_salary),
         "status": payroll.status,
+        "net_work_seconds": payroll.net_work_seconds,
         "created_by_user_id": payroll.created_by_user_id,
         "approved_by_user_id": payroll.approved_by_user_id,
         "created_at": payroll.created_at.isoformat(),
@@ -391,6 +406,11 @@ def slip(db: Session, principal: Principal, payroll_id: int) -> dict:
             "present_days": payroll.present_days,
             "absent_days": payroll.absent_days,
             "half_days": payroll.leave_days,
+            # Hours as recorded when this run was generated (None for older runs).
+            "gross_work_seconds": payroll.gross_work_seconds,
+            "net_work_seconds": payroll.net_work_seconds,
+            "break_seconds": payroll.break_seconds,
+            "incomplete_sessions": payroll.incomplete_sessions,
         },
         "status": payroll.status,
     }

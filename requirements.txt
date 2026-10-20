@@ -18,5 +18,7 @@ numpy>=1.24.0
 opencv-python>=4.8.0,<5.0.0
 reportlab>=4.0.0
 openpyxl>=3.1.0
+# Geodesic (WGS-84) distances for attendance location checks (Karney's algorithm, pure Python)
+geographiclib==2.0
 # Optional: enables face recognition (requires dlib build tools)
 # face_recognition>=1.3.0

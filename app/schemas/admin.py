@@ -4,6 +4,7 @@ from typing import List, Optional
 
 from pydantic import EmailStr, Field
 
+from app.schemas.attendance import BreakWrite
 from app.schemas.auth import Money, StrictModel
 
 
@@ -56,6 +57,8 @@ class ManualAttendance(StrictModel):
     check_out_time: Optional[datetime] = None
     status: str = Field("present", pattern=r"^(present|absent|late|half-day)$")
     notes: Optional[str] = Field(None, max_length=500)
+    # When given, replaces the session's lunch breaks (the original events stay in the log).
+    breaks: Optional[List[BreakWrite]] = Field(None, max_length=10)
 
 
 class SalaryStructureCreate(StrictModel):
