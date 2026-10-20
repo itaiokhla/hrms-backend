@@ -214,9 +214,25 @@ Brand files under `UPLOAD_DIR/brand` can stay; they are only content-addressed i
 ### Not implemented (see the report for the full list)
 
 Custom email sending domains (no provider with domain-identity APIs configured), partner
-staff logins/portal and bureau grants, platform support-access grants, pay groups and the
-`PAY_GROUP` scope, concurrent assignments, the general 8-level settings cascade (only the
-brand cascade and its explain view exist), SVG logos, translated UI strings.
+bureau grants, platform support-access grants, pay groups and the `PAY_GROUP` scope,
+concurrent assignments, the general 8-level settings cascade (only the brand cascade and its
+explain view exist), SVG logos, translated UI strings.
+
+### Partner administrators
+
+Resellers get their own console at `/partner` on platform hosts: their client companies as
+aggregate counts and their partner brand (with the fields they lock for clients). They never
+see tenant HR data and cannot use the platform console. Create one as a platform operator
+(`POST /api/v1/platform/partners/{id}/admins`) or with
+`python -m app.cli create-partner-admin --partner <slug> --email … --name …`
+(password from `HRMS_PARTNER_ADMIN_PASSWORD` or a prompt). Migration `0007_partner_admins`.
+
+## Multi-tenant audit and the three-company environment
+
+`docs/saas/` holds the audit, security findings, the three-company seed
+(`scripts/seed_saas_three_companies.py`, checked by `scripts/verify_saas_scopes.py`), the Chrome
+evidence, the rules for new modules and the readiness report. `tests/test_platform_contracts.py`
+enforces the tenancy and authorization rules for every route and table, including future ones.
 
 ## Keeping the frontend in sync
 
