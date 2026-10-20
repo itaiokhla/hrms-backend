@@ -6,7 +6,8 @@
     python -m app.cli attendance-sweep                         (schedule every ~15 minutes)
     python -m app.cli sync-tenant-hosts                        (after changing PLATFORM_BASE_DOMAIN)
     python -m app.cli domain-checks                            (schedule every ~5 minutes)
-    python -m app.cli org-sync                                 (daily: applies future-dated placements)
+    python -m app.cli org-sync                                 (daily, and after any code rollback: repairs
+                                                               missing structure, applies future-dated placements)
 """
 
 import argparse
@@ -128,10 +129,11 @@ def domain_checks() -> None:
 
 
 def org_sync() -> None:
-    """Copy each employee's current primary placement into the legacy employee columns."""
+    """Create missing default structure (rows written by an older release), then copy each
+    employee's current primary placement into the legacy employee columns."""
     from app.database.db import SessionLocal, bind_tenant, system_session
     from app.models.company import Company
-    from app.services import org_structure_service
+    from app.services import company_service, org_structure_service
 
     with system_session() as db:
         company_ids = [cid for (cid,) in db.query(Company.id).order_by(Company.id)]
@@ -139,9 +141,11 @@ def org_sync() -> None:
         db = SessionLocal()
         try:
             bind_tenant(db, company_id)
+            repaired = company_service.repair_defaults(db, db.get(Company, company_id))
             changed = org_structure_service.sync_all_current(db, company_id)
             db.commit()
-            print(f"company {company_id}: {changed} employee(s) updated")
+            created = ", ".join(f"{count} {kind}" for kind, count in repaired.items() if count)
+            print(f"company {company_id}: {changed} employee(s) updated" + (f"; created {created}" if created else ""))
         except Exception as exc:
             db.rollback()
             print(f"company {company_id}: org sync failed: {exc}", file=sys.stderr)

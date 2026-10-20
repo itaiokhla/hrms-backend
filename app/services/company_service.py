@@ -130,6 +130,23 @@ def provision_company(
     return company, user
 
 
+def repair_defaults(db: Session, company: Company) -> dict:
+    """Create what signup and hiring would have created for rows written without it (raw SQL, or the
+    previous release after a code rollback): default legal entity and branch, placements, a brand."""
+    from app.models.branding import BrandProfile
+    from app.services import org_structure_service
+
+    created = org_structure_service.repair_missing_structure(db, company)
+    created["brands"] = 0
+    if db.query(BrandProfile.id).filter(BrandProfile.company_id == company.id,
+                                        BrandProfile.owner_type == "TENANT").first() is None:
+        db.add(BrandProfile(company_id=company.id, owner_type="TENANT", version=1, status="PUBLISHED",
+                            published_at=utcnow(), published_by="repair", created_by="repair", change_summary=[]))
+        db.flush()
+        created["brands"] = 1
+    return created
+
+
 def today_for(company: Company) -> date:
     return utcnow().astimezone(pytz.timezone(company.timezone or "UTC")).date()
 

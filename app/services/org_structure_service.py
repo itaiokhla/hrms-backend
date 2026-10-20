@@ -686,6 +686,54 @@ def sync_all_current(db: Session, company_id: int) -> int:
     return changed
 
 
+def repair_missing_structure(db: Session, company: Company) -> Dict[str, int]:
+    """Give rows written without the organisation structure what the 0005 backfill gives them: a
+    default entity and branch for a company with none, and a primary placement (at the branch named
+    like the employee's location) for each employee with none. Such rows come from raw SQL or from
+    the previous release running after a code rollback."""
+    created = {"entities": 0, "branches": 0, "placements": 0}
+    if db.query(LegalEntity.id).filter(LegalEntity.company_id == company.id).first() is None:
+        provision_structure(db, company)
+        created["entities"] += 1
+        created["branches"] += 1
+    placed = select(EmployeeAssignment.employee_id).where(EmployeeAssignment.company_id == company.id)
+    missing = db.query(Employee).filter(Employee.company_id == company.id, Employee.id.not_in(placed)).order_by(Employee.id).all()
+    if not missing:
+        return created
+    entity_id, default_branch = default_placement(db, company.id)
+    entity = db.get(LegalEntity, entity_id)
+
+    def named_branch(name: str) -> Branch:
+        branch = db.query(Branch).filter(Branch.company_id == company.id, Branch.name == name).first()
+        if branch is None:
+            taken = {code for (code,) in db.query(Branch.code).filter(
+                Branch.company_id == company.id, Branch.legal_entity_id == entity.id)}
+            code = next(f"B{n:02d}" for n in range(1, 1000) if f"B{n:02d}" not in taken)
+            branch = Branch(company_id=company.id, legal_entity_id=entity.id, code=code, name=name,
+                            country_code=entity.country_code, timezone=entity.timezone, status="ACTIVE")
+            db.add(branch)
+            db.flush()
+            created["branches"] += 1
+        return branch
+
+    for employee in missing:
+        location = (employee.location or "").strip()[:100]
+        if location:
+            branch = named_branch(location)
+        else:
+            default_branch = default_branch or named_branch("Main")
+            branch = default_branch
+        ended = employee.termination_date if employee.termination_date and employee.termination_date >= employee.hire_date else None
+        db.add(EmployeeAssignment(
+            company_id=company.id, employee_id=employee.id, legal_entity_id=branch.legal_entity_id, branch_id=branch.id,
+            department_id=employee.department_id, is_primary=True, reason="MIGRATION",
+            effective_from=employee.hire_date, effective_to=ended,
+        ))
+        created["placements"] += 1
+    db.flush()
+    return created
+
+
 def tree(db: Session, company_id: int) -> dict:
     company = db.get(Company, company_id)
     entities = list_entities(db, company_id)

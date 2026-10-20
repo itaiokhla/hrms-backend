@@ -200,10 +200,15 @@ Design: `docs/payroll/01-white-label.md` and `02-multi-level-company.md` (reposi
 
 ### Rollback
 
-Code: redeploy the previous release; the new columns are nullable/defaulted and unused by
-old code. Schema: `alembic downgrade 0004_attendance_gps_tracking` drops the new tables and
-columns (brand history, domains, issued-document records and placements are lost; payroll,
-attendance, leave and users are untouched), so prefer restoring the backup taken in step 1.
+Code: redeploy the previous release; it runs on the new schema (rehearsed with `811f561`).
+Rows it writes lack the new structure: payroll currency and entity are filled by a trigger,
+and `python -m app.cli org-sync` creates the missing entity, branch, placements and brand
+once the new release is back. Run it after every roll-forward.
+Schema: `alembic downgrade 0004_attendance_gps_tracking` drops the new tables and columns
+(brand history, partners, domains, issued-document records, placements, entity details and
+entity/branch-scoped grants are lost; payroll, attendance, leave and users are untouched), so
+prefer restoring the backup taken in step 1. Upgrading again re-runs the backfill (version-1
+brands, one placement per employee) and payslips are re-issued with the current brand.
 Brand files under `UPLOAD_DIR/brand` can stay; they are only content-addressed images.
 
 ### Not implemented (see the report for the full list)

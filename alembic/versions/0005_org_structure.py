@@ -8,7 +8,8 @@ Additive and backwards compatible (02-multi-level-company §19, steps 1-2):
     same-company foreign keys;
   * departments.parent_department_id (teams) with a cycle-rejecting trigger;
   * role_permissions accepts the LEGAL_ENTITY and BRANCH scopes;
-  * payroll rows gain currency (backfilled from the company) and legal_entity_id.
+  * payroll rows gain currency (backfilled from the company) and legal_entity_id; a trigger
+    fills both for rows written without them (e.g. by the previous release after a code rollback).
 
 Backfill (nothing existing is changed or deleted):
   * one default legal entity per company, named after the company, in its currency
@@ -213,7 +214,38 @@ def upgrade() -> None:
     _install_security(bind)
     _backfill(bind)
 
-    op.alter_column('payroll', 'currency', nullable=False, server_default='INR')
+    # Rows written without these columns (raw SQL, or the previous release during a code rollback,
+    # which does not know them) get what payroll_service.generate would set: the employee's legal
+    # entity at the end of the month and its currency, else the company currency. A static default
+    # would label AED or USD amounts as INR.
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION payroll_fill_defaults() RETURNS trigger
+        LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+        DECLARE
+            period_end date := (date_trunc('month', NEW.salary_month) + interval '1 month - 1 day')::date;
+        BEGIN
+            IF NEW.legal_entity_id IS NULL THEN
+                SELECT a.legal_entity_id INTO NEW.legal_entity_id
+                FROM employee_assignments a
+                WHERE a.company_id = NEW.company_id AND a.employee_id = NEW.employee_id AND a.is_primary
+                  AND a.effective_from <= period_end AND (a.effective_to IS NULL OR a.effective_to >= period_end)
+                ORDER BY a.effective_from DESC LIMIT 1;
+            END IF;
+            IF NEW.currency IS NULL THEN
+                NEW.currency := COALESCE(
+                    (SELECT le.base_currency FROM legal_entities le
+                     WHERE le.company_id = NEW.company_id AND le.id = NEW.legal_entity_id),
+                    (SELECT c.currency FROM companies c WHERE c.id = NEW.company_id),
+                    'INR');
+            END IF;
+            RETURN NEW;
+        END $$
+        """
+    )
+    op.execute("CREATE TRIGGER trg_payroll_fill_defaults BEFORE INSERT ON payroll "
+               "FOR EACH ROW EXECUTE FUNCTION payroll_fill_defaults()")
+    op.alter_column('payroll', 'currency', nullable=False)
     op.create_check_constraint('ck_payroll_currency', 'payroll', "currency ~ '^[A-Z]{3}$'")
 
 
@@ -356,6 +388,8 @@ def _backfill(bind) -> None:
 
 
 def downgrade() -> None:
+    op.execute("DROP TRIGGER IF EXISTS trg_payroll_fill_defaults ON payroll")
+    op.execute("DROP FUNCTION IF EXISTS payroll_fill_defaults()")
     op.drop_constraint('ck_payroll_currency', 'payroll', type_='check')
     op.drop_index('ix_payroll_legal_entity_id', table_name='payroll')
     op.drop_column('payroll', 'legal_entity_id')

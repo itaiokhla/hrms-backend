@@ -45,6 +45,64 @@ def test_signup_creates_default_entity_branch_and_placement(acme):
     assert tree["unconfirmed_entities"] == ["LE01"]
 
 
+def test_rows_written_by_an_older_release_are_completed(app):
+    """After a code rollback the previous release writes companies, employees and payroll without the
+    new structure; the payroll trigger and org-sync's repair complete them."""
+    from datetime import date
+    from decimal import Decimal
+
+    from app.database.db import SessionLocal, bind_tenant, system_session
+    from app.models.branding import BrandProfile
+    from app.models.company import Company
+    from app.models.employee import Employee
+    from app.models.org import Branch, EmployeeAssignment, LegalEntity
+    from app.models.payroll import Payroll
+    from app.services import company_service
+
+    with system_session() as db:
+        company = Company(name="Old Release Trading", slug="old-release-trading", currency="AED", timezone="Asia/Dubai")
+        db.add(company)
+        db.commit()
+        company_id = company.id
+
+    db = SessionLocal()
+    try:
+        bind_tenant(db, company_id)
+
+        def payroll(employee_id, month):
+            # The previous release's model has no currency or legal_entity_id column.
+            row = Payroll(company_id=company_id, employee_id=employee_id, salary_month=month,
+                          basic_salary=Decimal("1000"), gross_salary=Decimal("1000"), net_salary=Decimal("1000"))
+            db.add(row)
+            db.flush()
+            db.refresh(row)
+            return row
+
+        employee = Employee(company_id=company_id, employee_code="OLD-1", first_name="Layla", last_name="Haddad",
+                            email="layla@old-release.example", hire_date=date(2025, 1, 6), location="Dubai Marina")
+        db.add(employee)
+        db.flush()
+        before = payroll(employee.id, date(2026, 8, 1))
+        assert (before.currency, before.legal_entity_id) == ("AED", None)  # company currency, not a static INR
+
+        assert company_service.repair_defaults(db, db.get(Company, company_id)) == {
+            "entities": 1, "branches": 2, "placements": 1, "brands": 1}
+        entity = db.query(LegalEntity).filter(LegalEntity.company_id == company_id).one()
+        assert (entity.code, entity.base_currency, entity.country_code, entity.country_confirmed) == ("LE01", "AED", "AE", False)
+        assert sorted(b.name for b in db.query(Branch).filter(Branch.company_id == company_id)) == ["Dubai Marina", "Main"]
+        placement = db.query(EmployeeAssignment).filter(EmployeeAssignment.employee_id == employee.id).one()
+        assert (placement.reason, placement.effective_from, placement.effective_to) == ("MIGRATION", date(2025, 1, 6), None)
+        assert db.query(BrandProfile).filter(BrandProfile.company_id == company_id, BrandProfile.status == "PUBLISHED").count() == 1
+
+        after = payroll(employee.id, date(2026, 9, 1))
+        assert (after.currency, after.legal_entity_id) == ("AED", entity.id)
+        assert company_service.repair_defaults(db, db.get(Company, company_id)) == {
+            "entities": 0, "branches": 0, "placements": 0, "brands": 0}
+        db.commit()
+    finally:
+        db.close()
+
+
 def test_entity_validation_iso_codes_and_country_lock(app, acme):
     for bad in ({"country_code": "XX"}, {"base_currency": "ABC"}, {"timezone": "Mars/Base"}):
         payload = {"code": "BAD", "legal_name": "Bad", "country_code": "IN", "base_currency": "INR", "timezone": "UTC", **bad}
