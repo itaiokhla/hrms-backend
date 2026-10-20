@@ -214,7 +214,7 @@ def test_issued_payslip_never_changes_after_brand_change(app, acme):
     text = _pdf_text(first.content)
     assert "₹" in text and "■" not in text  # rupee glyph renders (EC-DOC-23)
     assert "Acme India Private Limited" in text and "U72200KA2019PTC123456" in text and "Old footer" in text
-    assert "शर्मा" in text  # Devanagari name
+    assert "श" in text and "Priya" in text  # Devanagari name, shaped with HarfBuzz (conjuncts map to glyph ids)
     original_sha = first.headers["x-document-sha256"]
 
     # Rebrand: new logo, colour and footer.
@@ -295,6 +295,8 @@ def test_country_change_blocked_after_approved_payroll_and_mixed_currency_totals
     pdf = acme.get(f"/api/v1/payroll/{p2['id']}/slip.pdf").content
     text = _pdf_text(pdf)
     assert "AED 12,000.00" in text and "Acme Gulf FZ-LLC" in text
+    # Arabic is shaped (joined contextual forms), not printed as isolated letters.
+    assert any("ﹰ" <= ch <= "﻾" for ch in text)
     r = acme.patch(f"/api/v1/legal-entities/{ae['id']}", json={"country_code": "SA"})
     assert r.status_code == 409 and r.json()["code"] == "ORG_COUNTRY_LOCKED"
     # India entity has no approved payroll yet, so its country may still be corrected.

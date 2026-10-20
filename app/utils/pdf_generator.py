@@ -44,7 +44,7 @@ def _clock(value) -> str:
 def _styles():
     pdf_fonts.register()
     base = getSampleStyleSheet()
-    return {
+    styles = {
         "title": ParagraphStyle("t", parent=base["Heading1"], fontName=SANS_BOLD, fontSize=16, leading=20, spaceAfter=4),
         "h": ParagraphStyle("h", parent=base["Heading2"], fontName=SANS_BOLD, fontSize=11, leading=14, spaceAfter=4),
         "body": ParagraphStyle("b", parent=base["Normal"], fontName=SANS, fontSize=9, leading=12),
@@ -60,6 +60,11 @@ def _styles():
         "head_white_right": ParagraphStyle("hwr", parent=base["Normal"], fontName=SANS_BOLD, fontSize=9, leading=12,
                                            textColor=colors.white, alignment=TA_RIGHT),
     }
+    # HarfBuzz shaping (joined Arabic in right-to-left order, Devanagari conjuncts) only runs
+    # when a style asks for it.
+    for style in styles.values():
+        style.shaping = 1
+    return styles
 
 
 def _p(text, style, bold: bool = False) -> Paragraph:
