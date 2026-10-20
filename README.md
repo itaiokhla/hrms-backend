@@ -161,6 +161,58 @@ python scripts/seed_gps_e2e.py --api http://localhost:8100/api/v1               
 The seed generates a random password per run and writes it, with the account list, to
 `.local-secrets/gps-e2e.json` (git-ignored). See the frontend README to run the Chrome suite.
 
+## White label and organisation structure
+
+Design: `docs/payroll/01-white-label.md` and `02-multi-level-company.md` (repository root).
+
+* **Brands** are data: `PLATFORM -> PARTNER (may lock fields) -> TENANT -> LEGAL_ENTITY`
+  (documents only), each with a draft, one published version and archived history.
+  Fields resolve independently (lock, then entitled tenant value, then partner, then
+  platform). Colours become accessible light/dark tokens on the server; images are decoded,
+  stripped of metadata, re-encoded and stored as `UPLOAD_DIR/brand/<sha256>.<ext>`.
+* **Hosts**: the Next.js middleware sends the original host with `PROXY_SHARED_SECRET`;
+  without a matching secret every request counts as the platform host. Tenant hosts
+  (`<slug>.<PLATFORM_BASE_DOMAIN>` and verified custom domains) only accept their own
+  tenant's users, sessions are bound to the host they were created on, and the platform
+  console answers only on `PLATFORM_HOSTS`. Unknown hosts get a neutral page.
+* **Documents**: payslips are issued (snapshot + PDF bytes + brand version) when payroll is
+  approved; downloads return the stored bytes. PDFs embed Noto Sans (app/assets/fonts, OFL).
+* **Organisation**: legal entities, branches, effective-dated placements
+  (`employee_assignments`), teams (child departments), `LEGAL_ENTITY`/`BRANCH` role scopes
+  with targets per role assignment. Payroll rows carry the entity's currency.
+
+### Rollout
+
+1. Back up the database (Neon branch or `pg_dump`) and `UPLOAD_DIR`.
+2. `pip install -r requirements.txt` (adds jinja2, uharfbuzz, publicsuffixlist, dnspython, pycountry).
+3. `alembic upgrade head` (owner role) — `0005_org_structure` and `0006_white_label` only add
+   tables/columns and backfill: one unconfirmed default legal entity per company, branches from
+   `employees.location`, one placement per employee, payroll currency, a v1 brand per company
+   with its existing logo re-processed, and the platform brand.
+4. `python -m app.cli setup-db-roles` (grants the new tenant tables; issued documents become
+   immutable for the app role).
+5. Deploy backend and frontend. Without `PLATFORM_BASE_DOMAIN` everything stays single-host.
+6. To enable tenant hosts: wildcard DNS + wildcard TLS for the base domain, set
+   `PLATFORM_HOSTS`, `PLATFORM_BASE_DOMAIN`, `PROXY_SHARED_SECRET` (both apps),
+   `CUSTOM_DOMAIN_CNAME_TARGET`; keep FastAPI private; leave `COOKIE_DOMAIN` unset.
+   `python -m app.cli sync-tenant-hosts` (also runs at startup).
+7. Schedule `python -m app.cli domain-checks` every ~5 minutes and `python -m app.cli org-sync` daily.
+
+### Rollback
+
+Code: redeploy the previous release; the new columns are nullable/defaulted and unused by
+old code. Schema: `alembic downgrade 0004_attendance_gps_tracking` drops the new tables and
+columns (brand history, domains, issued-document records and placements are lost; payroll,
+attendance, leave and users are untouched), so prefer restoring the backup taken in step 1.
+Brand files under `UPLOAD_DIR/brand` can stay; they are only content-addressed images.
+
+### Not implemented (see the report for the full list)
+
+Custom email sending domains (no provider with domain-identity APIs configured), partner
+staff logins/portal and bureau grants, platform support-access grants, pay groups and the
+`PAY_GROUP` scope, concurrent assignments, the general 8-level settings cascade (only the
+brand cascade and its explain view exist), SVG logos, translated UI strings.
+
 ## Keeping the frontend in sync
 
 After changing the permission registry:
