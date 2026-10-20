@@ -47,14 +47,22 @@ def _preview_company(request: Request, token: Optional[str]) -> Optional[int]:
     company_id = int(claims["cid"])
     if context.kind == TENANT and context.company_id != company_id:
         return None
+    if context.kind != TENANT:
+        # On the platform host a draft is shown only to a browser signed in to that tenant, so a
+        # preview link cannot dress the platform's sign-in page in a tenant's unpublished brand.
+        hint = request.headers.get(BRAND_HINT_HEADER) or request.cookies.get(BRAND_HINT_COOKIE)
+        if not hint or verify_brand_hint(hint, context.host) != company_id:
+            return None
     return company_id
 
 
 @public.get("/brand")
 def public_brand(request: Request, response: Response):
     """The effective published brand for this host (01 §12): allow-listed public fields only."""
-    limiter.check(f"brand:ip:{client_ip(request)}", 600, 60)
     context = request_host(request)
+    if not context.trusted:
+        # Server-side renders all come from the Next.js server's address; only direct calls are limited.
+        limiter.check(f"brand:ip:{client_ip(request)}", 600, 60)
     preview_company = _preview_company(request, request.headers.get(PREVIEW_HEADER))
     if preview_company is not None:
         with system_session() as db:

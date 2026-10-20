@@ -339,3 +339,18 @@ def test_legacy_logo_endpoint_still_works(app, admin):
     assert r.status_code == 200 and r.headers["content-type"] == "image/png"
     assert admin.get("/api/v1/settings").json()["hasLogo"] is True
     assert _brand_on(app, tenant_host("acme-corp"))["logos"]["light"]
+
+
+def test_platform_host_preview_needs_a_signed_in_browser_of_that_tenant(app, admin):
+    from app.core.security import brand_hint_value
+
+    admin.put("/api/v1/branding/draft", json={"changes": {"tagline": "Unpublished look"}})
+    on_platform = HostClient(app, PLATFORM_HOST)
+    on_platform.http.cookies = admin.http.cookies
+    token = on_platform.post("/api/v1/branding/preview-token").json()["token"]
+    stranger = HostClient(app, PLATFORM_HOST).get("/api/v1/public/brand", headers={"X-HRMS-Brand-Preview": token}).json()
+    assert stranger["tagline"] != "Unpublished look" and not stranger.get("preview")
+    hint = brand_hint_value(admin.company_id, PLATFORM_HOST)
+    owner = HostClient(app, PLATFORM_HOST).get("/api/v1/public/brand",
+                                               headers={"X-HRMS-Brand-Preview": token, "X-HRMS-Brand-Hint": hint}).json()
+    assert owner["tagline"] == "Unpublished look" and owner["preview"] is True
