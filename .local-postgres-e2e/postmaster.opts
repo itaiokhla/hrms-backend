@@ -1,0 +1,1 @@
+C:/Users/Saket Raj/Documents/INTERTECH/INTERTECH/HRMS/hrms-backend/venv/Lib/site-packages/pgserver/pginstall/bin/postgres.exe "-D" "C:/Users/Saket Raj/Documents/INTERTECH/INTERTECH/HRMS/hrms-backend/.local-postgres-e2e" "-h" "127.0.0.1" "-p" "64810"

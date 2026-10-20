@@ -1,0 +1,476 @@
+2026-10-19 05:45:58.989 GMT [7968] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-19 05:45:58.991 GMT [7968] LOG:  listening on IPv4 address "127.0.0.1", port 64292
+2026-10-19 05:45:59.040 GMT [412] LOG:  database system was shut down at 2026-10-19 05:45:54 GMT
+2026-10-19 05:45:59.067 GMT [7968] LOG:  database system is ready to accept connections
+2026-10-19 05:45:59.188 GMT [7968] LOG:  received SIGHUP, reloading configuration files
+2026-10-19 05:45:59.191 GMT [7968] LOG:  parameter "fsync" changed to "off"
+2026-10-19 05:46:06.702 GMT [18324] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 05:50:59.207 GMT [20900] LOG:  checkpoint starting: time
+2026-10-19 05:52:59.685 GMT [19296] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 05:52:59.685 GMT [18728] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 05:53:40.496 GMT [20900] LOG:  checkpoint complete: wrote 1477 buffers (9.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=161.273 s, sync=0.001 s, total=161.290 s; sync files=0, longest=0.000 s, average=0.000 s; distance=7502 kB, estimate=7502 kB; lsn=0/1BF8690, redo lsn=0/1BD5AF8
+2026-10-19 05:55:59.616 GMT [20900] LOG:  checkpoint starting: time
+2026-10-19 05:56:02.865 GMT [20900] LOG:  checkpoint complete: wrote 31 buffers (0.2%); 1 WAL file(s) added, 0 removed, 0 recycled; write=3.171 s, sync=0.001 s, total=3.250 s; sync files=0, longest=0.000 s, average=0.000 s; distance=259 kB, estimate=6778 kB; lsn=0/1C16B28, redo lsn=0/1C16AF0
+2026-10-19 06:00:59.877 GMT [20900] LOG:  checkpoint starting: time
+2026-10-19 06:01:06.797 GMT [20900] LOG:  checkpoint complete: wrote 65 buffers (0.4%); 0 WAL file(s) added, 0 removed, 0 recycled; write=6.907 s, sync=0.001 s, total=6.920 s; sync files=0, longest=0.000 s, average=0.000 s; distance=146 kB, estimate=6114 kB; lsn=0/1C3B490, redo lsn=0/1C3B458
+2026-10-19 06:05:59.809 GMT [20900] LOG:  checkpoint starting: time
+2026-10-19 06:06:03.549 GMT [20900] LOG:  checkpoint complete: wrote 35 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=3.714 s, sync=0.001 s, total=3.741 s; sync files=0, longest=0.000 s, average=0.000 s; distance=109 kB, estimate=5514 kB; lsn=0/1C568D8, redo lsn=0/1C568A0
+2026-10-19 06:08:33.073 GMT [7968] LOG:  received fast shutdown request
+2026-10-19 06:08:33.073 GMT [7968] LOG:  aborting any active transactions
+2026-10-19 06:08:33.074 GMT [9952] FATAL:  terminating connection due to administrator command
+2026-10-19 06:08:33.074 GMT [21328] FATAL:  terminating connection due to administrator command
+2026-10-19 06:08:33.074 GMT [7548] FATAL:  terminating connection due to administrator command
+2026-10-19 06:08:33.074 GMT [18284] FATAL:  terminating connection due to administrator command
+2026-10-19 06:08:33.074 GMT [4704] FATAL:  terminating connection due to administrator command
+2026-10-19 06:08:33.076 GMT [3752] FATAL:  terminating connection due to administrator command
+2026-10-19 06:08:33.089 GMT [7968] LOG:  background worker "logical replication launcher" (PID 21500) exited with exit code 1
+2026-10-19 06:08:33.091 GMT [20900] LOG:  shutting down
+2026-10-19 06:08:33.092 GMT [20900] LOG:  checkpoint starting: shutdown immediate
+2026-10-19 06:08:33.107 GMT [20900] LOG:  checkpoint complete: wrote 0 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.016 s; sync files=0, longest=0.000 s, average=0.000 s; distance=0 kB, estimate=4962 kB; lsn=0/1C56988, redo lsn=0/1C56988
+2026-10-19 06:08:33.122 GMT [7968] LOG:  database system is shut down
+2026-10-19 06:08:59.485 GMT [17740] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-19 06:08:59.487 GMT [17740] LOG:  listening on IPv4 address "127.0.0.1", port 64817
+2026-10-19 06:08:59.542 GMT [21384] LOG:  database system was shut down at 2026-10-19 06:08:33 GMT
+2026-10-19 06:08:59.589 GMT [17740] LOG:  database system is ready to accept connections
+2026-10-19 06:08:59.719 GMT [17740] LOG:  received SIGHUP, reloading configuration files
+2026-10-19 06:08:59.782 GMT [2008] LOG:  checkpoint starting: immediate force wait
+2026-10-19 06:08:59.797 GMT [2008] LOG:  checkpoint complete: wrote 5 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.011 s, sync=0.001 s, total=0.016 s; sync files=0, longest=0.000 s, average=0.000 s; distance=8 kB, estimate=8 kB; lsn=0/1C58B90, redo lsn=0/1C58B58
+2026-10-19 06:09:08.873 GMT [13436] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 06:13:59.809 GMT [2008] LOG:  checkpoint starting: time
+2026-10-19 06:16:37.315 GMT [2008] LOG:  checkpoint complete: wrote 1446 buffers (8.8%); 0 WAL file(s) added, 0 removed, 1 recycled; write=157.483 s, sync=0.001 s, total=157.506 s; sync files=0, longest=0.000 s, average=0.000 s; distance=7255 kB, estimate=7255 kB; lsn=0/237E440, redo lsn=0/236E8C0
+2026-10-19 06:18:59.423 GMT [2008] LOG:  checkpoint starting: time
+2026-10-19 06:19:03.335 GMT [2008] LOG:  checkpoint complete: wrote 37 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=3.904 s, sync=0.001 s, total=3.912 s; sync files=0, longest=0.000 s, average=0.000 s; distance=109 kB, estimate=6540 kB; lsn=0/2389FC0, redo lsn=0/2389F88
+2026-10-19 06:20:44.238 GMT [10204] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 06:20:44.238 GMT [17100] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 06:23:59.345 GMT [2008] LOG:  checkpoint starting: time
+2026-10-19 06:24:01.887 GMT [2008] LOG:  checkpoint complete: wrote 24 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=2.534 s, sync=0.001 s, total=2.543 s; sync files=0, longest=0.000 s, average=0.000 s; distance=73 kB, estimate=5894 kB; lsn=0/239C6B0, redo lsn=0/239C678
+2026-10-19 06:24:24.807 GMT [17740] LOG:  received fast shutdown request
+2026-10-19 06:24:24.807 GMT [17740] LOG:  aborting any active transactions
+2026-10-19 06:24:24.809 GMT [11944] FATAL:  terminating connection due to administrator command
+2026-10-19 06:24:24.809 GMT [3412] FATAL:  terminating connection due to administrator command
+2026-10-19 06:24:24.809 GMT [18256] FATAL:  terminating connection due to administrator command
+2026-10-19 06:24:24.809 GMT [15384] FATAL:  terminating connection due to administrator command
+2026-10-19 06:24:24.809 GMT [16868] FATAL:  terminating connection due to administrator command
+2026-10-19 06:24:24.809 GMT [21056] FATAL:  terminating connection due to administrator command
+2026-10-19 06:24:24.819 GMT [17740] LOG:  background worker "logical replication launcher" (PID 7620) exited with exit code 1
+2026-10-19 06:24:24.846 GMT [2008] LOG:  shutting down
+2026-10-19 06:24:24.846 GMT [2008] LOG:  checkpoint starting: shutdown immediate
+2026-10-19 06:24:24.859 GMT [2008] LOG:  checkpoint complete: wrote 0 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.014 s; sync files=0, longest=0.000 s, average=0.000 s; distance=0 kB, estimate=5304 kB; lsn=0/239C760, redo lsn=0/239C760
+2026-10-19 06:24:24.871 GMT [17740] LOG:  database system is shut down
+2026-10-19 06:24:38.943 GMT [15836] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-19 06:24:38.944 GMT [15836] LOG:  listening on IPv4 address "127.0.0.1", port 55203
+2026-10-19 06:24:38.990 GMT [5660] LOG:  database system was shut down at 2026-10-19 06:24:24 GMT
+2026-10-19 06:24:39.025 GMT [15836] LOG:  database system is ready to accept connections
+2026-10-19 06:24:39.176 GMT [15836] LOG:  received SIGHUP, reloading configuration files
+2026-10-19 06:24:39.235 GMT [18072] LOG:  checkpoint starting: immediate force wait
+2026-10-19 06:24:39.249 GMT [18072] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.009 s, sync=0.001 s, total=0.014 s; sync files=0, longest=0.000 s, average=0.000 s; distance=8 kB, estimate=8 kB; lsn=0/239EB20, redo lsn=0/239EAE8
+2026-10-19 06:24:46.760 GMT [15092] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 06:29:39.265 GMT [18072] LOG:  checkpoint starting: time
+2026-10-19 06:32:16.826 GMT [18072] LOG:  checkpoint complete: wrote 1444 buffers (8.8%); 0 WAL file(s) added, 0 removed, 0 recycled; write=157.554 s, sync=0.001 s, total=157.561 s; sync files=0, longest=0.000 s, average=0.000 s; distance=7258 kB, estimate=7258 kB; lsn=0/2AC5030, redo lsn=0/2AB5558
+2026-10-19 06:34:39.021 GMT [18072] LOG:  checkpoint starting: time
+2026-10-19 06:34:41.980 GMT [18072] LOG:  checkpoint complete: wrote 28 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=2.952 s, sync=0.001 s, total=2.959 s; sync files=0, longest=0.000 s, average=0.000 s; distance=68 kB, estimate=6539 kB; lsn=0/2AC66A8, redo lsn=0/2AC6670
+2026-10-19 06:36:12.284 GMT [20192] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 06:36:12.284 GMT [17856] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 06:39:32.527 GMT [21604] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 06:39:32.527 GMT [22104] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 06:39:39.993 GMT [18072] LOG:  checkpoint starting: time
+2026-10-19 06:39:43.645 GMT [18072] LOG:  checkpoint complete: wrote 34 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=3.641 s, sync=0.001 s, total=3.653 s; sync files=0, longest=0.000 s, average=0.000 s; distance=122 kB, estimate=5897 kB; lsn=0/2AE5160, redo lsn=0/2AE5128
+2026-10-19 06:44:39.660 GMT [18072] LOG:  checkpoint starting: time
+2026-10-19 06:44:44.814 GMT [18072] LOG:  checkpoint complete: wrote 48 buffers (0.3%); 0 WAL file(s) added, 0 removed, 0 recycled; write=5.141 s, sync=0.001 s, total=5.155 s; sync files=0, longest=0.000 s, average=0.000 s; distance=144 kB, estimate=5322 kB; lsn=0/2B09468, redo lsn=0/2B09430
+2026-10-19 06:46:16.221 GMT [18524] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 06:46:16.221 GMT [17440] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 06:49:39.823 GMT [18072] LOG:  checkpoint starting: time
+2026-10-19 06:49:40.059 GMT [18072] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.225 s, sync=0.001 s, total=0.236 s; sync files=0, longest=0.000 s, average=0.000 s; distance=13 kB, estimate=4791 kB; lsn=0/2B0CAA0, redo lsn=0/2B0CA68
+2026-10-19 06:54:39.070 GMT [18072] LOG:  checkpoint starting: time
+2026-10-19 06:54:40.286 GMT [18072] LOG:  checkpoint complete: wrote 12 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.208 s, sync=0.001 s, total=1.217 s; sync files=0, longest=0.000 s, average=0.000 s; distance=38 kB, estimate=4316 kB; lsn=0/2B16518, redo lsn=0/2B164E0
+2026-10-19 06:58:18.318 GMT [15836] LOG:  received fast shutdown request
+2026-10-19 06:58:18.319 GMT [15836] LOG:  aborting any active transactions
+2026-10-19 06:58:18.320 GMT [17856] FATAL:  terminating connection due to administrator command
+2026-10-19 06:58:18.320 GMT [17532] FATAL:  terminating connection due to administrator command
+2026-10-19 06:58:18.320 GMT [10092] FATAL:  terminating connection due to administrator command
+2026-10-19 06:58:18.320 GMT [8884] FATAL:  terminating connection due to administrator command
+2026-10-19 06:58:18.320 GMT [22024] FATAL:  terminating connection due to administrator command
+2026-10-19 06:58:18.320 GMT [10732] FATAL:  terminating connection due to administrator command
+2026-10-19 06:58:18.329 GMT [15836] LOG:  background worker "logical replication launcher" (PID 6584) exited with exit code 1
+2026-10-19 06:58:18.337 GMT [18072] LOG:  shutting down
+2026-10-19 06:58:18.338 GMT [18072] LOG:  checkpoint starting: shutdown immediate
+2026-10-19 06:58:18.412 GMT [18072] LOG:  checkpoint complete: wrote 73 buffers (0.4%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.059 s, sync=0.001 s, total=0.076 s; sync files=0, longest=0.000 s, average=0.000 s; distance=252 kB, estimate=3909 kB; lsn=0/2B55618, redo lsn=0/2B55618
+2026-10-19 06:58:18.476 GMT [15836] LOG:  database system is shut down
+2026-10-19 06:58:28.262 GMT [11912] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-19 06:58:28.263 GMT [11912] LOG:  listening on IPv4 address "127.0.0.1", port 52071
+2026-10-19 06:58:28.334 GMT [5568] LOG:  database system was shut down at 2026-10-19 06:58:18 GMT
+2026-10-19 06:58:28.370 GMT [11912] LOG:  database system is ready to accept connections
+2026-10-19 06:58:28.494 GMT [11912] LOG:  received SIGHUP, reloading configuration files
+2026-10-19 06:58:28.562 GMT [9032] LOG:  checkpoint starting: immediate force wait
+2026-10-19 06:58:28.579 GMT [9032] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.011 s, sync=0.001 s, total=0.017 s; sync files=0, longest=0.000 s, average=0.000 s; distance=8 kB, estimate=8 kB; lsn=0/2B57978, redo lsn=0/2B57940
+2026-10-19 06:58:37.947 GMT [20848] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 07:03:28.591 GMT [9032] LOG:  checkpoint starting: time
+2026-10-19 07:06:06.000 GMT [9032] LOG:  checkpoint complete: wrote 1446 buffers (8.8%); 0 WAL file(s) added, 0 removed, 1 recycled; write=157.392 s, sync=0.001 s, total=157.410 s; sync files=0, longest=0.000 s, average=0.000 s; distance=7257 kB, estimate=7257 kB; lsn=0/327D9F0, redo lsn=0/326DE70
+2026-10-19 07:08:28.189 GMT [9032] LOG:  checkpoint starting: time
+2026-10-19 07:08:31.141 GMT [9032] LOG:  checkpoint complete: wrote 28 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=2.945 s, sync=0.001 s, total=2.952 s; sync files=0, longest=0.000 s, average=0.000 s; distance=68 kB, estimate=6538 kB; lsn=0/327F068, redo lsn=0/327F030
+2026-10-19 07:09:59.251 GMT [9952] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 07:09:59.251 GMT [21800] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 07:13:20.221 GMT [17472] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 07:13:20.221 GMT [7980] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 07:13:28.156 GMT [9032] LOG:  checkpoint starting: time
+2026-10-19 07:13:31.785 GMT [9032] LOG:  checkpoint complete: wrote 34 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=3.622 s, sync=0.001 s, total=3.630 s; sync files=0, longest=0.000 s, average=0.000 s; distance=122 kB, estimate=5896 kB; lsn=0/329DC00, redo lsn=0/329DBC8
+2026-10-19 07:18:28.795 GMT [9032] LOG:  checkpoint starting: time
+2026-10-19 07:18:33.507 GMT [9032] LOG:  checkpoint complete: wrote 44 buffers (0.3%); 0 WAL file(s) added, 0 removed, 0 recycled; write=4.706 s, sync=0.001 s, total=4.713 s; sync files=0, longest=0.000 s, average=0.000 s; distance=138 kB, estimate=5321 kB; lsn=0/32C0720, redo lsn=0/32C06E8
+2026-10-19 07:20:13.827 GMT [25232] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 07:20:13.827 GMT [21588] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 07:23:28.524 GMT [9032] LOG:  checkpoint starting: time
+2026-10-19 07:23:28.760 GMT [9032] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.227 s, sync=0.001 s, total=0.236 s; sync files=0, longest=0.000 s, average=0.000 s; distance=13 kB, estimate=4790 kB; lsn=0/32C3D40, redo lsn=0/32C3D08
+2026-10-19 07:28:28.770 GMT [9032] LOG:  checkpoint starting: time
+2026-10-19 07:28:36.452 GMT [9032] LOG:  checkpoint complete: wrote 72 buffers (0.4%); 0 WAL file(s) added, 0 removed, 0 recycled; write=7.673 s, sync=0.001 s, total=7.683 s; sync files=0, longest=0.000 s, average=0.000 s; distance=256 kB, estimate=4336 kB; lsn=0/3303E50, redo lsn=0/3303E18
+2026-10-19 07:33:28.470 GMT [9032] LOG:  checkpoint starting: time
+2026-10-19 07:33:47.335 GMT [9032] LOG:  checkpoint complete: wrote 172 buffers (1.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=18.849 s, sync=0.001 s, total=18.865 s; sync files=0, longest=0.000 s, average=0.000 s; distance=463 kB, estimate=3949 kB; lsn=0/338DFB0, redo lsn=0/3377D30
+2026-10-19 07:38:28.347 GMT [9032] LOG:  checkpoint starting: time
+2026-10-19 07:38:46.304 GMT [9032] LOG:  checkpoint complete: wrote 166 buffers (1.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=17.950 s, sync=0.001 s, total=17.957 s; sync files=0, longest=0.000 s, average=0.000 s; distance=535 kB, estimate=3608 kB; lsn=0/33FDA38, redo lsn=0/33FDA00
+2026-10-19 07:39:15.711 GMT [11912] LOG:  received fast shutdown request
+2026-10-19 07:39:15.712 GMT [11912] LOG:  aborting any active transactions
+2026-10-19 07:39:15.713 GMT [21580] FATAL:  terminating connection due to administrator command
+2026-10-19 07:39:15.713 GMT [21092] FATAL:  terminating connection due to administrator command
+2026-10-19 07:39:15.713 GMT [9868] FATAL:  terminating connection due to administrator command
+2026-10-19 07:39:15.714 GMT [26096] FATAL:  terminating connection due to administrator command
+2026-10-19 07:39:15.714 GMT [23508] FATAL:  terminating connection due to administrator command
+2026-10-19 07:39:15.714 GMT [26508] FATAL:  terminating connection due to administrator command
+2026-10-19 07:39:15.713 GMT [21960] FATAL:  terminating connection due to administrator command
+2026-10-19 07:39:15.742 GMT [11912] LOG:  background worker "logical replication launcher" (PID 17468) exited with exit code 1
+2026-10-19 07:39:15.749 GMT [9032] LOG:  shutting down
+2026-10-19 07:39:15.750 GMT [9032] LOG:  checkpoint starting: shutdown immediate
+2026-10-19 07:39:15.769 GMT [9032] LOG:  checkpoint complete: wrote 0 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.021 s; sync files=0, longest=0.000 s, average=0.000 s; distance=0 kB, estimate=3247 kB; lsn=0/33FDAE8, redo lsn=0/33FDAE8
+2026-10-19 07:39:15.790 GMT [11912] LOG:  database system is shut down
+2026-10-19 07:39:26.283 GMT [17692] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-19 07:39:26.285 GMT [17692] LOG:  listening on IPv4 address "127.0.0.1", port 54729
+2026-10-19 07:39:26.369 GMT [8084] LOG:  database system was shut down at 2026-10-19 07:39:15 GMT
+2026-10-19 07:39:26.410 GMT [17692] LOG:  database system is ready to accept connections
+2026-10-19 07:39:26.635 GMT [17692] LOG:  received SIGHUP, reloading configuration files
+2026-10-19 07:39:26.722 GMT [16824] LOG:  checkpoint starting: immediate force wait
+2026-10-19 07:39:26.737 GMT [16824] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.008 s, sync=0.001 s, total=0.016 s; sync files=0, longest=0.000 s, average=0.000 s; distance=9 kB, estimate=9 kB; lsn=0/3400018, redo lsn=0/33FFFC8
+2026-10-19 07:39:38.222 GMT [22744] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 07:44:26.749 GMT [16824] LOG:  checkpoint starting: time
+2026-10-19 07:47:06.984 GMT [16824] LOG:  checkpoint complete: wrote 1447 buffers (8.8%); 0 WAL file(s) added, 0 removed, 0 recycled; write=160.214 s, sync=0.001 s, total=160.236 s; sync files=0, longest=0.000 s, average=0.000 s; distance=7283 kB, estimate=7283 kB; lsn=0/3B2C7E8, redo lsn=0/3B1CC80
+2026-10-19 07:49:26.126 GMT [16824] LOG:  checkpoint starting: time
+2026-10-19 07:49:29.098 GMT [16824] LOG:  checkpoint complete: wrote 28 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=2.955 s, sync=0.001 s, total=2.972 s; sync files=0, longest=0.000 s, average=0.000 s; distance=68 kB, estimate=6561 kB; lsn=0/3B2DE48, redo lsn=0/3B2DE10
+2026-10-19 07:51:46.141 GMT [24428] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 07:51:46.141 GMT [22568] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 07:54:26.106 GMT [16824] LOG:  checkpoint starting: time
+2026-10-19 07:54:29.753 GMT [16824] LOG:  checkpoint complete: wrote 34 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=3.639 s, sync=0.001 s, total=3.647 s; sync files=0, longest=0.000 s, average=0.000 s; distance=121 kB, estimate=5917 kB; lsn=0/3B4C270, redo lsn=0/3B4C238
+2026-10-19 07:55:09.512 GMT [24044] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 07:55:09.512 GMT [16164] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 07:59:26.762 GMT [16824] LOG:  checkpoint starting: time
+2026-10-19 07:59:31.597 GMT [16824] LOG:  checkpoint complete: wrote 45 buffers (0.3%); 0 WAL file(s) added, 0 removed, 0 recycled; write=4.824 s, sync=0.001 s, total=4.835 s; sync files=0, longest=0.000 s, average=0.000 s; distance=151 kB, estimate=5340 kB; lsn=0/3B71EA8, redo lsn=0/3B71E70
+2026-10-19 08:01:52.660 GMT [21560] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 08:01:52.660 GMT [23164] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 08:04:26.608 GMT [16824] LOG:  checkpoint starting: time
+2026-10-19 08:04:26.845 GMT [16824] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.224 s, sync=0.001 s, total=0.238 s; sync files=0, longest=0.000 s, average=0.000 s; distance=14 kB, estimate=4808 kB; lsn=0/3B75748, redo lsn=0/3B75710
+2026-10-19 08:14:26.863 GMT [16824] LOG:  checkpoint starting: time
+2026-10-19 08:14:48.162 GMT [16824] LOG:  checkpoint complete: wrote 189 buffers (1.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=21.273 s, sync=0.001 s, total=21.299 s; sync files=0, longest=0.000 s, average=0.000 s; distance=485 kB, estimate=4376 kB; lsn=0/3C064F0, redo lsn=0/3BEED98
+2026-10-19 08:19:26.195 GMT [16824] LOG:  checkpoint starting: time
+2026-10-19 08:19:47.551 GMT [16824] LOG:  checkpoint complete: wrote 182 buffers (1.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=21.331 s, sync=0.001 s, total=21.357 s; sync files=0, longest=0.000 s, average=0.000 s; distance=569 kB, estimate=3995 kB; lsn=0/3C8B948, redo lsn=0/3C7D1C0
+2026-10-19 08:21:42.738 GMT [17692] LOG:  received fast shutdown request
+2026-10-19 08:21:42.739 GMT [17692] LOG:  aborting any active transactions
+2026-10-19 08:21:42.740 GMT [24224] FATAL:  terminating connection due to administrator command
+2026-10-19 08:21:42.740 GMT [23056] FATAL:  terminating connection due to administrator command
+2026-10-19 08:21:42.740 GMT [11564] FATAL:  terminating connection due to administrator command
+2026-10-19 08:21:42.740 GMT [4528] FATAL:  terminating connection due to administrator command
+2026-10-19 08:21:42.740 GMT [16016] FATAL:  terminating connection due to administrator command
+2026-10-19 08:21:42.740 GMT [22904] FATAL:  terminating connection due to administrator command
+2026-10-19 08:21:42.740 GMT [21864] FATAL:  terminating connection due to administrator command
+2026-10-19 08:21:42.767 GMT [17692] LOG:  background worker "logical replication launcher" (PID 14552) exited with exit code 1
+2026-10-19 08:21:42.778 GMT [16824] LOG:  shutting down
+2026-10-19 08:21:42.778 GMT [16824] LOG:  checkpoint starting: shutdown immediate
+2026-10-19 08:21:42.876 GMT [16824] LOG:  checkpoint complete: wrote 80 buffers (0.5%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.089 s, sync=0.001 s, total=0.099 s; sync files=0, longest=0.000 s, average=0.000 s; distance=183 kB, estimate=3614 kB; lsn=0/3CAB060, redo lsn=0/3CAB060
+2026-10-19 08:21:42.960 GMT [17692] LOG:  database system is shut down
+2026-10-19 08:21:55.651 GMT [22332] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-19 08:21:55.653 GMT [22332] LOG:  listening on IPv4 address "127.0.0.1", port 57806
+2026-10-19 08:21:55.725 GMT [12980] LOG:  database system was shut down at 2026-10-19 08:21:42 GMT
+2026-10-19 08:21:55.773 GMT [22332] LOG:  database system is ready to accept connections
+2026-10-19 08:21:56.009 GMT [22332] LOG:  received SIGHUP, reloading configuration files
+2026-10-19 08:22:03.852 GMT [17524] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 08:24:24.366 GMT [22332] LOG:  received fast shutdown request
+2026-10-19 08:24:24.366 GMT [22332] LOG:  aborting any active transactions
+2026-10-19 08:24:24.368 GMT [6556] FATAL:  terminating connection due to administrator command
+2026-10-19 08:24:24.368 GMT [15704] FATAL:  terminating connection due to administrator command
+2026-10-19 08:24:24.368 GMT [24916] FATAL:  terminating connection due to administrator command
+2026-10-19 08:24:24.368 GMT [12492] FATAL:  terminating connection due to administrator command
+2026-10-19 08:24:24.368 GMT [17328] FATAL:  terminating connection due to administrator command
+2026-10-19 08:24:24.368 GMT [23200] FATAL:  terminating connection due to administrator command
+2026-10-19 08:24:24.368 GMT [23160] FATAL:  terminating connection due to administrator command
+2026-10-19 08:24:24.383 GMT [22332] LOG:  background worker "logical replication launcher" (PID 18720) exited with exit code 1
+2026-10-19 08:24:24.387 GMT [15796] LOG:  shutting down
+2026-10-19 08:24:24.388 GMT [15796] LOG:  checkpoint starting: shutdown immediate
+2026-10-19 08:24:24.490 GMT [15796] LOG:  checkpoint complete: wrote 96 buffers (0.6%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.092 s, sync=0.001 s, total=0.103 s; sync files=0, longest=0.000 s, average=0.000 s; distance=388 kB, estimate=388 kB; lsn=0/3D0C140, redo lsn=0/3D0C140
+2026-10-19 08:24:24.594 GMT [22332] LOG:  database system is shut down
+2026-10-19 08:24:37.551 GMT [11064] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-19 08:24:37.553 GMT [11064] LOG:  listening on IPv4 address "127.0.0.1", port 64308
+2026-10-19 08:24:37.619 GMT [12996] LOG:  database system was shut down at 2026-10-19 08:24:24 GMT
+2026-10-19 08:24:37.663 GMT [11064] LOG:  database system is ready to accept connections
+2026-10-19 08:24:37.846 GMT [11064] LOG:  received SIGHUP, reloading configuration files
+2026-10-19 08:24:37.922 GMT [11124] LOG:  checkpoint starting: immediate force wait
+2026-10-19 08:24:37.942 GMT [11124] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.011 s, sync=0.001 s, total=0.020 s; sync files=0, longest=0.000 s, average=0.000 s; distance=9 kB, estimate=9 kB; lsn=0/3D0E670, redo lsn=0/3D0E638
+2026-10-19 08:24:49.759 GMT [25096] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 08:29:37.953 GMT [11124] LOG:  checkpoint starting: time
+2026-10-19 08:32:17.984 GMT [11124] LOG:  checkpoint complete: wrote 1449 buffers (8.8%); 0 WAL file(s) added, 0 removed, 1 recycled; write=160.000 s, sync=0.001 s, total=160.031 s; sync files=0, longest=0.000 s, average=0.000 s; distance=7280 kB, estimate=7280 kB; lsn=0/443A5A0, redo lsn=0/442AA20
+2026-10-19 08:34:37.047 GMT [11124] LOG:  checkpoint starting: time
+2026-10-19 08:34:40.010 GMT [11124] LOG:  checkpoint complete: wrote 28 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=2.955 s, sync=0.001 s, total=2.964 s; sync files=0, longest=0.000 s, average=0.000 s; distance=68 kB, estimate=6559 kB; lsn=0/443BC00, redo lsn=0/443BBC8
+2026-10-19 08:36:52.792 GMT [14520] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 08:36:52.792 GMT [24684] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 08:39:37.020 GMT [11124] LOG:  checkpoint starting: time
+2026-10-19 08:39:40.979 GMT [11124] LOG:  checkpoint complete: wrote 37 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=3.950 s, sync=0.001 s, total=3.960 s; sync files=0, longest=0.000 s, average=0.000 s; distance=136 kB, estimate=5917 kB; lsn=0/445DCE8, redo lsn=0/445DCB0
+2026-10-19 08:40:14.818 GMT [18776] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 08:40:14.818 GMT [23444] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 08:44:37.986 GMT [11124] LOG:  checkpoint starting: time
+2026-10-19 08:44:42.814 GMT [11124] LOG:  checkpoint complete: wrote 45 buffers (0.3%); 0 WAL file(s) added, 0 removed, 0 recycled; write=4.818 s, sync=0.001 s, total=4.828 s; sync files=0, longest=0.000 s, average=0.000 s; distance=148 kB, estimate=5340 kB; lsn=0/4482FA8, redo lsn=0/4482F70
+2026-10-19 08:46:59.616 GMT [20564] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 08:46:59.616 GMT [18504] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 08:49:37.830 GMT [11124] LOG:  checkpoint starting: time
+2026-10-19 08:49:38.065 GMT [11124] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.227 s, sync=0.001 s, total=0.236 s; sync files=0, longest=0.000 s, average=0.000 s; distance=13 kB, estimate=4807 kB; lsn=0/44865E0, redo lsn=0/44865A8
+2026-10-19 08:55:58.124 GMT [11064] LOG:  could not reserve shared memory region (addr=00000205384B0000) for child 000000000000139C: error code 487
+2026-10-19 08:59:37.075 GMT [11124] LOG:  checkpoint starting: time
+2026-10-19 08:59:58.520 GMT [11124] LOG:  checkpoint complete: wrote 195 buffers (1.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=21.348 s, sync=0.001 s, total=21.446 s; sync files=0, longest=0.000 s, average=0.000 s; distance=510 kB, estimate=4378 kB; lsn=0/4510400, redo lsn=0/4505F98
+2026-10-19 09:04:37.556 GMT [11124] LOG:  checkpoint starting: time
+2026-10-19 09:04:55.696 GMT [11124] LOG:  checkpoint complete: wrote 165 buffers (1.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=18.126 s, sync=0.001 s, total=18.140 s; sync files=0, longest=0.000 s, average=0.000 s; distance=543 kB, estimate=3994 kB; lsn=0/45A30A0, redo lsn=0/458DBF0
+2026-10-19 09:07:48.235 GMT [11064] LOG:  received fast shutdown request
+2026-10-19 09:07:48.236 GMT [11064] LOG:  aborting any active transactions
+2026-10-19 09:07:48.237 GMT [17520] FATAL:  terminating connection due to administrator command
+2026-10-19 09:07:48.237 GMT [3128] FATAL:  terminating connection due to administrator command
+2026-10-19 09:07:48.237 GMT [21940] FATAL:  terminating connection due to administrator command
+2026-10-19 09:07:48.237 GMT [9716] FATAL:  terminating connection due to administrator command
+2026-10-19 09:07:48.237 GMT [15688] FATAL:  terminating connection due to administrator command
+2026-10-19 09:07:48.237 GMT [16724] FATAL:  terminating connection due to administrator command
+2026-10-19 09:07:48.237 GMT [14828] FATAL:  terminating connection due to administrator command
+2026-10-19 09:07:48.276 GMT [11064] LOG:  background worker "logical replication launcher" (PID 3124) exited with exit code 1
+2026-10-19 09:07:48.278 GMT [11124] LOG:  shutting down
+2026-10-19 09:07:48.279 GMT [11124] LOG:  checkpoint starting: shutdown immediate
+2026-10-19 09:07:50.679 GMT [11124] LOG:  checkpoint complete: wrote 94 buffers (0.6%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.409 s, sync=0.001 s, total=2.401 s; sync files=0, longest=0.000 s, average=0.000 s; distance=230 kB, estimate=3618 kB; lsn=0/45C7678, redo lsn=0/45C7678
+2026-10-19 09:07:50.840 GMT [11064] LOG:  database system is shut down
+2026-10-19 09:08:03.605 GMT [22088] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-19 09:08:03.607 GMT [22088] LOG:  listening on IPv4 address "127.0.0.1", port 61336
+2026-10-19 09:08:03.683 GMT [11448] LOG:  database system was shut down at 2026-10-19 09:07:49 GMT
+2026-10-19 09:08:03.739 GMT [22088] LOG:  database system is ready to accept connections
+2026-10-19 09:08:03.996 GMT [22088] LOG:  received SIGHUP, reloading configuration files
+2026-10-19 09:08:04.094 GMT [18388] LOG:  checkpoint starting: immediate force wait
+2026-10-19 09:08:04.114 GMT [18388] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.011 s, sync=0.001 s, total=0.021 s; sync files=0, longest=0.000 s, average=0.000 s; distance=9 kB, estimate=9 kB; lsn=0/45C9CF0, redo lsn=0/45C9CB8
+2026-10-19 09:08:16.825 GMT [2080] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 09:11:58.510 GMT [22088] LOG:  received fast shutdown request
+2026-10-19 09:11:58.511 GMT [22088] LOG:  aborting any active transactions
+2026-10-19 09:11:58.512 GMT [25760] FATAL:  terminating connection due to administrator command
+2026-10-19 09:11:58.512 GMT [8736] FATAL:  terminating connection due to administrator command
+2026-10-19 09:11:58.512 GMT [5932] FATAL:  terminating connection due to administrator command
+2026-10-19 09:11:58.512 GMT [25048] FATAL:  terminating connection due to administrator command
+2026-10-19 09:11:58.512 GMT [6884] FATAL:  terminating connection due to administrator command
+2026-10-19 09:11:58.512 GMT [24508] FATAL:  terminating connection due to administrator command
+2026-10-19 09:11:58.512 GMT [23772] FATAL:  terminating connection due to administrator command
+2026-10-19 09:11:58.513 GMT [2556] FATAL:  terminating connection due to administrator command
+2026-10-19 09:11:58.531 GMT [22088] LOG:  background worker "logical replication launcher" (PID 4100) exited with exit code 1
+2026-10-19 09:11:58.553 GMT [18388] LOG:  shutting down
+2026-10-19 09:11:58.554 GMT [18388] LOG:  checkpoint starting: shutdown immediate
+2026-10-19 09:11:59.168 GMT [18388] LOG:  checkpoint complete: wrote 1295 buffers (7.9%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.605 s, sync=0.001 s, total=0.615 s; sync files=0, longest=0.000 s, average=0.000 s; distance=6109 kB, estimate=6109 kB; lsn=0/4BC1380, redo lsn=0/4BC1380
+2026-10-19 09:12:00.809 GMT [22088] LOG:  database system is shut down
+2026-10-19 09:12:11.517 GMT [23440] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-19 09:12:11.519 GMT [23440] LOG:  listening on IPv4 address "127.0.0.1", port 52652
+2026-10-19 09:12:11.582 GMT [3376] LOG:  database system was shut down at 2026-10-19 09:11:59 GMT
+2026-10-19 09:12:11.625 GMT [23440] LOG:  database system is ready to accept connections
+2026-10-19 09:12:11.758 GMT [23440] LOG:  received SIGHUP, reloading configuration files
+2026-10-19 09:12:11.826 GMT [24492] LOG:  checkpoint starting: immediate force wait
+2026-10-19 09:12:11.842 GMT [24492] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.009 s, sync=0.001 s, total=0.016 s; sync files=0, longest=0.000 s, average=0.000 s; distance=9 kB, estimate=9 kB; lsn=0/4BC3990, redo lsn=0/4BC3958
+2026-10-19 09:12:22.736 GMT [26048] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-19 09:16:20.356 GMT [23440] LOG:  received fast shutdown request
+2026-10-19 09:16:20.357 GMT [23440] LOG:  aborting any active transactions
+2026-10-19 09:16:20.358 GMT [20104] FATAL:  terminating connection due to administrator command
+2026-10-19 09:16:20.358 GMT [24796] FATAL:  terminating connection due to administrator command
+2026-10-19 09:16:20.358 GMT [20992] FATAL:  terminating connection due to administrator command
+2026-10-19 09:16:20.358 GMT [7256] FATAL:  terminating connection due to administrator command
+2026-10-19 09:16:20.358 GMT [5396] FATAL:  terminating connection due to administrator command
+2026-10-19 09:16:20.358 GMT [24660] FATAL:  terminating connection due to administrator command
+2026-10-19 09:16:20.358 GMT [26148] FATAL:  terminating connection due to administrator command
+2026-10-19 09:16:20.378 GMT [23440] LOG:  background worker "logical replication launcher" (PID 21040) exited with exit code 1
+2026-10-19 09:16:20.395 GMT [24492] LOG:  shutting down
+2026-10-19 09:16:20.396 GMT [24492] LOG:  checkpoint starting: shutdown immediate
+2026-10-19 09:16:21.092 GMT [24492] LOG:  checkpoint complete: wrote 1295 buffers (7.9%); 0 WAL file(s) added, 0 removed, 1 recycled; write=0.677 s, sync=0.001 s, total=0.698 s; sync files=0, longest=0.000 s, average=0.000 s; distance=6105 kB, estimate=6105 kB; lsn=0/51B9DB8, redo lsn=0/51B9DB8
+2026-10-19 09:16:22.605 GMT [23440] LOG:  database system is shut down
+2026-10-20 05:42:15.070 GMT [1436] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-20 05:42:15.072 GMT [1436] LOG:  listening on IPv4 address "127.0.0.1", port 55368
+2026-10-20 05:42:15.198 GMT [23784] LOG:  database system was shut down at 2026-10-19 09:16:21 GMT
+2026-10-20 05:42:15.264 GMT [1436] LOG:  database system is ready to accept connections
+2026-10-20 05:42:15.512 GMT [1436] LOG:  received SIGHUP, reloading configuration files
+2026-10-20 05:42:15.614 GMT [23680] LOG:  checkpoint starting: immediate force wait
+2026-10-20 05:42:15.638 GMT [23680] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.014 s, sync=0.001 s, total=0.025 s; sync files=0, longest=0.000 s, average=0.000 s; distance=9 kB, estimate=9 kB; lsn=0/51BC598, redo lsn=0/51BC560
+2026-10-20 05:42:32.514 GMT [20924] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 05:47:15.647 GMT [23680] LOG:  checkpoint starting: time
+2026-10-20 05:50:06.723 GMT [23680] LOG:  checkpoint complete: wrote 1536 buffers (9.4%); 0 WAL file(s) added, 0 removed, 0 recycled; write=171.059 s, sync=0.001 s, total=171.077 s; sync files=0, longest=0.000 s, average=0.000 s; distance=7567 kB, estimate=7567 kB; lsn=0/59A1338, redo lsn=0/59202B0
+2026-10-20 05:52:15.247 GMT [23680] LOG:  checkpoint starting: time
+2026-10-20 05:52:27.410 GMT [23680] LOG:  checkpoint complete: wrote 111 buffers (0.7%); 0 WAL file(s) added, 0 removed, 0 recycled; write=12.130 s, sync=0.001 s, total=12.163 s; sync files=0, longest=0.000 s, average=0.000 s; distance=589 kB, estimate=6869 kB; lsn=0/59C2748, redo lsn=0/59B3838
+2026-10-20 05:54:55.654 GMT [1436] LOG:  could not reserve shared memory region (addr=00000222DABC0000) for child 0000000000001458: error code 487
+2026-10-20 05:57:15.438 GMT [23680] LOG:  checkpoint starting: time
+2026-10-20 05:57:38.128 GMT [23680] LOG:  checkpoint complete: wrote 207 buffers (1.3%); 0 WAL file(s) added, 0 removed, 0 recycled; write=22.663 s, sync=0.001 s, total=22.691 s; sync files=0, longest=0.000 s, average=0.000 s; distance=494 kB, estimate=6232 kB; lsn=0/5A3C668, redo lsn=0/5A2F3D8
+2026-10-20 06:04:10.600 GMT [25652] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 06:04:10.600 GMT [3256] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 06:04:10.600 GMT [24208] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 06:04:10.600 GMT [3004] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 06:04:10.600 GMT [18732] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 06:04:10.600 GMT [18968] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 06:04:10.600 GMT [11896] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 06:04:10.600 GMT [11164] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 06:04:15.830 GMT [1436] LOG:  server process (PID 19396) was terminated by exception 0xC0000142
+2026-10-20 06:04:15.830 GMT [1436] HINT:  See C include file "ntstatus.h" for a description of the hexadecimal value.
+2026-10-20 06:04:15.830 GMT [1436] LOG:  terminating any other active server processes
+2026-10-20 06:04:15.841 GMT [1436] LOG:  all server processes terminated; reinitializing
+2026-10-20 06:04:15.953 GMT [1436] LOG:  startup process (PID 24484) was terminated by exception 0xC0000142
+2026-10-20 06:04:15.953 GMT [1436] HINT:  See C include file "ntstatus.h" for a description of the hexadecimal value.
+2026-10-20 06:04:15.953 GMT [1436] LOG:  aborting startup due to startup process failure
+2026-10-20 06:04:15.956 GMT [1436] LOG:  database system is shut down
+2026-10-20 06:04:30.655 GMT [25292] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-20 06:04:30.657 GMT [25292] LOG:  listening on IPv4 address "127.0.0.1", port 55839
+2026-10-20 06:04:30.736 GMT [22356] LOG:  database system was interrupted; last known up at 2026-10-20 05:57:38 GMT
+2026-10-20 06:04:30.740 GMT [22356] LOG:  database system was not properly shut down; automatic recovery in progress
+2026-10-20 06:04:30.756 GMT [22356] LOG:  redo starts at 0/5A2F3D8
+2026-10-20 06:04:30.802 GMT [22356] LOG:  invalid record length at 0/5A3C718: expected at least 24, got 0
+2026-10-20 06:04:30.802 GMT [22356] LOG:  redo done at 0/5A3C6E0 system usage: CPU: user: 0.03 s, system: 0.00 s, elapsed: 0.04 s
+2026-10-20 06:04:30.821 GMT [6512] LOG:  checkpoint starting: end-of-recovery immediate wait
+2026-10-20 06:04:30.886 GMT [6512] LOG:  checkpoint complete: wrote 29 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.056 s, sync=0.001 s, total=0.067 s; sync files=0, longest=0.000 s, average=0.000 s; distance=52 kB, estimate=52 kB; lsn=0/5A3C718, redo lsn=0/5A3C718
+2026-10-20 06:04:30.952 GMT [25292] LOG:  database system is ready to accept connections
+2026-10-20 06:04:31.186 GMT [25292] LOG:  received SIGHUP, reloading configuration files
+2026-10-20 06:04:31.285 GMT [6512] LOG:  checkpoint starting: immediate force wait
+2026-10-20 06:04:31.298 GMT [6512] LOG:  checkpoint complete: wrote 4 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.005 s, sync=0.001 s, total=0.014 s; sync files=0, longest=0.000 s, average=0.000 s; distance=12 kB, estimate=48 kB; lsn=0/5A3FAF8, redo lsn=0/5A3FAC0
+2026-10-20 06:04:46.372 GMT [19772] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 06:09:31.312 GMT [6512] LOG:  checkpoint starting: time
+2026-10-20 06:12:29.996 GMT [6512] LOG:  checkpoint complete: wrote 1549 buffers (9.5%); 0 WAL file(s) added, 0 removed, 1 recycled; write=178.637 s, sync=0.001 s, total=178.684 s; sync files=0, longest=0.000 s, average=0.000 s; distance=7758 kB, estimate=7758 kB; lsn=0/61FFAC8, redo lsn=0/61D36B0
+2026-10-20 06:14:31.887 GMT [6512] LOG:  checkpoint starting: time
+2026-10-20 06:14:49.451 GMT [6512] LOG:  checkpoint complete: wrote 160 buffers (1.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=17.534 s, sync=0.001 s, total=17.564 s; sync files=0, longest=0.000 s, average=0.000 s; distance=459 kB, estimate=7028 kB; lsn=0/62679D8, redo lsn=0/62462F8
+2026-10-20 06:19:02.933 GMT [25292] LOG:  received fast shutdown request
+2026-10-20 06:19:02.934 GMT [25292] LOG:  aborting any active transactions
+2026-10-20 06:19:02.934 GMT [20036] FATAL:  terminating connection due to administrator command
+2026-10-20 06:19:02.935 GMT [22716] FATAL:  terminating connection due to administrator command
+2026-10-20 06:19:02.935 GMT [24628] FATAL:  terminating connection due to administrator command
+2026-10-20 06:19:02.935 GMT [13664] FATAL:  terminating connection due to administrator command
+2026-10-20 06:19:02.935 GMT [17548] FATAL:  terminating connection due to administrator command
+2026-10-20 06:19:02.935 GMT [12764] FATAL:  terminating connection due to administrator command
+2026-10-20 06:19:02.936 GMT [9196] FATAL:  terminating connection due to administrator command
+2026-10-20 06:19:02.936 GMT [7288] FATAL:  terminating connection due to administrator command
+2026-10-20 06:19:02.964 GMT [25292] LOG:  background worker "logical replication launcher" (PID 17592) exited with exit code 1
+2026-10-20 06:19:03.006 GMT [6512] LOG:  shutting down
+2026-10-20 06:19:03.007 GMT [6512] LOG:  checkpoint starting: shutdown immediate
+2026-10-20 06:19:03.191 GMT [6512] LOG:  checkpoint complete: wrote 171 buffers (1.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.171 s, sync=0.001 s, total=0.185 s; sync files=0, longest=0.000 s, average=0.000 s; distance=478 kB, estimate=6373 kB; lsn=0/62BDE00, redo lsn=0/62BDE00
+2026-10-20 06:19:03.452 GMT [25292] LOG:  database system is shut down
+2026-10-20 06:19:19.073 GMT [872] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-20 06:19:19.076 GMT [872] LOG:  listening on IPv4 address "127.0.0.1", port 51702
+2026-10-20 06:19:19.172 GMT [20288] LOG:  database system was shut down at 2026-10-20 06:19:03 GMT
+2026-10-20 06:19:19.248 GMT [872] LOG:  database system is ready to accept connections
+2026-10-20 06:19:19.445 GMT [872] LOG:  received SIGHUP, reloading configuration files
+2026-10-20 06:19:19.544 GMT [9796] LOG:  checkpoint starting: immediate force wait
+2026-10-20 06:19:19.566 GMT [9796] LOG:  checkpoint complete: wrote 7 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.013 s, sync=0.001 s, total=0.022 s; sync files=0, longest=0.000 s, average=0.000 s; distance=13 kB, estimate=13 kB; lsn=0/62C12F8, redo lsn=0/62C12C0
+2026-10-20 06:19:36.173 GMT [22504] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 07:28:28.573 GMT [9796] LOG:  checkpoint starting: time
+2026-10-20 07:31:22.436 GMT [9796] LOG:  checkpoint complete: wrote 1575 buffers (9.6%); 0 WAL file(s) added, 0 removed, 0 recycled; write=173.844 s, sync=0.001 s, total=173.864 s; sync files=0, longest=0.000 s, average=0.000 s; distance=8037 kB, estimate=8037 kB; lsn=0/6ACE320, redo lsn=0/6A9AA68
+2026-10-20 07:33:28.611 GMT [9796] LOG:  checkpoint starting: time
+2026-10-20 07:33:36.100 GMT [9796] LOG:  checkpoint complete: wrote 70 buffers (0.4%); 0 WAL file(s) added, 0 removed, 0 recycled; write=7.464 s, sync=0.001 s, total=7.489 s; sync files=0, longest=0.000 s, average=0.000 s; distance=209 kB, estimate=7255 kB; lsn=0/6ACF110, redo lsn=0/6ACF0D8
+2026-10-20 07:38:28.130 GMT [9796] LOG:  checkpoint starting: time
+2026-10-20 07:38:38.917 GMT [9796] LOG:  checkpoint complete: wrote 97 buffers (0.6%); 0 WAL file(s) added, 0 removed, 0 recycled; write=10.740 s, sync=0.001 s, total=10.787 s; sync files=0, longest=0.000 s, average=0.000 s; distance=312 kB, estimate=6560 kB; lsn=0/6B1D378, redo lsn=0/6B1D308
+2026-10-20 07:40:19.533 GMT [872] LOG:  received fast shutdown request
+2026-10-20 07:40:19.533 GMT [872] LOG:  aborting any active transactions
+2026-10-20 07:40:19.534 GMT [11744] FATAL:  terminating connection due to administrator command
+2026-10-20 07:40:19.534 GMT [18656] FATAL:  terminating connection due to administrator command
+2026-10-20 07:40:19.534 GMT [24344] FATAL:  terminating connection due to administrator command
+2026-10-20 07:40:19.534 GMT [704] FATAL:  terminating connection due to administrator command
+2026-10-20 07:40:19.534 GMT [22680] FATAL:  terminating connection due to administrator command
+2026-10-20 07:40:19.534 GMT [23472] FATAL:  terminating connection due to administrator command
+2026-10-20 07:40:19.534 GMT [24644] FATAL:  terminating connection due to administrator command
+2026-10-20 07:40:19.551 GMT [872] LOG:  background worker "logical replication launcher" (PID 17380) exited with exit code 1
+2026-10-20 07:40:19.553 GMT [9796] LOG:  shutting down
+2026-10-20 07:40:19.553 GMT [9796] LOG:  checkpoint starting: shutdown immediate
+2026-10-20 07:40:19.564 GMT [9796] LOG:  checkpoint complete: wrote 7 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.005 s, sync=0.001 s, total=0.012 s; sync files=0, longest=0.000 s, average=0.000 s; distance=32 kB, estimate=5907 kB; lsn=0/6B25408, redo lsn=0/6B25408
+2026-10-20 07:40:19.588 GMT [872] LOG:  database system is shut down
+2026-10-20 07:40:30.322 GMT [19316] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-20 07:40:30.323 GMT [19316] LOG:  listening on IPv4 address "127.0.0.1", port 64810
+2026-10-20 07:40:30.370 GMT [13596] LOG:  database system was shut down at 2026-10-20 07:40:19 GMT
+2026-10-20 07:40:30.403 GMT [19316] LOG:  database system is ready to accept connections
+2026-10-20 07:40:30.560 GMT [19316] LOG:  received SIGHUP, reloading configuration files
+2026-10-20 07:40:30.618 GMT [4136] LOG:  checkpoint starting: immediate force wait
+2026-10-20 07:40:30.633 GMT [4136] LOG:  checkpoint complete: wrote 7 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.009 s, sync=0.001 s, total=0.015 s; sync files=0, longest=0.000 s, average=0.000 s; distance=13 kB, estimate=13 kB; lsn=0/6B28958, redo lsn=0/6B28920
+2026-10-20 07:40:39.599 GMT [18064] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 07:45:30.648 GMT [4136] LOG:  checkpoint starting: time
+2026-10-20 07:48:06.129 GMT [4136] LOG:  checkpoint complete: wrote 1427 buffers (8.7%); 0 WAL file(s) added, 0 removed, 1 recycled; write=155.453 s, sync=0.001 s, total=155.482 s; sync files=0, longest=0.000 s, average=0.000 s; distance=6862 kB, estimate=6862 kB; lsn=0/71E1100, redo lsn=0/71DC470
+2026-10-20 07:50:08.915 GMT [15660] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 07:50:08.915 GMT [24164] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 07:50:30.236 GMT [4136] LOG:  checkpoint starting: time
+2026-10-20 07:50:33.212 GMT [4136] LOG:  checkpoint complete: wrote 28 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=2.967 s, sync=0.001 s, total=2.977 s; sync files=0, longest=0.000 s, average=0.000 s; distance=36 kB, estimate=6180 kB; lsn=0/71E5860, redo lsn=0/71E5828
+2026-10-20 07:53:29.066 GMT [19732] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 07:53:29.066 GMT [26452] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 07:55:30.221 GMT [4136] LOG:  checkpoint starting: time
+2026-10-20 07:55:32.751 GMT [4136] LOG:  checkpoint complete: wrote 24 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=2.523 s, sync=0.001 s, total=2.530 s; sync files=0, longest=0.000 s, average=0.000 s; distance=24 kB, estimate=5564 kB; lsn=0/71F1360, redo lsn=0/71EBB30
+2026-10-20 08:00:06.823 GMT [15364] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 08:00:06.823 GMT [10004] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-20 08:00:30.762 GMT [4136] LOG:  checkpoint starting: time
+2026-10-20 08:00:35.733 GMT [4136] LOG:  checkpoint complete: wrote 46 buffers (0.3%); 0 WAL file(s) added, 0 removed, 0 recycled; write=4.964 s, sync=0.001 s, total=4.972 s; sync files=0, longest=0.000 s, average=0.000 s; distance=53 kB, estimate=5013 kB; lsn=0/71F8FE0, redo lsn=0/71F8FA8
+2026-10-20 08:05:30.744 GMT [4136] LOG:  checkpoint starting: time
+2026-10-20 08:05:30.855 GMT [4136] LOG:  checkpoint complete: wrote 2 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.104 s, sync=0.001 s, total=0.111 s; sync files=0, longest=0.000 s, average=0.000 s; distance=6 kB, estimate=4512 kB; lsn=0/71FA990, redo lsn=0/71FA958
+2026-10-20 08:08:45.060 GMT [19316] LOG:  received fast shutdown request
+2026-10-20 08:08:45.060 GMT [19316] LOG:  aborting any active transactions
+2026-10-20 08:08:45.061 GMT [8280] FATAL:  terminating connection due to administrator command
+2026-10-20 08:08:45.061 GMT [26460] FATAL:  terminating connection due to administrator command
+2026-10-20 08:08:45.061 GMT [11860] FATAL:  terminating connection due to administrator command
+2026-10-20 08:08:45.061 GMT [6612] FATAL:  terminating connection due to administrator command
+2026-10-20 08:08:45.061 GMT [8916] FATAL:  terminating connection due to administrator command
+2026-10-20 08:08:45.061 GMT [18996] FATAL:  terminating connection due to administrator command
+2026-10-20 08:08:45.069 GMT [19316] LOG:  background worker "logical replication launcher" (PID 23044) exited with exit code 1
+2026-10-20 08:08:45.093 GMT [4136] LOG:  shutting down
+2026-10-20 08:08:45.094 GMT [4136] LOG:  checkpoint starting: shutdown immediate
+2026-10-20 08:08:45.167 GMT [4136] LOG:  checkpoint complete: wrote 80 buffers (0.5%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.067 s, sync=0.001 s, total=0.075 s; sync files=0, longest=0.000 s, average=0.000 s; distance=137 kB, estimate=4075 kB; lsn=0/721CD70, redo lsn=0/721CD70
+2026-10-20 08:08:45.222 GMT [19316] LOG:  database system is shut down

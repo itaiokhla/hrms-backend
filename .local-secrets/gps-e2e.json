@@ -1,0 +1,71 @@
+{
+  "generated_at": "2026-10-20T13:11:55",
+  "password": "GpsQtC2eNYDXWzwP4aUy6wD7",
+  "history_day": "2026-10-19",
+  "companies": {
+    "alpha": {
+      "name": "Alpha Logistics",
+      "company_id": 1,
+      "emails": {
+        "admin": "admin@alpha-logistics.example",
+        "hr": "hana.alpha-hr@alpha-logistics.example",
+        "m1": "manoj.alpha-mgr1@alpha-logistics.example",
+        "m2": "meera.alpha-mgr2@alpha-logistics.example",
+        "e1": "esha.alpha-emp1@alpha-logistics.example",
+        "e2": "eli.alpha-emp2@alpha-logistics.example",
+        "tl": "tara.alpha-lead1@alpha-logistics.example",
+        "e4": "ezra.alpha-emp4@alpha-logistics.example",
+        "e3": "emil.alpha-emp3@alpha-logistics.example"
+      },
+      "ids": {
+        "admin": 1,
+        "hr": 2,
+        "m1": 3,
+        "m2": 4,
+        "e1": 5,
+        "e2": 6,
+        "tl": 7,
+        "e4": 8,
+        "e3": 9
+      }
+    },
+    "beta": {
+      "name": "Beta Retail",
+      "company_id": 2,
+      "emails": {
+        "admin": "admin@beta-retail.example",
+        "hr": "hugo.beta-hr@beta-retail.example",
+        "m1": "mira.beta-mgr1@beta-retail.example",
+        "e1": "bela.beta-emp1@beta-retail.example",
+        "e2": "bo.beta-emp2@beta-retail.example"
+      },
+      "ids": {
+        "admin": 10,
+        "hr": 11,
+        "m1": 12,
+        "e1": 13,
+        "e2": 14
+      }
+    },
+    "gamma": {
+      "name": "Gamma Health",
+      "company_id": 3,
+      "emails": {
+        "admin": "admin@gamma-health.example",
+        "hr": "hari.gamma-hr@gamma-health.example",
+        "m1": "moana.gamma-mgr1@gamma-health.example",
+        "e1": "gia.gamma-emp1@gamma-health.example",
+        "e2": "gus.gamma-emp2@gamma-health.example",
+        "suspended": "sal.gamma-suspended@gamma-health.example"
+      },
+      "ids": {
+        "admin": 15,
+        "hr": 16,
+        "m1": 17,
+        "e1": 18,
+        "e2": 19,
+        "suspended": 20
+      }
+    }
+  }
+}

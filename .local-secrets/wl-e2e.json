@@ -1,0 +1,218 @@
+{
+  "generated_at": "2026-10-20T13:53:18",
+  "password": "Wl_HAtICAKa11_aT1nRV0I9",
+  "platform": {
+    "email": "ops@hrms-platform.io",
+    "password": "Platform@12345"
+  },
+  "partner": {
+    "id": 1,
+    "name": "PayEase"
+  },
+  "payroll_month": "2026-09-01",
+  "companies": {
+    "alpha": {
+      "name": "Alpha Technologies",
+      "company_id": 1,
+      "slug": "alpha-technologies",
+      "admin": "admin@alpha-tech.example",
+      "people": {
+        "hr": {
+          "employee_id": 2,
+          "email": "hr@alpha-tech.example",
+          "name": "Hema Rao",
+          "user_id": 2,
+          "invite_url_host": "http://alpha-technologies.hrms.localhost:3200"
+        },
+        "payroll": {
+          "employee_id": 3,
+          "email": "payroll@alpha-tech.example",
+          "name": "Pranav Iyer",
+          "user_id": 3,
+          "invite_url_host": "http://alpha-technologies.hrms.localhost:3200"
+        },
+        "approver": {
+          "employee_id": 4,
+          "email": "approver@alpha-tech.example",
+          "name": "Kavya Menon",
+          "user_id": 4,
+          "invite_url_host": "http://alpha-technologies.hrms.localhost:3200"
+        },
+        "manager": {
+          "employee_id": 5,
+          "email": "manager@alpha-tech.example",
+          "name": "Rohit Verma",
+          "user_id": 5,
+          "invite_url_host": "http://alpha-technologies.hrms.localhost:3200"
+        },
+        "employee": {
+          "employee_id": 6,
+          "email": "employee@alpha-tech.example",
+          "name": "Priya Sharma",
+          "user_id": 6,
+          "invite_url_host": "http://alpha-technologies.hrms.localhost:3200"
+        },
+        "anita": {
+          "employee_id": 7,
+          "email": "anita@alpha-tech.example",
+          "name": "अनिता देशमुख"
+        }
+      },
+      "payroll_ids": {
+        "employee": 1,
+        "anita": 2,
+        "manager": 3
+      },
+      "branches": {
+        "blr": {
+          "id": 1,
+          "name": "Bengaluru HQ"
+        },
+        "bom": {
+          "id": 2,
+          "name": "Mumbai"
+        }
+      },
+      "hosts": []
+    },
+    "beta": {
+      "name": "Beta Gulf Trading",
+      "company_id": 2,
+      "slug": "beta-gulf-trading",
+      "admin": "admin@beta-gulf.example",
+      "people": {
+        "hr": {
+          "employee_id": 9,
+          "email": "hr@beta-gulf.example",
+          "name": "Layla Mansour",
+          "user_id": 8,
+          "invite_url_host": "http://beta-gulf-trading.hrms.localhost:3200"
+        },
+        "branchmgr": {
+          "employee_id": 10,
+          "email": "branchmgr@beta-gulf.example",
+          "name": "Yusuf Karim",
+          "user_id": 9,
+          "invite_url_host": "http://beta-gulf-trading.hrms.localhost:3200"
+        },
+        "employee": {
+          "employee_id": 11,
+          "email": "employee@beta-gulf.example",
+          "name": "فاطمة الزهراء",
+          "user_id": 10,
+          "invite_url_host": "http://beta-gulf-trading.hrms.localhost:3200"
+        },
+        "rashid": {
+          "employee_id": 12,
+          "email": "rashid@beta-gulf.example",
+          "name": "Rashid Khan",
+          "user_id": 11,
+          "invite_url_host": "http://beta-gulf-trading.hrms.localhost:3200"
+        },
+        "payroll": {
+          "employee_id": 13,
+          "email": "payroll@beta-gulf.example",
+          "name": "Samir Aziz",
+          "user_id": 12,
+          "invite_url_host": "http://beta-gulf-trading.hrms.localhost:3200"
+        },
+        "approver": {
+          "employee_id": 14,
+          "email": "approver@beta-gulf.example",
+          "name": "Nadia Farouk",
+          "user_id": 13,
+          "invite_url_host": "http://beta-gulf-trading.hrms.localhost:3200"
+        }
+      },
+      "payroll_ids": {
+        "employee": 4,
+        "rashid": 5
+      },
+      "branches": {
+        "dxb": {
+          "id": 3,
+          "name": "Dubai Marina"
+        },
+        "auh": {
+          "id": 4,
+          "name": "Abu Dhabi"
+        }
+      },
+      "hosts": [
+        "people.betagulf.localhost",
+        "beta-gulf-trading.hrms.localhost"
+      ]
+    },
+    "gamma": {
+      "name": "Gamma Health Systems",
+      "company_id": 3,
+      "slug": "gamma-health-systems",
+      "admin": "admin@gamma-health.example",
+      "people": {
+        "hr": {
+          "employee_id": 16,
+          "email": "hr@gamma-health.example",
+          "name": "Hannah Lee",
+          "user_id": 15,
+          "invite_url_host": "http://gamma-health-systems.hrms.localhost:3200"
+        },
+        "finance": {
+          "employee_id": 17,
+          "email": "finance@gamma-health.example",
+          "name": "Frank Miller",
+          "user_id": 16,
+          "invite_url_host": "http://gamma-health-systems.hrms.localhost:3200"
+        },
+        "approver": {
+          "employee_id": 18,
+          "email": "approver@gamma-health.example",
+          "name": "Fiona Clark",
+          "user_id": 17,
+          "invite_url_host": "http://gamma-health-systems.hrms.localhost:3200"
+        },
+        "manager": {
+          "employee_id": 19,
+          "email": "manager@gamma-health.example",
+          "name": "Marcus Reed",
+          "user_id": 18,
+          "invite_url_host": "http://gamma-health-systems.hrms.localhost:3200"
+        },
+        "employee": {
+          "employee_id": 20,
+          "email": "employee@gamma-health.example",
+          "name": "Gabriel Ortiz",
+          "user_id": 19,
+          "invite_url_host": "http://gamma-health-systems.hrms.localhost:3200"
+        },
+        "gina": {
+          "employee_id": 21,
+          "email": "gina@gamma-health.example",
+          "name": "Gina Patel",
+          "user_id": 20,
+          "invite_url_host": "http://gamma-health-systems.hrms.localhost:3200"
+        }
+      },
+      "payroll_ids": {
+        "employee": 6,
+        "gina": 7
+      },
+      "branches": {
+        "nyc": {
+          "id": 5,
+          "name": "New York"
+        },
+        "aus": {
+          "id": 6,
+          "name": "Austin"
+        },
+        "den": {
+          "id": 7,
+          "name": "Denver"
+        }
+      },
+      "hosts": []
+    }
+  },
+  "custom_domain": "people.betagulf.localhost",
+  "dns_file": "C:\\Users\\Saket Raj\\Documents\\INTERTECH\\INTERTECH\\HRMS\\hrms-backend\\logs\\wl-dns.json"
+}
