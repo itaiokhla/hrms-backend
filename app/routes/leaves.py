@@ -1,264 +1,126 @@
-from fastapi import APIRouter, Depends, Query, HTTPException
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
+
+from app.core import authz
+from app.core.principal import Principal, get_principal, require, require_any
 from app.database.db import get_db
-from app.services.leave_service import LeaveService
-from app.schemas.leave import LeaveApplyRequest
-from datetime import date
-from app.models.leave import Leave
-from app.core.security import get_current_user
-from typing import List
 from app.models.employee import Employee
+from app.schemas.leave import ChainWrite, LeaveApply, LeaveDecision, LeaveTypeWrite
+from app.services import leave_service
 
-router = APIRouter(prefix="/api/v1", tags=["leaves"])
-
-
-@router.post("/leaves/apply")
-async def apply_leave(
-    request: LeaveApplyRequest,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-
-    employee = LeaveService.get_employee_by_user_id(
-        db,
-        current_user.id,
-    )
-
-    leave = LeaveService.apply_leave(
-        db=db,
-        employee_id=employee.id,
-        leave_type=request.leave_type,
-        start_date=request.start_date,
-        end_date=request.end_date,
-        reason=request.reason,
-    )
-
-    return {
-        "success": True,
-        "leave": {
-            "id": leave.id,
-            "leave_type": leave.leave_type,
-            "start_date": leave.start_date,
-            "end_date": leave.end_date,
-            "number_of_days": leave.number_of_days,
-            "status": leave.status,
-        },
-    }
-
-@router.post("/leaves/{leave_id}/approve")
-async def approve_leave(
-    leave_id: int,
-    remarks: str = Query(None),
-    db: Session = Depends(get_db),
-):
-    """Approve leave application"""
-    leave = LeaveService.approve_leave(db, leave_id, remarks)
-
-    return {
-        "id": leave.id,
-        "status": leave.status,
-        "approval_date": leave.approval_date.isoformat() if leave.approval_date else None,
-        "message": "Leave approved successfully",
-    }
+router = APIRouter(prefix="/api/v1/leaves", tags=["Leave"])
 
 
-@router.post("/leaves/{leave_id}/reject")
-async def reject_leave(
-    leave_id: int,
-    remarks: str = Query(None),
-    db: Session = Depends(get_db),
-):
-    """Reject leave application"""
-    leave = LeaveService.reject_leave(db, leave_id, remarks)
-
-    return {
-        "id": leave.id,
-        "status": leave.status,
-        "remarks": leave.remarks,
-        "message": "Leave rejected successfully",
-    }
+def _serialize_type(t) -> dict:
+    return {"id": t.id, "code": t.code, "name": t.name, "annual_quota": t.annual_quota, "is_paid": t.is_paid,
+            "is_unlimited": t.is_unlimited, "is_active": t.is_active}
 
 
-@router.get("/leaves/pending")
-async def get_pending_leaves(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
-    db: Session = Depends(get_db),
-):
-    """Get all pending leave applications"""
-    return LeaveService.get_pending_leaves(db, skip, limit)
+@router.get("/types")
+def list_types(include_inactive: bool = False, principal: Principal = Depends(get_principal),
+               db: Session = Depends(get_db)):
+    return [_serialize_type(t) for t in leave_service.leave_types(db, principal.company_id, include_inactive)]
 
 
-@router.get("/leaves/employee/{employee_id}")
-async def get_employee_leaves(
-    employee_id: int,
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
-    db: Session = Depends(get_db),
-):
-    """Get all leave applications for employee"""
-    leaves = LeaveService.get_employee_leaves(db, employee_id, skip, limit)
-
-    return [
-        {
-            "id": leave.id,
-            "leave_type": leave.leave_type,
-            "start_date": leave.start_date.isoformat(),
-            "end_date": leave.end_date.isoformat(),
-            "number_of_days": leave.number_of_days,
-            "reason": leave.reason,
-            "status": leave.status,
-            "created_at": leave.created_at.isoformat(),
-        }
-        for leave in leaves
-    ]
-
-
-@router.get("/leaves/balance/{employee_id}")
-async def get_leave_balance(
-    employee_id: int,
-    year: int = Query(None),
-    db: Session = Depends(get_db),
-):
-    """Get leave balance summary for employee"""
-    summary = LeaveService.get_leave_summary(db, employee_id, year)
-
-    return {
-        "employee_id": employee_id,
-        "year": year,
-        "balance_summary": summary,
-    }
-
-
-@router.get("/leaves/calendar/{employee_id}")
-async def get_leave_calendar(
-    employee_id: int,
-    year: int = Query(...),
-    month: int = Query(..., ge=1, le=12),
-    db: Session = Depends(get_db),
-):
-    """Get leave calendar for employee"""
-    calendar_data = LeaveService.get_leave_calendar(db, employee_id, year, month)
-
-    return {
-        "employee_id": employee_id,
-        "year": year,
-        "month": month,
-        "calendar": calendar_data,
-    }
-
-
-from app.models.employee import Employee
-
-@router.get("/leaves")
-async def get_all_leaves(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
-    status: str = Query(None),
-    db: Session = Depends(get_db),
-):
-    """Get all leave applications"""
-
-    query = (
-        db.query(Leave, Employee)
-        .join(Employee, Leave.employee_id == Employee.id)
-    )
-
-    if status:
-        query = query.filter(Leave.status == status)
-
-    results = query.offset(skip).limit(limit).all()
-
-    return [
-        {
-            "id": leave.id,
-            "employee_id": leave.employee_id,
-
-        
-            "employee_name": f"{employee.first_name} {employee.last_name}",
-
-            "leave_type": leave.leave_type,
-            "start_date": leave.start_date.isoformat(),
-            "end_date": leave.end_date.isoformat(),
-            "number_of_days": leave.number_of_days,
-
-            
-            "reason": leave.reason,
-
-            "status": leave.status,
-            "created_at": leave.created_at.isoformat(),
-        }
-        for leave, employee in results
-    ]
-@router.get("/leaves/my")
-async def get_my_leaves(
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-
-    employee = LeaveService.get_employee_by_user_id(
-        db,
-        current_user.id,
-    )
-
-    return LeaveService.get_employee_leaves(
-        db,
-        employee.id,
-    )
-
-@router.get("/leaves/my/balance")
-async def get_my_leave_balance(
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-
-    employee = LeaveService.get_employee_by_user_id(
-        db,
-        current_user.id,
-    )
-
-    return LeaveService.get_leave_summary(
-        db,
-        employee.id,
-    )
-
-@router.delete("/leaves/{leave_id}")
-async def cancel_leave(
-    leave_id: int,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-
-    employee = LeaveService.get_employee_by_user_id(
-        db,
-        current_user.id,
-    )
-
-    leave = (
-        db.query(Leave)
-        .filter(
-            Leave.id == leave_id,
-            Leave.employee_id == employee.id,
-        )
-        .first()
-    )
-
-    if not leave:
-        raise HTTPException(
-            status_code=404,
-            detail="Leave not found",
-        )
-
-    if leave.status != "pending":
-        raise HTTPException(
-            status_code=400,
-            detail="Only pending leave can be cancelled",
-        )
-
-    db.delete(leave)
+@router.post("/types")
+def create_type(data: LeaveTypeWrite, principal: Principal = Depends(require("leave:manage_policy")),
+                db: Session = Depends(get_db)):
+    lt = leave_service.save_leave_type(db, principal, data)
     db.commit()
+    return _serialize_type(lt)
 
-    return {
-        "success": True,
-        "message": "Leave cancelled successfully",
-    }
+
+@router.put("/types/{type_id}")
+def update_type(type_id: int, data: LeaveTypeWrite, principal: Principal = Depends(require("leave:manage_policy")),
+                db: Session = Depends(get_db)):
+    lt = leave_service.save_leave_type(db, principal, data, type_id)
+    db.commit()
+    return _serialize_type(lt)
+
+
+@router.get("/approval-chain")
+def get_chain(principal: Principal = Depends(require_any("leave:manage_policy", "leave:approve", "leave:apply")),
+              db: Session = Depends(get_db)):
+    return leave_service.get_chain(db, principal.company_id)
+
+
+@router.put("/approval-chain")
+def save_chain(data: ChainWrite, principal: Principal = Depends(require("leave:manage_policy")),
+               db: Session = Depends(get_db)):
+    result = leave_service.save_chain(db, principal, data.steps)
+    db.commit()
+    return result
+
+
+@router.post("/apply")
+def apply_leave(data: LeaveApply, principal: Principal = Depends(require("leave:apply")), db: Session = Depends(get_db)):
+    leave = leave_service.apply(db, principal, data)
+    db.commit()
+    return leave_service.serialize(db, leave, db.get(Employee, leave.employee_id))
+
+
+@router.get("/my")
+def my_leaves(principal: Principal = Depends(require("leave:apply")), db: Session = Depends(get_db)):
+    return leave_service.my_leaves(db, principal)
+
+
+@router.get("/my/balance")
+def my_balance(year: Optional[int] = Query(None, ge=2000, le=2100), principal: Principal = Depends(get_principal),
+               db: Session = Depends(get_db)):
+    employee = authz.own_employee(db, principal)
+    return leave_service.balances(db, principal.company_id, employee.id, year)
+
+
+@router.get("/approvals")
+def approval_inbox(principal: Principal = Depends(get_principal), db: Session = Depends(get_db)):
+    return leave_service.approval_inbox(db, principal)
+
+
+@router.get("/upcoming")
+def upcoming(principal: Principal = Depends(require("leave:read")), db: Session = Depends(get_db)):
+    return leave_service.upcoming_approved(db, principal)
+
+
+@router.get("/balance/{employee_id}")
+def employee_balance(employee_id: int, year: Optional[int] = Query(None, ge=2000, le=2100),
+                     principal: Principal = Depends(require("leave:read")), db: Session = Depends(get_db)):
+    employee = authz.ensure_employee_access(db, principal, "leave:read", employee_id)
+    return leave_service.balances(db, principal.company_id, employee.id, year)
+
+
+@router.get("")
+def list_leaves(
+    status: Optional[str] = Query(None, pattern=r"^(pending|approved|rejected|cancelled)$"),
+    employee_id: Optional[int] = None,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    principal: Principal = Depends(require("leave:read")),
+    db: Session = Depends(get_db),
+):
+    total, items = leave_service.list_leaves(db, principal, status, employee_id, skip, limit)
+    return {"total": total, "items": items, "skip": skip, "limit": limit}
+
+
+@router.post("/{leave_id}/approve")
+def approve(leave_id: int, data: LeaveDecision = LeaveDecision(), principal: Principal = Depends(get_principal),
+            db: Session = Depends(get_db)):
+    leave = leave_service.decide(db, principal, leave_id, True, data.remarks)
+    db.commit()
+    return leave_service.serialize(db, leave, db.get(Employee, leave.employee_id))
+
+
+@router.post("/{leave_id}/reject")
+def reject(leave_id: int, data: LeaveDecision = LeaveDecision(), principal: Principal = Depends(get_principal),
+           db: Session = Depends(get_db)):
+    leave = leave_service.decide(db, principal, leave_id, False, data.remarks)
+    db.commit()
+    return leave_service.serialize(db, leave, db.get(Employee, leave.employee_id))
+
+
+@router.post("/{leave_id}/cancel")
+def cancel(leave_id: int, principal: Principal = Depends(require("leave:apply")), db: Session = Depends(get_db)):
+    leave = leave_service.cancel(db, principal, leave_id)
+    db.commit()
+    return leave_service.serialize(db, leave, db.get(Employee, leave.employee_id))

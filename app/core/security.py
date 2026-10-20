@@ -1,89 +1,163 @@
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+import hashlib
+import hmac
+import re
+import secrets
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Optional
+
+from fastapi import Response
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+
 from app.config import settings
-from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
-
-from app.database.db import get_db
-from app.models.user import User
-
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+
+ACCESS_COOKIE = "hrms_access"
+REFRESH_COOKIE = "hrms_refresh"
+PLATFORM_ACCESS_COOKIE = "hrms_pa_access"
+PLATFORM_REFRESH_COOKIE = "hrms_pa_refresh"
+CSRF_COOKIE = "hrms_csrf"
+CSRF_HEADER = "x-csrf-token"
+
+USER_REFRESH_PATH = "/api/v1/auth"
+PLATFORM_REFRESH_PATH = "/api/v1/platform/auth"
+
+_dummy_hash: Optional[str] = None
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
-
-
-def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.access_token_expire_minutes)
-
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
-    return encoded_jwt
-
-
-def create_refresh_token(data: Dict[str, Any]) -> str:
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(days=settings.refresh_token_expire_days)
-    to_encode.update({"exp": expire, "type": "refresh"})
-    encoded_jwt = jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
-    return encoded_jwt
-
-
-def verify_token(token: str) -> Optional[Dict[str, Any]]:
+def verify_password(password: str, password_hash: Optional[str]) -> bool:
+    """Constant-work verification, also when the account does not exist."""
+    global _dummy_hash
+    if not password_hash:
+        if _dummy_hash is None:
+            _dummy_hash = pwd_context.hash(secrets.token_urlsafe(16))
+        pwd_context.verify(password, _dummy_hash)
+        return False
     try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
-        return payload
-    except JWTError:
-        return None
+        return pwd_context.verify(password, password_hash)
+    except ValueError:
+        return False
 
 
-def get_user_id_from_token(token: str) -> Optional[int]:
-    payload = verify_token(token)
-    if payload:
-        return payload.get("sub")
+PASSWORD_RULES = "Use at least 8 characters with at least one letter and one number."
+
+
+def password_problem(password: str, email: Optional[str] = None) -> Optional[str]:
+    if len(password) < 8 or len(password) > 128:
+        return PASSWORD_RULES
+    if not re.search(r"[A-Za-z]", password) or not re.search(r"\d", password):
+        return PASSWORD_RULES
+    if email and password.lower() == email.lower():
+        return "Password must not be your email address."
     return None
 
-def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db),
-) -> User:
 
-    payload = verify_token(token)
+def new_token(nbytes: int = 32) -> str:
+    return secrets.token_urlsafe(nbytes)
 
-    if payload is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
+
+def hash_token(token: str) -> str:
+    """Keyed hash for refresh tokens, invitations and OTPs stored at rest."""
+    return hmac.new(settings.secret_key.encode(), token.encode(), hashlib.sha256).hexdigest()
+
+
+def tokens_equal(a: str, b: str) -> bool:
+    return hmac.compare_digest(a.encode(), b.encode())
+
+
+def create_jwt(claims: Dict[str, Any], typ: str, expires_in: timedelta) -> str:
+    now = utcnow()
+    payload = {
+        **claims,
+        "typ": typ,
+        "iat": int(now.timestamp()),
+        "exp": int((now + expires_in).timestamp()),
+        "jti": uuid.uuid4().hex,
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
+
+
+def decode_jwt(token: str, typ: str) -> Optional[Dict[str, Any]]:
+    try:
+        payload = jwt.decode(
+            token,
+            settings.secret_key,
+            algorithms=[settings.algorithm],
+            options={"require_exp": True, "require_iat": True},
         )
+    except JWTError:
+        return None
+    if payload.get("typ") != typ:
+        return None
+    return payload
 
-    user_id = payload.get("sub")
 
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-        )
+# ---------------------------------------------------------------------------
+# Cookies
+# ---------------------------------------------------------------------------
+def _cookie_kwargs() -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {"secure": settings.cookie_secure, "samesite": settings.cookie_samesite}
+    if settings.cookie_domain:
+        kwargs["domain"] = settings.cookie_domain
+    return kwargs
 
-    user = db.query(User).filter(User.id == int(user_id)).first()
 
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-        )
+def set_auth_cookies(
+    response: Response,
+    access_token: str,
+    refresh_token: str,
+    *,
+    platform: bool = False,
+) -> str:
+    access_name = PLATFORM_ACCESS_COOKIE if platform else ACCESS_COOKIE
+    refresh_name = PLATFORM_REFRESH_COOKIE if platform else REFRESH_COOKIE
+    refresh_path = PLATFORM_REFRESH_PATH if platform else USER_REFRESH_PATH
+    kw = _cookie_kwargs()
+    response.set_cookie(
+        access_name,
+        access_token,
+        max_age=settings.access_token_expire_minutes * 60,
+        httponly=True,
+        path="/",
+        **kw,
+    )
+    response.set_cookie(
+        refresh_name,
+        refresh_token,
+        max_age=settings.refresh_token_expire_days * 86400,
+        httponly=True,
+        path=refresh_path,
+        **kw,
+    )
+    csrf = new_token(24)
+    # Readable by JavaScript on purpose: double-submit CSRF protection.
+    response.set_cookie(
+        CSRF_COOKIE,
+        csrf,
+        max_age=settings.refresh_token_expire_days * 86400,
+        httponly=False,
+        path="/",
+        **kw,
+    )
+    return csrf
 
-    return user
+
+def clear_auth_cookies(response: Response, *, platform: bool = False) -> None:
+    kw = {k: v for k, v in _cookie_kwargs().items() if k == "domain"}
+    if platform:
+        response.delete_cookie(PLATFORM_ACCESS_COOKIE, path="/", **kw)
+        response.delete_cookie(PLATFORM_REFRESH_COOKIE, path=PLATFORM_REFRESH_PATH, **kw)
+    else:
+        response.delete_cookie(ACCESS_COOKIE, path="/", **kw)
+        response.delete_cookie(REFRESH_COOKIE, path=USER_REFRESH_PATH, **kw)
+    response.delete_cookie(CSRF_COOKIE, path="/", **kw)

@@ -1,3 +1,29 @@
-# backend/app/routes/__init__.py
+from app.routes import (
+    attendance,
+    auth,
+    dashboard,
+    employees,
+    leaves,
+    operations,
+    organization,
+    payroll,
+    platform,
+    reports,
+    settings,
+    users,
+)
 
-# Empty file
+ROUTERS = [
+    auth.router,
+    platform.router,
+    users.router,
+    employees.router,
+    organization.router,
+    attendance.router,
+    leaves.router,
+    payroll.router,
+    operations.router,
+    reports.router,
+    settings.router,
+    dashboard.router,
+]
