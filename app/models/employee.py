@@ -26,6 +26,8 @@ class Department(TenantMixin, BaseModel):
     name = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)
     head_employee_id = Column(Integer, nullable=True)
+    # Teams are child departments; cycles are rejected by a trigger and by the service.
+    parent_department_id = Column(Integer, nullable=True, index=True)
     is_active = Column(Boolean, default=True, nullable=False)
 
     employees = relationship(
@@ -49,6 +51,11 @@ class Department(TenantMixin, BaseModel):
             ["employees.company_id", "employees.id"],
             name="fk_departments_head_employee",
             use_alter=True,
+        ),
+        ForeignKeyConstraint(
+            ["company_id", "parent_department_id"],
+            ["departments.company_id", "departments.id"],
+            name="fk_departments_parent",
         ),
     )
 

@@ -91,7 +91,7 @@ def test_password_reset_requires_verified_code(app, monkeypatch):
     from app.services import email_service
 
     monkeypatch.setattr(
-        email_service.EmailService, "send_password_reset_code", staticmethod(lambda to, code: captured.update(code=code))
+        email_service.EmailService, "send_password_reset_code", staticmethod(lambda to, code, **_: captured.update(code=code))
     )
     c = ApiClient(app)
     # Response is identical for unknown emails (no enumeration).

@@ -3,14 +3,17 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.errors import bad_request, conflict, not_found, unauthorized
+from app.core.hosts import request_host
 from app.core.principal import Principal, get_principal_any_subscription
 from app.core.rate_limit import client_ip, limiter
 from app.core.security import (
     REFRESH_COOKIE,
     clear_auth_cookies,
+    clear_brand_hint,
     hash_password,
     password_problem,
     set_auth_cookies,
+    set_brand_hint,
     utcnow,
 )
 from app.database.db import SessionLocal, bind_tenant, get_db, system_session
@@ -20,6 +23,7 @@ from app.schemas.auth import (
     ChangePasswordRequest,
     CompanySignupRequest,
     ForgotPasswordRequest,
+    HandoffRequest,
     LoginRequest,
     MfaCodeRequest,
     MfaDisableRequest,
@@ -28,7 +32,7 @@ from app.schemas.auth import (
     ResetPasswordRequest,
     VerifyOtpRequest,
 )
-from app.services import auth_service, company_service
+from app.services import auth_service, company_service, domain_service
 from app.services.audit_log_service import AuditLogService
 from app.services.me_service import build_me
 
@@ -49,15 +53,21 @@ def _me_for(user_id: int, company_id: int, session_id: str) -> dict:
         db.close()
 
 
-def _session_response(response: Response, result: auth_service.LoginResult) -> dict:
+def _session_response(request: Request, response: Response, result: auth_service.LoginResult) -> dict:
+    if result.handoff_url:
+        # The tenant enforces its custom domain: the browser continues there (01 §6.4 rule 2).
+        return {"mfa_required": False, "handoff_url": result.handoff_url}
     issued = result.session
     set_auth_cookies(response, issued.access_token, issued.refresh_token)
+    set_brand_hint(response, result.company_id, request_host(request).host)
     return {"mfa_required": False, "me": _me_for(result.user_id, result.company_id, issued.session_id)}
 
 
 @router.post("/signup")
 def signup_company(data: CompanySignupRequest, request: Request, response: Response):
     ip = client_ip(request)
+    if not request_host(request).is_platform:
+        raise not_found()  # new workspaces are created on the platform host only
     limiter.check(f"signup:{ip}", 5, 3600)
     email = auth_service.normalize_email(data.email)
     problem = password_problem(data.password, email)
@@ -74,31 +84,43 @@ def signup_company(data: CompanySignupRequest, request: Request, response: Respo
             admin_password_hash=hash_password(data.password),
             timezone=data.timezone,
         )
+        domain_service.ensure_platform_subdomain(db, company)
         AuditLogService.log(
             db, None, "Company", "CREATED", f"Workspace '{company.name}' created by {email}",
             "company", company.id, ip, company_id=company.id, actor_id=user.id, actor_email=email,
         )
-        result = auth_service.complete_login(db, user, ip, request.headers.get("user-agent"))
-    return _session_response(response, result)
+        result = auth_service.complete_login(db, user, ip, request.headers.get("user-agent"), request_host(request))
+    return _session_response(request, response, result)
 
 
 @router.post("/login")
 def login(data: LoginRequest, request: Request, response: Response):
     ip = client_ip(request)
+    context = request_host(request)
     limiter.check(f"login:ip:{ip}", 30, 300)
-    limiter.check(f"login:email:{data.email.lower()}", 10, 900)
-    result = auth_service.login(data.email, data.password, ip, request.headers.get("user-agent"))
+    # Keyed by host as well, so attempts on a hostile host cannot throttle sign-ins elsewhere.
+    limiter.check(f"login:email:{context.host}:{data.email.lower()}", 10, 900)
+    result = auth_service.login(data.email, data.password, ip, request.headers.get("user-agent"), context)
     if result.mfa_token:
         return {"mfa_required": True, "mfa_token": result.mfa_token}
-    return _session_response(response, result)
+    return _session_response(request, response, result)
 
 
 @router.post("/login/mfa")
 def login_mfa(data: MfaLoginRequest, request: Request, response: Response):
     ip = client_ip(request)
     limiter.check(f"mfa:ip:{ip}", 20, 300)
-    result = auth_service.login_mfa(data.mfa_token, data.code, ip, request.headers.get("user-agent"))
-    return _session_response(response, result)
+    result = auth_service.login_mfa(data.mfa_token, data.code, ip, request.headers.get("user-agent"), request_host(request))
+    return _session_response(request, response, result)
+
+
+@router.post("/handoff")
+def handoff(data: HandoffRequest, request: Request, response: Response):
+    """Exchange a one-time handoff code for this host's own session cookies."""
+    ip = client_ip(request)
+    limiter.check(f"handoff:ip:{ip}", 20, 300)
+    result = auth_service.redeem_handoff(data.code, ip, request.headers.get("user-agent"), request_host(request))
+    return _session_response(request, response, result)
 
 
 @router.post("/refresh")
@@ -106,8 +128,10 @@ def refresh(request: Request, response: Response, data: RefreshRequest = Refresh
     token = request.cookies.get(REFRESH_COOKIE) or data.refresh_token
     if not token:
         raise unauthorized("Session expired", "SESSION_EXPIRED")
-    issued = auth_service.refresh(token)
+    context = request_host(request)
+    issued = auth_service.refresh(token, context)
     set_auth_cookies(response, issued.access_token, issued.refresh_token)
+    set_brand_hint(response, int(token.split(".", 1)[0]), context.host)
     return {"ok": True}
 
 
@@ -127,6 +151,7 @@ def logout(request: Request, response: Response):
         except (ValueError, TypeError):
             pass
     clear_auth_cookies(response)
+    clear_brand_hint(response)
     return {"ok": True}
 
 
@@ -192,36 +217,38 @@ def forgot_password(data: ForgotPasswordRequest, request: Request):
     ip = client_ip(request)
     limiter.check(f"forgot:ip:{ip}", 10, 3600)
     limiter.check(f"forgot:email:{data.email.lower()}", 3, 900)
-    auth_service.request_password_reset(data.email)
+    auth_service.request_password_reset(data.email, request_host(request))
     return {"message": auth_service.RESET_REQUEST_MESSAGE}
 
 
 @router.post("/verify-otp")
 def verify_otp(data: VerifyOtpRequest, request: Request):
     limiter.check(f"otp:ip:{client_ip(request)}", 20, 900)
-    token = auth_service.verify_reset_code(data.email, data.otp)
+    token = auth_service.verify_reset_code(data.email, data.otp, request_host(request))
     return {"reset_token": token}
 
 
 @router.post("/reset-password")
 def reset_password(data: ResetPasswordRequest, request: Request):
     limiter.check(f"reset:ip:{client_ip(request)}", 10, 900)
-    auth_service.reset_password(data.reset_token, data.new_password)
+    auth_service.reset_password(data.reset_token, data.new_password, request_host(request))
     return {"message": "Password updated. You can now sign in."}
 
 
 @router.get("/invitations/{token}")
 def get_invitation(token: str, request: Request):
     limiter.check(f"invite:ip:{client_ip(request)}", 30, 900)
-    return auth_service.describe_invitation(token)
+    return auth_service.describe_invitation(token, request_host(request))
 
 
 @router.post("/invitations/accept")
 def accept_invitation(data: AcceptInvitationRequest, request: Request, response: Response):
     ip = client_ip(request)
     limiter.check(f"invite-accept:ip:{ip}", 10, 900)
-    result = auth_service.accept_invitation(data.token, data.password, ip, request.headers.get("user-agent"))
-    return _session_response(response, result)
+    result = auth_service.accept_invitation(
+        data.token, data.password, ip, request.headers.get("user-agent"), request_host(request)
+    )
+    return _session_response(request, response, result)
 
 
 @router.post("/mfa/setup")

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Iterable, List, Tuple
 
-REGISTRY_VERSION = "2026.10.2"
+REGISTRY_VERSION = "2026.10.3"
 
 
 class Scope(str, Enum):
@@ -21,6 +21,10 @@ class Scope(str, Enum):
     REPORTING_TREE = "REPORTING_TREE"
     DEPARTMENT = "DEPARTMENT"
     ASSIGNED_GROUP = "ASSIGNED_GROUP"
+    # Employees currently placed in the listed legal entities / branches. Targets are
+    # stored per role assignment; an entity scope without targets grants nothing.
+    LEGAL_ENTITY = "LEGAL_ENTITY"
+    BRANCH = "BRANCH"
     COMPANY = "COMPANY"
 
 
@@ -32,11 +36,19 @@ SCOPE_LABELS = {
     Scope.REPORTING_TREE: "Entire reporting tree",
     Scope.DEPARTMENT: "Own and headed departments",
     Scope.ASSIGNED_GROUP: "Explicitly assigned employees",
+    Scope.LEGAL_ENTITY: "Selected legal entities",
+    Scope.BRANCH: "Selected branches",
     Scope.COMPANY: "Whole company",
 }
 
+# Scopes whose coverage comes from explicit targets on the role assignment.
+TARGETED_SCOPES = (Scope.LEGAL_ENTITY, Scope.BRANCH)
+
 _ALL = tuple(Scope)
-_TEAM = (Scope.DIRECT_REPORTS, Scope.REPORTING_TREE, Scope.DEPARTMENT, Scope.ASSIGNED_GROUP, Scope.COMPANY)
+_TEAM = (
+    Scope.DIRECT_REPORTS, Scope.REPORTING_TREE, Scope.DEPARTMENT, Scope.ASSIGNED_GROUP,
+    Scope.LEGAL_ENTITY, Scope.BRANCH, Scope.COMPANY,
+)
 _COMPANY = (Scope.COMPANY,)
 _SELF = (Scope.SELF,)
 _SELF_OR_COMPANY = (Scope.SELF, Scope.COMPANY)
@@ -129,6 +141,31 @@ PERMISSIONS: List[PermissionDef] = [
     PermissionDef("delegation:manage", "Administration", "Delegate approvals", "Delegate approval authority.", _SELF_OR_COMPANY),
     PermissionDef("settings:manage", "Administration", "Company settings", "Edit company profile and policies.", _COMPANY),
     PermissionDef("audit:read", "Administration", "View audit log", "View the company audit trail.", _COMPANY, "confidential"),
+    # White label
+    PermissionDef(
+        "branding:manage", "Administration", "Manage branding",
+        "Edit, preview, publish and roll back the company brand.", _COMPANY,
+    ),
+    PermissionDef(
+        "domain:manage", "Administration", "Manage domains",
+        "Add, verify and remove custom domains and choose the primary address.", _COMPANY, "confidential",
+    ),
+    PermissionDef(
+        "email_template:manage", "Administration", "Manage email templates",
+        "Edit the wording of transactional emails.", _COMPANY,
+    ),
+    # Organisation structure
+    PermissionDef(
+        "org:read", "Organization", "View organization structure",
+        "View legal entities, branches and where people are placed.", _COMPANY,
+    ),
+    PermissionDef(
+        "org:manage_entities", "Organization", "Manage legal entities",
+        "Create and edit legal entities, their registrations and document branding.", _COMPANY, "confidential",
+    ),
+    PermissionDef(
+        "org:manage_branches", "Organization", "Manage branches", "Create and edit branches (work locations).", _COMPANY,
+    ),
 ]
 
 PERMISSIONS_BY_CODE: Dict[str, PermissionDef] = {p.code: p for p in PERMISSIONS}
@@ -214,7 +251,7 @@ DEFAULT_ROLES: List[DefaultRole] = [
                 "leave:approve", "leave:manage_policy", "holiday:manage", "asset:read", "asset:manage",
                 "asset:assign", "report:read", "report:export", "user:read", "user:invite",
                 "user:update", "user:deactivate", "user:assign_role", "role:read",
-                "delegation:manage", "audit:read",
+                "delegation:manage", "audit:read", "email_template:manage", "org:read", "org:manage_branches",
             )
         ),
     ),

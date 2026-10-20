@@ -55,4 +55,14 @@ def build_me(db: Session, principal: Principal) -> dict:
         },
         "is_company_admin": principal.is_company_admin,
         "registry_version": REGISTRY_VERSION,
+        "brand_version": _brand_version(principal.company_id),
     }
+
+
+def _brand_version(company_id: int):
+    from app.services import brand_service
+
+    try:
+        return brand_service.effective_for_company(company_id).version
+    except Exception:  # branding must never block signing in
+        return None

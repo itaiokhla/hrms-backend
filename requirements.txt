@@ -22,3 +22,10 @@ openpyxl>=3.1.0
 geographiclib==2.0
 # Optional: enables face recognition (requires dlib build tools)
 # face_recognition>=1.3.0
+# White label: sandboxed email templates, complex-script shaping in PDFs (Arabic, Devanagari),
+# public-suffix checks and DNS verification for custom domains, ISO 3166/4217 catalogues
+jinja2==3.1.4
+uharfbuzz==0.56.3
+publicsuffixlist==1.1.0.20261018
+dnspython==2.9.0
+pycountry==26.2.16

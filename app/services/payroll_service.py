@@ -32,6 +32,17 @@ TWO = Decimal("0.01")
 VISIBLE_TO_EMPLOYEE = ("approved", "processed")
 
 
+def totals_by_currency(rows, fields=("gross_salary", "total_deductions", "net_salary")) -> dict:
+    """Per-currency sums. Amounts in different currencies are never added together."""
+    result: dict = {}
+    for row in rows:
+        bucket = result.setdefault(row.currency, {"count": 0, **{f: Decimal("0") for f in fields}})
+        bucket["count"] += 1
+        for f in fields:
+            bucket[f] += Decimal(getattr(row, f) or 0)
+    return result
+
+
 def _money(value) -> Decimal:
     return Decimal(str(value or 0)).quantize(TWO, rounding=ROUND_HALF_UP)
 
@@ -143,10 +154,18 @@ def generate(db: Session, principal: Principal, employee_id: int, year: int, mon
     salary_month = date(year, month, 1)
     if db.query(Payroll.id).filter(Payroll.employee_id == employee_id, Payroll.salary_month == salary_month).first():
         raise conflict("Payroll already exists for this month.", "PAYROLL_EXISTS")
+    from app.services import org_structure_service
+
+    # Amounts are in the currency of the employee's legal entity at the end of the period.
+    entity = org_structure_service.entity_for_employee_on(
+        db, principal.company_id, employee_id, _month_bounds(year, month)[1]
+    )
     payroll = Payroll(
         company_id=principal.company_id,
         employee_id=employee_id,
         salary_month=salary_month,
+        currency=entity.base_currency if entity else (company_currency(db, principal.company_id)),
+        legal_entity_id=entity.id if entity else None,
         basic_salary=_money(data["basic_salary"]),
         house_rent_allowance=_money(data["hra"]),
         dearness_allowance=_money(data["da"]),
@@ -247,7 +266,14 @@ def approve(db: Session, principal: Principal, payroll_id: int) -> Payroll:
     payroll.status = "approved"
     payroll.approved_by_user_id = principal.user_id
     payroll.approved_at = utcnow()
-    AuditLogService.log(db, principal, "Payroll", "APPROVE", f"Approved payroll #{payroll.id}", "payroll", payroll.id)
+    db.flush()
+    from app.services import document_service
+
+    # The payslip is issued now and keeps today's branding forever (EC-WL-09).
+    document = document_service.issue_payslip(db, payroll, principal.user_id)
+    AuditLogService.log(db, principal, "Payroll", "APPROVE",
+                        f"Approved payroll #{payroll.id}; payslip {document.snapshot['document_number']} issued",
+                        "payroll", payroll.id)
     return payroll
 
 
@@ -265,7 +291,28 @@ def _process_one(db: Session, principal: Principal, payroll: Payroll) -> None:
             db, employee.user_id, "Salary processed",
             f"Your salary for {payroll.salary_month.strftime('%B %Y')} has been processed.", "payroll", "/employee/salary",
         )
+    if employee and employee.email:
+        _queue_payslip_email(db, payroll, employee)
     AuditLogService.log(db, principal, "Payroll", "PROCESS", f"Processed payroll #{payroll.id}", "payroll", payroll.id)
+
+
+def _queue_payslip_email(db: Session, payroll: Payroll, employee: Employee) -> None:
+    """Branded 'payslip published' email after commit. It never contains amounts (01 §5.6)."""
+    from sqlalchemy import event
+
+    from app.services.email_branding import link
+    from app.services.email_service import EmailService
+
+    context = {
+        "recipient": {"first_name": employee.first_name, "name": employee.full_name, "email": employee.email},
+        "period": {"label": payroll.salary_month.strftime("%B %Y")},
+        "link": {"url": link(payroll.company_id, "/payslips")},
+    }
+
+    def send(_session):
+        EmailService.send_template("payroll.payslip_published", employee.email, context, payroll.company_id)
+
+    event.listen(db, "after_commit", send, once=True)
 
 
 def process(db: Session, principal: Principal, payroll_id: int) -> Payroll:
@@ -307,6 +354,8 @@ def serialize(payroll: Payroll, employee: Optional[Employee] = None) -> dict:
         "total_deductions": float(payroll.total_deductions),
         "net_salary": float(payroll.net_salary),
         "status": payroll.status,
+        "currency": payroll.currency,
+        "legal_entity_id": payroll.legal_entity_id,
         "net_work_seconds": payroll.net_work_seconds,
         "created_by_user_id": payroll.created_by_user_id,
         "approved_by_user_id": payroll.approved_by_user_id,
@@ -341,18 +390,32 @@ def summary(db: Session, principal: Principal, year: int, month: int) -> dict:
     breakdown = {}
     for p in rows:
         breakdown[p.status] = breakdown.get(p.status, 0) + 1
-    gross = sum((Decimal(p.gross_salary) for p in rows), Decimal("0"))
-    deductions = sum((Decimal(p.total_deductions) for p in rows), Decimal("0"))
-    net = sum((Decimal(p.net_salary) for p in rows), Decimal("0"))
+    by_currency = totals_by_currency(rows)
+    single = next(iter(by_currency.values())) if len(by_currency) == 1 else None
     return {
         "month": f"{year}-{month:02d}",
         "total_employees": len(rows),
-        "total_gross_salary": float(gross),
-        "total_deductions": float(deductions),
-        "total_net_salary": float(net),
-        "average_salary": float(net / len(rows)) if rows else 0,
+        # Company-wide totals exist only when every row is in one currency (no FX conversion).
+        "currency": next(iter(by_currency)) if single else (None if by_currency else company_currency(db, principal.company_id)),
+        "mixed_currency": len(by_currency) > 1,
+        "total_gross_salary": float(single["gross_salary"]) if single else (None if by_currency else 0),
+        "total_deductions": float(single["total_deductions"]) if single else (None if by_currency else 0),
+        "total_net_salary": float(single["net_salary"]) if single else (None if by_currency else 0),
+        "average_salary": float(single["net_salary"] / single["count"]) if single else (None if by_currency else 0),
+        "by_currency": {
+            code: {"employees": b["count"], "gross": float(b["gross_salary"]), "deductions": float(b["total_deductions"]),
+                   "net": float(b["net_salary"])}
+            for code, b in sorted(by_currency.items())
+        },
         "status_breakdown": breakdown,
     }
+
+
+def company_currency(db: Session, company_id: int) -> str:
+    from app.models.company import Company
+
+    company = db.get(Company, company_id)
+    return company.currency if company else "INR"
 
 
 def my_payslips(db: Session, principal: Principal) -> List[dict]:
@@ -401,6 +464,8 @@ def slip(db: Session, principal: Principal, payroll_id: int) -> dict:
         },
         "total_deductions": float(payroll.total_deductions),
         "net_salary": float(payroll.net_salary),
+        "currency": payroll.currency,
+        "employer": _employer(db, payroll),
         "attendance": {
             "working_days": payroll.working_days,
             "present_days": payroll.present_days,
@@ -414,6 +479,16 @@ def slip(db: Session, principal: Principal, payroll_id: int) -> dict:
         },
         "status": payroll.status,
     }
+
+
+def _employer(db: Session, payroll: Payroll) -> Optional[dict]:
+    from app.models.org import LegalEntity
+
+    entity = db.get(LegalEntity, payroll.legal_entity_id) if payroll.legal_entity_id else None
+    if entity is None:
+        return None
+    return {"legal_name": entity.legal_name, "code": entity.code, "country_code": entity.country_code,
+            "address": entity.registered_address or {}, "registration_lines": entity.registration_lines or []}
 
 
 # ---------------------------------------------------------------------------

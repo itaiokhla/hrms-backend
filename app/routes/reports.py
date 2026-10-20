@@ -13,6 +13,13 @@ from app.services.audit_log_service import AuditLogService
 from app.utils.excel_exporter import ExcelExporter
 from app.utils.pdf_generator import AttendanceReportGenerator, LeaveReportGenerator, PayrollReportGenerator
 
+def _brand_name(principal) -> str:
+    from app.services import brand_service
+
+    values = brand_service.effective_for_company(principal.company_id).values
+    return f"{values['display_name']} · {values['product_name']}"
+
+
 router = APIRouter(prefix="/api/v1/reports", tags=["Reports"])
 
 ExportFormat = Annotated[str, Path(pattern=r"^(excel|pdf)$")]
@@ -44,7 +51,7 @@ def export_attendance(fmt: ExportFormat, start_date: date, end_date: date, emplo
     db.commit()
     if fmt == "excel":
         return _download(ExcelExporter.export_attendance_report(report["records"]), XLSX, f"attendance_{start_date}_{end_date}.xlsx")
-    return _download(AttendanceReportGenerator.generate_pdf(report), "application/pdf", f"attendance_{start_date}_{end_date}.pdf")
+    return _download(AttendanceReportGenerator.generate_pdf(report, _brand_name(principal)), "application/pdf", f"attendance_{start_date}_{end_date}.pdf")
 
 
 @router.get("/payroll")
@@ -65,7 +72,7 @@ def export_payroll(fmt: ExportFormat, year: int = Query(..., ge=2000, le=2100), 
     db.commit()
     if fmt == "excel":
         return _download(ExcelExporter.export_payroll_report(report["records"]), XLSX, f"payroll_{year}_{month or 'all'}.xlsx")
-    return _download(PayrollReportGenerator.generate_pdf(report), "application/pdf", f"payroll_{year}_{month or 'all'}.pdf")
+    return _download(PayrollReportGenerator.generate_pdf(report, _brand_name(principal)), "application/pdf", f"payroll_{year}_{month or 'all'}.pdf")
 
 
 @router.get("/leaves")
@@ -82,7 +89,7 @@ def export_leaves(fmt: ExportFormat, year: Optional[int] = Query(None, ge=2000, 
     db.commit()
     if fmt == "excel":
         return _download(ExcelExporter.export_leave_report(report["records"]), XLSX, f"leave_{year or 'current'}.xlsx")
-    return _download(LeaveReportGenerator.generate_pdf(report), "application/pdf", f"leave_{year or 'current'}.pdf")
+    return _download(LeaveReportGenerator.generate_pdf(report, _brand_name(principal)), "application/pdf", f"leave_{year or 'current'}.pdf")
 
 
 @router.get("/department-analytics")

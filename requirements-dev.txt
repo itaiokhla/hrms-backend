@@ -3,3 +3,5 @@ pytest==9.1.1
 httpx==0.27.2
 # Embedded PostgreSQL 16 for tests and local development without Neon
 pgserver==0.1.4
+# Independent PDF text/glyph checks and page rendering in tests
+pymupdf==2.0

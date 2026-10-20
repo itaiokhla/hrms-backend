@@ -77,6 +77,10 @@ class Payroll(TenantMixin, BaseModel):
     net_work_seconds = Column(Integer, nullable=True)
     incomplete_sessions = Column(Integer, nullable=True)
     status = Column(String(20), default="draft", nullable=False, index=True)
+    # ISO 4217 currency of every amount on this row (the employee's legal entity currency
+    # when it was generated). Totals are only ever summed per currency.
+    currency = Column(String(3), nullable=False, default="INR")
+    legal_entity_id = Column(Integer, nullable=True, index=True)
     remarks = Column(Text, nullable=True)
     # Separation of duties: preparer, approver and payer are recorded and checked.
     created_by_user_id = Column(Integer, nullable=True)

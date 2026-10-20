@@ -55,7 +55,10 @@ class ExcelExporter:
 
     @staticmethod
     def export_payroll_report(payrolls_data: List[Dict[str, Any]]) -> BytesIO:
-        """Export payroll data to Excel with summary and details sheets."""
+        """Export payroll data to Excel with summary and details sheets.
+
+        Totals are per currency: amounts in different currencies are never added together.
+        """
         wb = Workbook()
         details = wb.active
         details.title = "Payroll Details"
@@ -64,6 +67,7 @@ class ExcelExporter:
             "Employee ID",
             "Employee Name",
             "Salary Month",
+            "Currency",
             "Basic Salary",
             "HRA",
             "DA",
@@ -79,57 +83,59 @@ class ExcelExporter:
             cell.value = header
             ExcelExporter._apply_header(cell)
 
-        total_gross = 0.0
-        total_deductions = 0.0
-        total_net = 0.0
+        totals: Dict[str, Dict[str, float]] = {}
 
         for row_idx, payroll in enumerate(payrolls_data, 2):
+            currency = payroll.get("currency") or "-"
             details.cell(row=row_idx, column=1).value = payroll.get("employee_id")
             details.cell(row=row_idx, column=2).value = payroll.get("employee_name")
             details.cell(row=row_idx, column=3).value = payroll.get("salary_month")
-            details.cell(row=row_idx, column=4).value = float(payroll.get("basic_salary", 0))
-            details.cell(row=row_idx, column=5).value = float(payroll.get("hra", 0))
-            details.cell(row=row_idx, column=6).value = float(payroll.get("da", 0))
-            details.cell(row=row_idx, column=7).value = float(payroll.get("conveyance", 0))
-            details.cell(row=row_idx, column=8).value = float(payroll.get("gross_salary", 0))
-            details.cell(row=row_idx, column=9).value = float(payroll.get("total_deductions", 0))
-            details.cell(row=row_idx, column=10).value = float(payroll.get("net_salary", 0))
-            details.cell(row=row_idx, column=11).value = payroll.get("status")
+            details.cell(row=row_idx, column=4).value = currency
+            details.cell(row=row_idx, column=5).value = float(payroll.get("basic_salary", 0))
+            details.cell(row=row_idx, column=6).value = float(payroll.get("hra", 0))
+            details.cell(row=row_idx, column=7).value = float(payroll.get("da", 0))
+            details.cell(row=row_idx, column=8).value = float(payroll.get("conveyance", 0))
+            details.cell(row=row_idx, column=9).value = float(payroll.get("gross_salary", 0))
+            details.cell(row=row_idx, column=10).value = float(payroll.get("total_deductions", 0))
+            details.cell(row=row_idx, column=11).value = float(payroll.get("net_salary", 0))
+            details.cell(row=row_idx, column=12).value = payroll.get("status")
 
-            total_gross += float(payroll.get("gross_salary", 0))
-            total_deductions += float(payroll.get("total_deductions", 0))
-            total_net += float(payroll.get("net_salary", 0))
+            bucket = totals.setdefault(currency, {"count": 0, "gross": 0.0, "deductions": 0.0, "net": 0.0})
+            bucket["count"] += 1
+            bucket["gross"] += float(payroll.get("gross_salary", 0))
+            bucket["deductions"] += float(payroll.get("total_deductions", 0))
+            bucket["net"] += float(payroll.get("net_salary", 0))
 
-            for col in range(1, 12):
+            for col in range(1, 13):
                 cell = details.cell(row=row_idx, column=col)
-                if col >= 4 and col <= 10:
+                if 5 <= col <= 11:
                     cell.number_format = "#,##0.00"
                     cell.alignment = Alignment(horizontal="right")
                 else:
                     cell.alignment = Alignment(horizontal="left")
                 cell.border = ExcelExporter.BORDER
 
-        summary = {
-            "Total Records": len(payrolls_data),
-            "Total Gross": total_gross,
-            "Total Deductions": total_deductions,
-            "Total Net": total_net,
-            "Average Salary": total_net / len(payrolls_data) if payrolls_data else 0,
-        }
+        summary: Dict[str, Any] = {"Total Records": len(payrolls_data)}
+        for currency, bucket in sorted(totals.items()):
+            summary[f"Total Gross ({currency})"] = bucket["gross"]
+            summary[f"Total Deductions ({currency})"] = bucket["deductions"]
+            summary[f"Total Net ({currency})"] = bucket["net"]
+            summary[f"Average Salary ({currency})"] = bucket["net"] / bucket["count"] if bucket["count"] else 0
 
         ExcelExporter._create_summary_sheet(wb, "Payroll Summary", summary)
         ExcelExporter._finalize_sheet(details, {
             1: 12,
             2: 20,
             3: 16,
-            4: 14,
-            5: 10,
+            4: 10,
+            5: 14,
             6: 10,
-            7: 12,
-            8: 14,
-            9: 16,
-            10: 14,
-            11: 12,
+            7: 10,
+            8: 12,
+            9: 14,
+            10: 16,
+            11: 14,
+            12: 12,
         })
 
         buffer = BytesIO()

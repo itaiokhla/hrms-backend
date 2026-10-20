@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.core.errors import AppError, bad_request, conflict, unauthorized
+from app.core.hosts import PLATFORM, HostContext, company_allowed_on_host
 from app.core.principal import subscription_is_active
 from app.core.security import (
     create_jwt,
@@ -24,10 +25,12 @@ from app.core.security import (
     new_token,
     password_problem,
     tokens_equal,
+    ua_hash,
     utcnow,
     verify_password,
 )
 from app.database.db import SessionLocal, bind_tenant, system_session
+from app.models.branding import AuthHandoffCode
 from app.models.company import Company, PlatformAdmin
 from app.models.user import PasswordResetOTP, User, UserInvitation, UserSession
 from app.services.audit_log_service import AuditLogService
@@ -37,6 +40,8 @@ logger = logging.getLogger(__name__)
 
 GENERIC_LOGIN_ERROR = "Invalid email or password."
 REFRESH_GRACE_SECONDS = 30
+# Requests that did not come through the trusted proxy count as the platform host.
+DIRECT = HostContext(host="", kind=PLATFORM, trusted=False)
 
 
 @dataclass
@@ -52,6 +57,11 @@ class LoginResult:
     company_id: int
     session: Optional[IssuedSession] = None
     mfa_token: Optional[str] = None
+    handoff_url: Optional[str] = None
+
+
+def _session_host(context: HostContext) -> Optional[str]:
+    return context.host if context.trusted and context.host else None
 
 
 def normalize_email(email: str) -> str:
@@ -66,7 +76,9 @@ def _access_token(user: User, session_id: str) -> str:
     )
 
 
-def issue_session(db: Session, user: User, ip: Optional[str], user_agent: Optional[str]) -> IssuedSession:
+def issue_session(
+    db: Session, user: User, ip: Optional[str], user_agent: Optional[str], host: Optional[str] = None
+) -> IssuedSession:
     session_id = str(uuid.uuid4())
     secret = new_token(32)
     db.add(
@@ -79,6 +91,7 @@ def issue_session(db: Session, user: User, ip: Optional[str], user_agent: Option
             last_seen_at=utcnow(),
             ip_address=(ip or "")[:64] or None,
             user_agent=(user_agent or "")[:255] or None,
+            host=host,
         )
     )
     refresh = f"{user.company_id}.{session_id}.{secret}"
@@ -101,12 +114,18 @@ def _check_login_state(user: User, company: Company) -> None:
         raise AppError(status.HTTP_403_FORBIDDEN, "Your organization's workspace is suspended.", "COMPANY_SUSPENDED")
 
 
-def login(email: str, password: str, ip: Optional[str], user_agent: Optional[str]) -> LoginResult:
+def login(
+    email: str, password: str, ip: Optional[str], user_agent: Optional[str], context: HostContext = DIRECT
+) -> LoginResult:
     email = normalize_email(email)
     with system_session() as db:
         user = db.query(User).filter(func.lower(User.email) == email).first()
         password_ok = verify_password(password, user.password_hash if user else None)
         if user is None:
+            raise unauthorized(GENERIC_LOGIN_ERROR, "INVALID_CREDENTIALS")
+        if not company_allowed_on_host(context, user.company_id):
+            # EC-WL-14: a user of another tenant on this tenant's host gets the same answer as a
+            # wrong password, and that tenant's failure counter and lockout are left untouched.
             raise unauthorized(GENERIC_LOGIN_ERROR, "INVALID_CREDENTIALS")
         if user.locked_until and user.locked_until > utcnow():
             if password_ok:
@@ -133,18 +152,28 @@ def login(email: str, password: str, ip: Optional[str], user_agent: Optional[str
         if user.mfa_enabled:
             db.commit()
             token = create_jwt(
-                {"sub": str(user.id), "cid": user.company_id},
+                # The second step must happen on the same host as the first.
+                {"sub": str(user.id), "cid": user.company_id, "h": _session_host(context) or ""},
                 "mfa",
                 timedelta(minutes=settings.mfa_token_expire_minutes),
             )
             return LoginResult(user.id, user.company_id, mfa_token=token)
 
-        return complete_login(db, user, ip, user_agent)
+        return complete_login(db, user, ip, user_agent, context)
 
 
-def complete_login(db: Session, user: User, ip, user_agent) -> LoginResult:
+def complete_login(db: Session, user: User, ip, user_agent, context: HostContext = DIRECT) -> LoginResult:
     bind_tenant(db, user.company_id)
-    issued = issue_session(db, user, ip, user_agent)
+    target = _handoff_target(user.company_id, context)
+    if target is not None:
+        url = create_handoff(db, user, target, user_agent)
+        AuditLogService.log(
+            db, None, "Authentication", "LOGIN_HANDOFF", f"{user.email} signed in; handed off to {target}",
+            "user", user.id, ip, company_id=user.company_id, actor_id=user.id, actor_email=user.email,
+        )
+        db.commit()
+        return LoginResult(user.id, user.company_id, handoff_url=url)
+    issued = issue_session(db, user, ip, user_agent, _session_host(context))
     user.last_login_at = utcnow()
     AuditLogService.log(
         db, None, "Authentication", "LOGIN", f"{user.email} signed in", "user", user.id, ip,
@@ -154,27 +183,93 @@ def complete_login(db: Session, user: User, ip, user_agent) -> LoginResult:
     return LoginResult(user.id, user.company_id, session=issued)
 
 
-def login_mfa(mfa_token: str, code: str, ip, user_agent) -> LoginResult:
+def login_mfa(mfa_token: str, code: str, ip, user_agent, context: HostContext = DIRECT) -> LoginResult:
     claims = decode_jwt(mfa_token, "mfa")
-    if not claims:
+    if not claims or claims.get("h", "") != (_session_host(context) or ""):
         raise unauthorized("Verification expired. Sign in again.", "MFA_EXPIRED")
     with system_session() as db:
         user = db.get(User, int(claims["sub"]))
         if user is None or user.company_id != int(claims["cid"]) or not user.mfa_enabled:
+            raise unauthorized("Verification expired. Sign in again.", "MFA_EXPIRED")
+        if not company_allowed_on_host(context, user.company_id):
             raise unauthorized("Verification expired. Sign in again.", "MFA_EXPIRED")
         company = db.get(Company, user.company_id)
         _check_login_state(user, company)
         if not accept_totp(db, user, code):
             _register_failure(db, user)
             raise unauthorized("Invalid verification code.", "MFA_INVALID")
-        return complete_login(db, user, ip, user_agent)
+        return complete_login(db, user, ip, user_agent, context)
 
 
-def refresh(refresh_token: str) -> IssuedSession:
+# ---------------------------------------------------------------------------
+# Handoff to the tenant's enforced custom domain (01 §6.4 rule 2)
+# ---------------------------------------------------------------------------
+HANDOFF_INVALID = "This sign-in link has expired. Sign in again."
+
+
+def _handoff_target(company_id: int, context: HostContext) -> Optional[str]:
+    if not context.trusted or context.kind != PLATFORM:
+        return None
+    from app.services import domain_service
+
+    target = domain_service.enforced_primary(company_id)
+    return target if target and target != context.host else None
+
+
+def create_handoff(db: Session, user: User, target_host: str, user_agent: Optional[str]) -> str:
+    from app.services import domain_service
+
+    code = new_token(32)
+    db.add(
+        AuthHandoffCode(
+            code_hash=hash_token(code),
+            user_id=user.id,
+            company_id=user.company_id,
+            target_host=target_host,
+            ua_hash=ua_hash(user_agent),
+            expires_at=utcnow() + timedelta(seconds=settings.handoff_code_ttl_seconds),
+        )
+    )
+    return f"{domain_service.base_url_for_host(target_host)}/auth/handoff#code={code}"
+
+
+def redeem_handoff(code: str, ip, user_agent, context: HostContext) -> LoginResult:
+    """Exchange a handoff code on its target host for that host's own session (single use)."""
+    if not context.trusted or context.kind != "TENANT" or not code:
+        raise unauthorized(HANDOFF_INVALID, "HANDOFF_INVALID")
+    with system_session() as db:
+        now = utcnow()
+        claimed = db.execute(
+            update(AuthHandoffCode)
+            .where(
+                AuthHandoffCode.code_hash == hash_token(code.strip()),
+                AuthHandoffCode.used_at.is_(None),
+                AuthHandoffCode.expires_at > now,
+                AuthHandoffCode.target_host == context.host,
+                AuthHandoffCode.company_id == context.company_id,
+                AuthHandoffCode.ua_hash == ua_hash(user_agent),
+            )
+            .values(used_at=now)
+            .returning(AuthHandoffCode.user_id, AuthHandoffCode.company_id)
+        ).first()
+        if claimed is None:
+            db.commit()
+            raise unauthorized(HANDOFF_INVALID, "HANDOFF_INVALID")
+        user = db.get(User, claimed.user_id)
+        company = db.get(Company, claimed.company_id)
+        if user is None or user.company_id != claimed.company_id:
+            raise unauthorized(HANDOFF_INVALID, "HANDOFF_INVALID")
+        _check_login_state(user, company)
+        return complete_login(db, user, ip, user_agent, context)
+
+
+def refresh(refresh_token: str, context: HostContext = DIRECT) -> IssuedSession:
     try:
         cid_text, session_id, secret = refresh_token.split(".", 2)
         company_id = int(cid_text)
     except (ValueError, AttributeError):
+        raise unauthorized("Session expired", "SESSION_EXPIRED")
+    if not company_allowed_on_host(context, company_id):
         raise unauthorized("Session expired", "SESSION_EXPIRED")
 
     db = SessionLocal()
@@ -183,6 +278,8 @@ def refresh(refresh_token: str) -> IssuedSession:
         session_row = db.get(UserSession, session_id)
         now = utcnow()
         if session_row is None or session_row.revoked_at is not None or session_row.expires_at <= now:
+            raise unauthorized("Session expired", "SESSION_EXPIRED")
+        if context.trusted and session_row.host and session_row.host != context.host:
             raise unauthorized("Session expired", "SESSION_EXPIRED")
 
         presented = hash_token(secret)
@@ -278,10 +375,15 @@ def accept_totp(db: Session, account: Union[User, PlatformAdmin], code: str) -> 
 def mfa_setup(user: User, company_name: str) -> dict:
     if user.mfa_enabled:
         raise conflict("Two-factor authentication is already enabled.")
+    from app.services import brand_service
+
+    brand = brand_service.effective_for_company(user.company_id).values
     secret = pyotp.random_base32()
     user.mfa_secret = secret
     user.mfa_last_step = None
-    uri = pyotp.TOTP(secret).provisioning_uri(name=user.email, issuer_name=f"{settings.app_name} ({company_name})")
+    # Authenticator label: "{product name} ({company})" (01 §5.9). Existing enrolments keep their label.
+    issuer = f"{brand['product_name']} ({brand['display_name'] or company_name})".replace(":", " ")
+    uri = pyotp.TOTP(secret).provisioning_uri(name=user.email, issuer_name=issuer)
     return {"secret": secret, "otpauth_uri": uri}
 
 
@@ -312,11 +414,11 @@ RESET_REQUEST_MESSAGE = "If an account exists for that email, a verification cod
 OTP_MAX_ATTEMPTS = 5
 
 
-def request_password_reset(email: str) -> None:
+def request_password_reset(email: str, context: HostContext = DIRECT) -> None:
     email = normalize_email(email)
     with system_session() as db:
         user = db.query(User).filter(func.lower(User.email) == email).first()
-        if user is None or user.status != "active":
+        if user is None or user.status != "active" or not company_allowed_on_host(context, user.company_id):
             return
         bind_tenant(db, user.company_id)
         db.query(PasswordResetOTP).filter(
@@ -331,15 +433,15 @@ def request_password_reset(email: str) -> None:
             )
         )
         db.commit()
-        EmailService.send_password_reset_code(user.email, otp)
+        EmailService.send_password_reset_code(user.email, otp, company_id=user.company_id, name=user.full_name)
 
 
-def verify_reset_code(email: str, otp: str) -> str:
+def verify_reset_code(email: str, otp: str, context: HostContext = DIRECT) -> str:
     email = normalize_email(email)
     invalid = bad_request("Invalid or expired code.", "OTP_INVALID")
     with system_session() as db:
         user = db.query(User).filter(func.lower(User.email) == email).first()
-        if user is None:
+        if user is None or not company_allowed_on_host(context, user.company_id):
             raise invalid
         bind_tenant(db, user.company_id)
         record = (
@@ -367,10 +469,10 @@ def verify_reset_code(email: str, otp: str) -> str:
         )
 
 
-def reset_password(reset_token: str, new_password: str) -> None:
+def reset_password(reset_token: str, new_password: str, context: HostContext = DIRECT) -> None:
     claims = decode_jwt(reset_token, "pwreset")
     invalid = bad_request("This reset link has expired. Request a new code.", "RESET_EXPIRED")
-    if not claims:
+    if not claims or not company_allowed_on_host(context, int(claims["cid"])):
         raise invalid
     with system_session() as db:
         bind_tenant(db, int(claims["cid"]))
@@ -421,7 +523,7 @@ def create_invitation(db: Session, user: User, invited_by: Optional[int]) -> str
     return token
 
 
-def _load_invitation(db: Session, token: str):
+def _load_invitation(db: Session, token: str, context: HostContext = DIRECT):
     invitation = db.query(UserInvitation).filter(UserInvitation.token_hash == hash_token(token)).first()
     if (
         invitation is None
@@ -429,6 +531,8 @@ def _load_invitation(db: Session, token: str):
         or invitation.revoked_at is not None
         or invitation.expires_at <= utcnow()
     ):
+        raise bad_request("This invitation is invalid or has expired.", "INVITE_INVALID")
+    if not company_allowed_on_host(context, invitation.company_id):
         raise bad_request("This invitation is invalid or has expired.", "INVITE_INVALID")
     bind_tenant(db, invitation.company_id)
     user = db.get(User, invitation.user_id)
@@ -438,15 +542,15 @@ def _load_invitation(db: Session, token: str):
     return invitation, user, company
 
 
-def describe_invitation(token: str) -> dict:
+def describe_invitation(token: str, context: HostContext = DIRECT) -> dict:
     with system_session() as db:
-        _, user, company = _load_invitation(db, token)
+        _, user, company = _load_invitation(db, token, context)
         return {"email": user.email, "full_name": user.full_name, "company_name": company.name}
 
 
-def accept_invitation(token: str, password: str, ip, user_agent) -> LoginResult:
+def accept_invitation(token: str, password: str, ip, user_agent, context: HostContext = DIRECT) -> LoginResult:
     with system_session() as db:
-        invitation, user, company = _load_invitation(db, token)
+        invitation, user, company = _load_invitation(db, token, context)
         problem = password_problem(password, user.email)
         if problem:
             raise bad_request(problem, "WEAK_PASSWORD")
@@ -459,7 +563,7 @@ def accept_invitation(token: str, password: str, ip, user_agent) -> LoginResult:
             company_id=company.id, actor_id=user.id, actor_email=user.email,
         )
         db.flush()
-        return complete_login(db, user, ip, user_agent)
+        return complete_login(db, user, ip, user_agent, context)
 
 
 def describe_subscription(company: Company) -> dict:

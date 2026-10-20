@@ -20,6 +20,10 @@ PLATFORM_ACCESS_COOKIE = "hrms_pa_access"
 PLATFORM_REFRESH_COOKIE = "hrms_pa_refresh"
 CSRF_COOKIE = "hrms_csrf"
 CSRF_HEADER = "x-csrf-token"
+# Not a credential: tells the server-rendered layout on the platform host which tenant's
+# published brand to paint first, so signed-in users never see a flash of the platform
+# brand. Signed and bound to the host, so it cannot be used to display another tenant.
+BRAND_HINT_COOKIE = "hrms_bh"
 
 USER_REFRESH_PATH = "/api/v1/auth"
 PLATFORM_REFRESH_PATH = "/api/v1/platform/auth"
@@ -161,3 +165,37 @@ def clear_auth_cookies(response: Response, *, platform: bool = False) -> None:
         response.delete_cookie(ACCESS_COOKIE, path="/", **kw)
         response.delete_cookie(REFRESH_COOKIE, path=USER_REFRESH_PATH, **kw)
     response.delete_cookie(CSRF_COOKIE, path="/", **kw)
+
+
+def brand_hint_value(company_id: int, host: str) -> str:
+    mac = hmac.new(settings.secret_key.encode(), f"brand-hint:{company_id}:{host}".encode(), hashlib.sha256).hexdigest()
+    return f"{company_id}.{mac[:32]}"
+
+
+def verify_brand_hint(value: Optional[str], host: str) -> Optional[int]:
+    try:
+        company_text, _ = (value or "").split(".", 1)
+        company_id = int(company_text)
+    except ValueError:
+        return None
+    return company_id if tokens_equal(brand_hint_value(company_id, host), value) else None
+
+
+def set_brand_hint(response: Response, company_id: int, host: str) -> None:
+    response.set_cookie(
+        BRAND_HINT_COOKIE,
+        brand_hint_value(company_id, host),
+        max_age=settings.refresh_token_expire_days * 86400,
+        httponly=True,
+        path="/",
+        **_cookie_kwargs(),
+    )
+
+
+def clear_brand_hint(response: Response) -> None:
+    kw = {k: v for k, v in _cookie_kwargs().items() if k == "domain"}
+    response.delete_cookie(BRAND_HINT_COOKIE, path="/", **kw)
+
+
+def ua_hash(user_agent: Optional[str]) -> str:
+    return hashlib.sha256((user_agent or "").encode()).hexdigest()

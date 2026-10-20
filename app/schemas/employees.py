@@ -29,6 +29,9 @@ class EmployeeCreate(StrictModel):
     base_salary: Optional[Money] = None
     # Requires org:manage_hierarchy.
     manager_id: Optional[int] = None
+    # Placement; defaults to the branch named like `location`, else the default legal entity.
+    legal_entity_id: Optional[int] = None
+    branch_id: Optional[int] = None
 
 
 class EmployeeUpdate(StrictModel):
@@ -65,6 +68,8 @@ class DepartmentWrite(StrictModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = Field(None, max_length=500)
     head_employee_id: Optional[int] = None
+    # Teams are child departments.
+    parent_department_id: Optional[int] = None
     is_active: bool = True
 
 

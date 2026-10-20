@@ -120,7 +120,10 @@ def payroll_report(db: Session, principal: Principal, year: int, month: Optional
     if department_id:
         query = query.filter(Employee.department_id == department_id)
     rows = query.order_by(Payroll.salary_month.desc(), Employee.first_name).all()
-    totals = {"gross": Decimal("0"), "deductions": Decimal("0"), "net": Decimal("0")}
+    from app.services.payroll_service import totals_by_currency
+
+    by_currency = totals_by_currency([payroll for payroll, _ in rows])
+    single = next(iter(by_currency.values())) if len(by_currency) == 1 else None
     records = []
     for payroll, employee in rows:
         records.append(
@@ -136,22 +139,30 @@ def payroll_report(db: Session, principal: Principal, year: int, month: Optional
                 "gross_salary": float(payroll.gross_salary),
                 "total_deductions": float(payroll.total_deductions),
                 "net_salary": float(payroll.net_salary),
+                "currency": payroll.currency,
                 "status": payroll.status,
             }
         )
-        totals["gross"] += payroll.gross_salary
-        totals["deductions"] += payroll.total_deductions
-        totals["net"] += payroll.net_salary
+    if single is not None or not by_currency:
+        summary = {
+            "total_gross": float(single["gross_salary"]) if single else 0,
+            "total_deductions": float(single["total_deductions"]) if single else 0,
+            "total_net": float(single["net_salary"]) if single else 0,
+            "average_salary": float(single["net_salary"] / single["count"]) if single else 0,
+        }
+    else:
+        # Mixed currencies are reported per currency; there is no FX snapshot to convert them.
+        summary = {}
+        for code, b in sorted(by_currency.items()):
+            summary[f"total_gross_{code}"] = float(b["gross_salary"])
+            summary[f"total_net_{code}"] = float(b["net_salary"])
     return {
         "period": label,
         "total_records": len(records),
         "records": records,
-        "summary": {
-            "total_gross": float(totals["gross"]),
-            "total_deductions": float(totals["deductions"]),
-            "total_net": float(totals["net"]),
-            "average_salary": float(totals["net"] / len(records)) if records else 0,
-        },
+        "currency": next(iter(by_currency)) if single else None,
+        "currencies": sorted(by_currency),
+        "summary": summary,
     }
 
 
@@ -225,14 +236,14 @@ def department_analytics(db: Session, principal: Principal, year: Optional[int] 
         attendance.setdefault(dept_id, {})[status] = count
     payroll: dict = {}
     if show_payroll:
-        for dept_id, total, count in (
-            db.query(Employee.department_id, func.sum(Payroll.net_salary), func.count(Payroll.id))
+        for dept_id, currency, total, count in (
+            db.query(Employee.department_id, Payroll.currency, func.sum(Payroll.net_salary), func.count(Payroll.id))
             .join(Employee, Employee.id == Payroll.employee_id)
             .filter(Payroll.company_id == principal.company_id, Payroll.salary_month >= start, Payroll.salary_month < end)
-            .group_by(Employee.department_id)
+            .group_by(Employee.department_id, Payroll.currency)
             .all()
         ):
-            payroll[dept_id] = (Decimal(total or 0), count)
+            payroll.setdefault(dept_id, {})[currency] = (Decimal(total or 0), count)
 
     analytics = []
     for dept in db.query(Department).filter(Department.company_id == principal.company_id).order_by(Department.name).all():
@@ -247,12 +258,23 @@ def department_analytics(db: Session, principal: Principal, year: Optional[int] 
             "attendance": {"present": stats.get("present", 0), "absent": stats.get("absent", 0), "late": stats.get("late", 0)},
         }
         if show_payroll:
-            total, count = payroll.get(dept.id, (Decimal("0"), 0))
-            item["payroll"] = {
-                "total_salary": float(total),
-                "average_salary": float(total / employees) if employees else 0,
-                "records_count": count,
-            }
+            per_currency = payroll.get(dept.id, {})
+            if len(per_currency) <= 1:
+                currency, (total, count) = next(iter(per_currency.items()), (None, (Decimal("0"), 0)))
+                item["payroll"] = {
+                    "currency": currency,
+                    "total_salary": float(total),
+                    "average_salary": float(total / employees) if employees else 0,
+                    "records_count": count,
+                }
+            else:
+                item["payroll"] = {
+                    "currency": None,
+                    "total_salary": None,
+                    "average_salary": None,
+                    "records_count": sum(c for _, c in per_currency.values()),
+                    "by_currency": {code: float(t) for code, (t, _) in sorted(per_currency.items())},
+                }
         analytics.append(item)
     return {"period": label, "total_departments": len(analytics), "analytics": analytics, "payroll_visible": show_payroll}
 
@@ -295,12 +317,17 @@ def employee_analytics(db: Session, principal: Principal, employee_id: int, year
         payrolls = db.query(Payroll).filter(
             Payroll.employee_id == employee.id, Payroll.salary_month >= start, Payroll.salary_month < end
         ).all()
-        net = sum((Decimal(p.net_salary) for p in payrolls), Decimal("0"))
+        from app.services.payroll_service import totals_by_currency
+
+        by_currency = totals_by_currency(payrolls)
+        single = next(iter(by_currency.values())) if len(by_currency) == 1 else None
         result["payroll"] = {
             "total_records": len(payrolls),
-            "total_gross": float(sum((Decimal(p.gross_salary) for p in payrolls), Decimal("0"))),
-            "total_net": float(net),
-            "average_salary": float(net / len(payrolls)) if payrolls else 0,
+            "currency": next(iter(by_currency)) if single else None,
+            "total_gross": float(single["gross_salary"]) if single else (None if by_currency else 0),
+            "total_net": float(single["net_salary"]) if single else (None if by_currency else 0),
+            "average_salary": float(single["net_salary"] / single["count"]) if single else (None if by_currency else 0),
+            "by_currency": {code: float(b["net_salary"]) for code, b in sorted(by_currency.items())},
         }
     return result
 

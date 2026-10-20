@@ -61,8 +61,35 @@ class Settings(BaseSettings):
     # raise it only for load or end-to-end test environments.
     auth_rate_limit_scale: float = 1.0
 
-    # Public URL of the Next.js app (used in invitation links)
+    # Public URL of the Next.js app on the platform host. Links for tenants without a
+    # verified host use it; tenant hosts reuse its scheme and port.
     frontend_url: str = "http://localhost:3000"
+
+    # ---------------------------------------------------------------
+    # White label: hosts, custom domains and branding
+    #
+    # PLATFORM_HOSTS          hostnames (no port) of the platform itself; users of any
+    #                         tenant may sign in there.
+    # PLATFORM_BASE_DOMAIN    tenants get <slug>.<base domain> automatically; empty
+    #                         disables per-tenant hosts (single-host mode).
+    # PROXY_SHARED_SECRET     the Next.js server sends it with the original Host. Without
+    #                         a matching secret every request counts as the platform host.
+    # ---------------------------------------------------------------
+    platform_hosts: Union[List[str], str] = ["localhost", "127.0.0.1"]
+    platform_base_domain: str = ""
+    proxy_shared_secret: str = ""
+    custom_domain_cname_target: str = ""
+    # dns | fixture (development/test only: records come from DOMAIN_DNS_FIXTURE_FILE)
+    domain_dns_provider: str = "dns"
+    domain_dns_fixture_file: str = ""
+    # probe (TLS handshake against the host) | local-dev (development/test only: no TLS)
+    tls_provider: str = "probe"
+    domain_verification_window_hours: int = 72
+    domain_broken_grace_days: int = 14
+    handoff_code_ttl_seconds: int = 60
+    brand_cache_seconds: int = 60
+    # Development and test only: rendered emails are written here when SMTP is not configured.
+    email_outbox_dir: str = "./logs/outbox"
 
     # Face Recognition
     face_recognition_threshold: float = 0.45
@@ -98,7 +125,7 @@ class Settings(BaseSettings):
     # end-to-end tests and is refused in staging and production.
     location_tracking_min_interval_minutes: int = 15
 
-    @field_validator("allowed_origins", mode="after")
+    @field_validator("allowed_origins", "platform_hosts", mode="after")
     @classmethod
     def _parse_origins(cls, v):
         if isinstance(v, str):
@@ -131,6 +158,16 @@ class Settings(BaseSettings):
             self.environment in ("production", "staging") and self.location_tracking_min_interval_minutes < 15
         ):
             raise ValueError("LOCATION_TRACKING_MIN_INTERVAL_MINUTES must be at least 15 in staging and production")
+        self.platform_hosts = [h.strip().lower().rstrip(".") for h in self.platform_hosts if h.strip()]
+        self.platform_base_domain = self.platform_base_domain.strip().lower().strip(".")
+        if self.environment in ("production", "staging"):
+            if self.domain_dns_provider != "dns" or self.tls_provider != "probe":
+                raise ValueError("DNS fixtures and the local-dev TLS provider are for development and tests only")
+            if self.platform_base_domain and len(self.proxy_shared_secret) < 32:
+                raise ValueError("PROXY_SHARED_SECRET (32+ characters) is required when tenant hosts are enabled")
+        if self.platform_base_domain and self.cookie_domain:
+            # A shared cookie domain would send one tenant host's session to every other host.
+            raise ValueError("COOKIE_DOMAIN must be unset when PLATFORM_BASE_DOMAIN enables tenant hosts")
         return self
 
     @property

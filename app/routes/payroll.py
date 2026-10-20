@@ -2,15 +2,14 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Path, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.core.principal import Principal, require
 from app.database.db import get_db
 from app.models.employee import Employee
 from app.schemas.admin import SalaryStructureCreate, SalaryStructureUpdate
-from app.services import payroll_service
-from app.utils.pdf_generator import SalarySlipGenerator
+from app.services import document_service, payroll_service
 
 router = APIRouter(prefix="/api/v1", tags=["Payroll"])
 
@@ -86,37 +85,17 @@ def get_slip(payroll_id: int, principal: Principal = Depends(require("payroll:re
 @router.get("/payroll/{payroll_id}/slip.pdf")
 def get_slip_pdf(payroll_id: int, principal: Principal = Depends(require("payroll:read")),
                  db: Session = Depends(get_db)):
-    slip = payroll_service.slip(db, principal, payroll_id)
-    components, deductions = slip["salary_components"], slip["deductions"]
-    pdf = SalarySlipGenerator.generate_pdf(
-        {
-            "salary_month": slip["salary_month"],
-            "basic_salary": components["basic_salary"],
-            "hra": components["house_rent_allowance"],
-            "da": components["dearness_allowance"],
-            "conveyance": components["conveyance_allowance"],
-            "other_allowances": components["other_allowances"],
-            "overtime_amount": components["overtime_amount"],
-            "gross_salary": slip["gross_salary"],
-            "absent_deduction": deductions["attendance_deductions"],
-            "half_day_deduction": 0,
-            "late_penalty": 0,
-            "total_deductions": slip["total_deductions"],
-            "net_salary": slip["net_salary"],
-            "working_days": slip["attendance"]["working_days"],
-            "present_days": slip["attendance"]["present_days"],
-            "absent_days": slip["attendance"]["absent_days"],
-        },
-        {
-            "name": slip["employee"]["name"],
-            "employee_id": slip["employee"]["employee_code"],
-            "department": slip["employee"]["department"],
-            "position": slip["employee"]["designation"],
-        },
-    )
-    filename = f"payslip-{slip['employee']['employee_code']}-{slip['salary_month'].replace(' ', '-')}.pdf"
-    return StreamingResponse(pdf, media_type="application/pdf",
-                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    payroll = payroll_service.get_visible(db, principal, payroll_id)
+    employee = db.get(Employee, payroll.employee_id)
+    data, document = document_service.payslip_pdf(db, principal, payroll)
+    month = payroll.salary_month.strftime("%B-%Y")
+    filename = f"payslip-{employee.employee_code}-{month}.pdf"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "private, no-store"}
+    if document is not None:
+        headers["X-Document-Number"] = document.snapshot.get("document_number", "")
+        headers["X-Brand-Version"] = document.brand_version or ""
+        headers["X-Document-SHA256"] = document.sha256 or ""
+    return Response(content=data, media_type="application/pdf", headers=headers)
 
 
 @router.post("/payroll/{payroll_id}/approve")

@@ -4,6 +4,9 @@
     python -m app.cli create-platform-admin --email ops@example.com --name "Ops"
     python -m app.cli rls-status
     python -m app.cli attendance-sweep                         (schedule every ~15 minutes)
+    python -m app.cli sync-tenant-hosts                        (after changing PLATFORM_BASE_DOMAIN)
+    python -m app.cli domain-checks                            (schedule every ~5 minutes)
+    python -m app.cli org-sync                                 (daily: applies future-dated placements)
 """
 
 import argparse
@@ -30,6 +33,9 @@ def grant_app_role(connection, role: str) -> None:
         connection.execute(text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO {role}"))
     # Attendance events are append-only (a trigger also refuses changes).
     connection.execute(text(f"REVOKE UPDATE, DELETE ON attendance_events FROM {role}"))
+    # Issued documents are immutable; only the stored-file pointer may be filled in later.
+    connection.execute(text(f"REVOKE UPDATE, DELETE ON issued_documents FROM {role}"))
+    connection.execute(text(f"GRANT UPDATE (sha256, storage_path, updated_at) ON issued_documents TO {role}"))
     # Companies are created by the system role during signup; tenants may only
     # read and edit their own row (RLS restricts which row).
     connection.execute(text(f"REVOKE ALL ON companies FROM {role}"))
@@ -37,8 +43,12 @@ def grant_app_role(connection, role: str) -> None:
     # Audit trail: append-only.
     connection.execute(text(f"REVOKE ALL ON audit_logs FROM {role}"))
     connection.execute(text(f"GRANT SELECT, INSERT ON audit_logs TO {role}"))
-    # Platform principals are invisible to the tenant application role.
-    for table in ("platform_admins", "platform_sessions", "alembic_version"):
+    # Platform principals, partners, platform/partner brands and login handoff codes are
+    # invisible to the tenant application role (they are read through the system session).
+    for table in (
+        "platform_admins", "platform_sessions", "alembic_version", "partners", "commercial_brand_profiles",
+        "commercial_brand_assets", "auth_handoff_codes",
+    ):
         connection.execute(text(f"REVOKE ALL ON {table} FROM {role}"))
     connection.execute(text(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {role}"))
 
@@ -103,6 +113,42 @@ def attendance_sweep() -> None:
             db.close()
 
 
+def sync_tenant_hosts() -> None:
+    from app.services import domain_service
+
+    print(domain_service.sync_platform_subdomains())
+
+
+def domain_checks() -> None:
+    """DNS/TLS state machine for custom domains (pending, verifying, active re-checks, broken -> disabled)."""
+    from app.services import domain_service
+
+    for line in domain_service.run_checks():
+        print(line)
+
+
+def org_sync() -> None:
+    """Copy each employee's current primary placement into the legacy employee columns."""
+    from app.database.db import SessionLocal, bind_tenant, system_session
+    from app.models.company import Company
+    from app.services import org_structure_service
+
+    with system_session() as db:
+        company_ids = [cid for (cid,) in db.query(Company.id).order_by(Company.id)]
+    for company_id in company_ids:
+        db = SessionLocal()
+        try:
+            bind_tenant(db, company_id)
+            changed = org_structure_service.sync_all_current(db, company_id)
+            db.commit()
+            print(f"company {company_id}: {changed} employee(s) updated")
+        except Exception as exc:
+            db.rollback()
+            print(f"company {company_id}: org sync failed: {exc}", file=sys.stderr)
+        finally:
+            db.close()
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -116,6 +162,9 @@ def main(argv=None) -> None:
 
     sub.add_parser("rls-status", help="Show whether the app role is subject to row-level security")
     sub.add_parser("attendance-sweep", help="Detect expired shifts and missed location checks; apply retention")
+    sub.add_parser("sync-tenant-hosts", help="Create <slug>.<PLATFORM_BASE_DOMAIN> hosts for every company")
+    sub.add_parser("domain-checks", help="Run DNS/TLS verification for custom domains")
+    sub.add_parser("org-sync", help="Apply effective-dated placements to the legacy employee columns")
 
     args = parser.parse_args(argv)
     if args.command == "setup-db-roles":
@@ -130,6 +179,12 @@ def main(argv=None) -> None:
         print(rls_status())
     elif args.command == "attendance-sweep":
         attendance_sweep()
+    elif args.command == "sync-tenant-hosts":
+        sync_tenant_hosts()
+    elif args.command == "domain-checks":
+        domain_checks()
+    elif args.command == "org-sync":
+        org_sync()
 
 
 if __name__ == "__main__":

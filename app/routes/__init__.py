@@ -1,10 +1,12 @@
 from app.routes import (
     attendance,
     auth,
+    branding,
     dashboard,
     employees,
     leaves,
     operations,
+    org_structure,
     organization,
     payroll,
     platform,
@@ -14,6 +16,7 @@ from app.routes import (
 )
 
 ROUTERS = [
+    branding.public,
     auth.router,
     platform.router,
     users.router,
@@ -26,4 +29,6 @@ ROUTERS = [
     reports.router,
     settings.router,
     dashboard.router,
+    branding.router,
+    org_structure.router,
 ]

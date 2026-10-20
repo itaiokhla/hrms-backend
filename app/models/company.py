@@ -1,10 +1,34 @@
 from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, Integer, String
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from app.models.base import BaseModel
 
 COMPANY_STATUSES = ("active", "suspended", "closed")
 SUBSCRIPTION_STATUSES = ("trialing", "active", "past_due", "canceled")
+PARTNER_STATUSES = ("active", "suspended", "closed")
+BILLING_MODES = ("PLATFORM_BILLS_TENANT", "PARTNER_BILLS_TENANT")
+
+
+class Partner(BaseModel):
+    """A reseller or payroll bureau (commercial level, 02-multi-level-company §7).
+
+    Owning the commercial relationship grants no access to a tenant's HR data.
+    """
+
+    __tablename__ = "partners"
+
+    name = Column(String(150), nullable=False)
+    slug = Column(String(80), nullable=False, unique=True)
+    status = Column(String(20), nullable=False, default="active")
+    billing_mode = Column(String(30), nullable=False, default="PLATFORM_BILLS_TENANT")
+    # Branding/domain entitlements this partner gives its tenants ("Partner decides", 01 §10).
+    tenant_entitlements = Column(JSONB, nullable=False, default=dict)
+
+    __table_args__ = (
+        CheckConstraint(f"status IN {PARTNER_STATUSES}", name="ck_partners_status"),
+        CheckConstraint(f"billing_mode IN {BILLING_MODES}", name="ck_partners_billing_mode"),
+    )
 
 
 class Company(BaseModel):
@@ -20,6 +44,13 @@ class Company(BaseModel):
     trial_ends_at = Column(DateTime(timezone=True), nullable=True)
     timezone = Column(String(64), nullable=False, default="Asia/Kolkata")
     currency = Column(String(3), nullable=False, default="INR")
+    partner_id = Column(Integer, ForeignKey("partners.id", ondelete="RESTRICT"), nullable=True, index=True)
+    # Headquarters country (ISO 3166-1 alpha-2) and first-visit locale (BCP 47).
+    country_code = Column(String(2), nullable=True)
+    default_locale = Column(String(35), nullable=True)
+    # Platform abuse kill switch (01 §15.12): the tenant falls back to the platform brand.
+    brand_disabled_at = Column(DateTime(timezone=True), nullable=True)
+    brand_disabled_reason = Column(String(255), nullable=True)
 
     __table_args__ = (
         CheckConstraint(f"status IN {COMPANY_STATUSES}", name="ck_companies_status"),
