@@ -359,3 +359,25 @@ def test_payslip_email_never_contains_amounts():
     context = email_templates.sample_context("payroll.payslip_published", "Acme", "HRMS")
     text = email_templates.render("payroll.payslip_published", context, {"display_name": "Acme", "product_name": "HRMS"}).text
     assert "₹" not in text and "does not include amounts" in text
+
+
+def test_domain_moved_to_another_tenant_never_shows_the_previous_brand(app, tenants):
+    a, b = tenants
+    ops = platform_admin(app)
+    set_plan(ops, a.company_id, "professional")
+    set_plan(ops, b.company_id, "professional")
+    a.put("/api/v1/branding/draft", json={"changes": {"tagline": "Acme on its domain"}})
+    a.post("/api/v1/branding/publish", json={})
+    first = a.post("/api/v1/domains", json={"hostname": "hr.shared-example.com"}).json()
+    write_dns(_domain_records(first))
+    a.post(f"/api/v1/domains/{first['id']}/verify")
+    assert HostClient(app, "hr.shared-example.com").get("/api/v1/public/brand").json()["tagline"] == "Acme on its domain"
+    a.delete(f"/api/v1/domains/{first['id']}")
+    assert HostClient(app, "hr.shared-example.com").get("/api/v1/public/brand").json()["host_kind"] == "UNKNOWN"
+    second = b.post("/api/v1/domains", json={"hostname": "hr.shared-example.com"}).json()
+    write_dns(_domain_records(second))
+    assert b.post(f"/api/v1/domains/{second['id']}/verify").json()["status"] == "ACTIVE"
+    brand = HostClient(app, "hr.shared-example.com").get("/api/v1/public/brand").json()
+    assert brand["display_name"] == "Beta Industries" and brand["tagline"] != "Acme on its domain"
+    assert HostClient(app, "hr.shared-example.com").login("admin@acme.io").status_code == 401
+    assert HostClient(app, "hr.shared-example.com").login("admin@beta.io").status_code == 200

@@ -36,7 +36,8 @@ RESERVED_LABELS = frozenset(
 )
 
 _LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
-_CACHE_TTL_SECONDS = 60
+# Short, because a hostname can move to another tenant (removed by one, verified by another).
+_CACHE_TTL_SECONDS = 10
 
 
 @dataclass(frozen=True)
