@@ -13,7 +13,7 @@ exports all see exactly the same authorised set. Default is deny.
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional
 
-from sqlalchemy import ColumnElement, Select, false, select, true, union
+from sqlalchemy import ColumnElement, Select, false, literal, select, true, union
 from sqlalchemy.orm import Session
 
 from app.core import hierarchy
@@ -71,7 +71,7 @@ def employee_scope(db: Session, principal: Principal, permission: str) -> Employ
             selects.append(
                 select(Employee.id).where(
                     Employee.company_id == cid,
-                    Employee.department_id.in_(union(headed, own)),
+                    Employee.department_id.in_(_with_child_departments(cid, union(headed, own))),
                 )
             )
     if Scope.ASSIGNED_GROUP.value in scopes:
@@ -80,7 +80,32 @@ def employee_scope(db: Session, principal: Principal, permission: str) -> Employ
                 ScopeAssignment.company_id == cid, ScopeAssignment.user_id == principal.user_id
             )
         )
+    # Entity and branch scopes cover only their explicit targets; no targets means no access.
+    for scope, column in ((Scope.LEGAL_ENTITY, "legal_entity_id"), (Scope.BRANCH, "branch_id")):
+        if scope.value in scopes:
+            targets = principal.scope_targets(permission, scope.value)
+            if targets:
+                from app.services.org_structure_service import current_assignment_select
+
+                selects.append(current_assignment_select(cid, column, targets))
     return EmployeeScope(selects=selects)
+
+
+def _with_child_departments(company_id: int, roots: Select) -> Select:
+    """The given departments plus all their teams (child departments), cycle-safe and depth-limited."""
+    roots_cte = roots.subquery()
+    tree = (
+        select(Department.id.label("id"), literal(0).label("depth"))
+        .where(Department.company_id == company_id, Department.id.in_(select(roots_cte.c[0])))
+        .cte("department_tree", recursive=True)
+    )
+    child = (
+        select(Department.id, (tree.c.depth + 1))
+        .join(tree, Department.parent_department_id == tree.c.id)
+        .where(Department.company_id == company_id, tree.c.depth < hierarchy.MAX_DEPTH)
+    )
+    tree = tree.union(child)
+    return select(tree.c.id)
 
 
 def scoped_employee_ids(db: Session, principal: Principal, *permissions: str) -> EmployeeScope:

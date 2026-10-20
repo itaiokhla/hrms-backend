@@ -33,7 +33,11 @@ def slugify(name: str) -> str:
 
 
 def unique_slug(db: Session, name: str) -> str:
+    from app.core.hosts import RESERVED_LABELS
+
     base = slugify(name)
+    if base in RESERVED_LABELS:
+        base = f"{base}-co"  # the slug becomes <slug>.<platform domain>; reserved names stay unused
     slug = base
     while db.query(Company.id).filter(Company.slug == slug).first():
         slug = f"{base}-{secrets.token_hex(3)}"
@@ -88,6 +92,14 @@ def provision_company(
     shift = Shift(name="General Shift", start_time="09:00", end_time="18:00", duration_hours=9)
     db.add_all([department, shift])
     db.flush()
+    from app.services import org_structure_service
+
+    # Default employer (legal entity) and work location; the admin confirms the country later.
+    org_structure_service.provision_structure(db, company)
+    from app.models.branding import BrandProfile
+
+    db.add(BrandProfile(company_id=company.id, owner_type="TENANT", version=1, status="PUBLISHED",
+                        published_at=utcnow(), published_by="signup", created_by="signup", change_summary=[]))
 
     user = User(
         email=admin_email.strip().lower(),
@@ -101,21 +113,38 @@ def provision_company(
     rbac_service.assign_role_by_key(db, company.id, user, "company_admin")
 
     first, _, last = admin_full_name.strip().partition(" ")
-    db.add(
-        Employee(
-            user_id=user.id,
-            employee_code="EMP-0001",
-            first_name=first or admin_full_name,
-            last_name=last or "-",
-            email=user.email,
-            department_id=department.id,
-            shift_id=shift.id,
-            position="Administrator",
-            hire_date=today_for(company),
-        )
+    employee = Employee(
+        user_id=user.id,
+        employee_code="EMP-0001",
+        first_name=first or admin_full_name,
+        last_name=last or "-",
+        email=user.email,
+        department_id=department.id,
+        shift_id=shift.id,
+        position="Administrator",
+        hire_date=today_for(company),
     )
+    db.add(employee)
     db.flush()
+    org_structure_service.record_hire(db, employee, user.id)
     return company, user
+
+
+def repair_defaults(db: Session, company: Company) -> dict:
+    """Create what signup and hiring would have created for rows written without it (raw SQL, or the
+    previous release after a code rollback): default legal entity and branch, placements, a brand."""
+    from app.models.branding import BrandProfile
+    from app.services import org_structure_service
+
+    created = org_structure_service.repair_missing_structure(db, company)
+    created["brands"] = 0
+    if db.query(BrandProfile.id).filter(BrandProfile.company_id == company.id,
+                                        BrandProfile.owner_type == "TENANT").first() is None:
+        db.add(BrandProfile(company_id=company.id, owner_type="TENANT", version=1, status="PUBLISHED",
+                            published_at=utcnow(), published_by="repair", created_by="repair", change_summary=[]))
+        db.flush()
+        created["brands"] = 1
+    return created
 
 
 def today_for(company: Company) -> date:

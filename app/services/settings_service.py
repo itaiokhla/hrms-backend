@@ -144,7 +144,7 @@ def get_all(db: Session, company_id: int) -> dict:
             "companyName": company.name,
             "timezone": company.timezone,
             "currency": company.currency,
-            "hasLogo": bool(get_logo_path(db, company_id)),
+            "hasLogo": bool(get_logo_path(db, company_id)) or _has_brand_logo(company_id),
         }
     )
     return result
@@ -211,6 +211,13 @@ def update(db: Session, principal: Principal, data: Dict[str, Any], only: Iterab
 
 
 LOGO_KEY = "_logoPath"
+
+
+def _has_brand_logo(company_id: int) -> bool:
+    from app.services import brand_service
+
+    brand = brand_service.effective_for_company(company_id)
+    return brand.sources["logo_light"]["level"] == "TENANT" and bool(brand.values.get("logo_light"))
 
 
 def get_logo_path(db: Session, company_id: int):

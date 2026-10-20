@@ -80,6 +80,9 @@ class UserSession(TenantMixin, BaseModel):
     revoke_reason = Column(String(50), nullable=True)
     ip_address = Column(String(64), nullable=True)
     user_agent = Column(String(255), nullable=True)
+    # Host the session was created on (sessions never move between hosts; removing a
+    # domain revokes its sessions). NULL for sessions created before hosts were tracked.
+    host = Column(String(253), nullable=True, index=True)
 
     __table_args__ = (
         ForeignKeyConstraint(

@@ -11,7 +11,6 @@ from typing import List, Optional
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
-from app.config import settings
 from app.core.errors import bad_request, conflict, forbidden, not_found
 from app.core.principal import Principal, load_grants
 from app.core.security import utcnow
@@ -20,7 +19,7 @@ from app.models.company import Company
 from app.models.employee import Employee
 from app.models.rbac import Role, ScopeAssignment, UserRoleAssignment
 from app.models.user import User, UserSession
-from app.services import auth_service, location_service, rbac_service
+from app.services import auth_service, domain_service, location_service, rbac_service
 from app.services.audit_log_service import AuditLogService
 from app.services.email_service import EmailService
 
@@ -155,14 +154,15 @@ def invite(db: Session, principal: Principal, data) -> dict:
         db.add(UserRoleAssignment(company_id=principal.company_id, user_id=user.id, role_id=role.id,
                                   assigned_by_user_id=principal.user_id, effective_from=now))
     token = auth_service.create_invitation(db, user, principal.user_id)
-    invite_url = f"{settings.frontend_url.rstrip('/')}/accept-invite?token={token}"
+    # Links come from the tenant's verified primary host in the database, never the request Host.
+    invite_url = f"{domain_service.public_base_url(principal.company_id)}/accept-invite?token={token}"
     company = db.get(Company, principal.company_id)
     AuditLogService.log(
         db, principal, "Users", "INVITE",
         f"Invited {email} with roles [{', '.join(r.name for r in roles)}]", "user", user.id,
     )
     db.flush()
-    emailed = EmailService.send_invitation(email, company.name, invite_url)
+    emailed = EmailService.send_invitation(email, company.name, invite_url, company_id=company.id, name=user.full_name)
     return {"user_id": user.id, "invite_url": invite_url, "emailed": emailed}
 
 
@@ -171,10 +171,11 @@ def resend_invitation(db: Session, principal: Principal, user_id: int) -> dict:
     if user.status != "invited":
         raise bad_request("This user has already accepted their invitation.")
     token = auth_service.create_invitation(db, user, principal.user_id)
-    invite_url = f"{settings.frontend_url.rstrip('/')}/accept-invite?token={token}"
+    invite_url = f"{domain_service.public_base_url(principal.company_id)}/accept-invite?token={token}"
     company = db.get(Company, principal.company_id)
     AuditLogService.log(db, principal, "Users", "INVITE_RESENT", f"Re-sent invitation to {user.email}", "user", user.id)
-    return {"user_id": user.id, "invite_url": invite_url, "emailed": EmailService.send_invitation(user.email, company.name, invite_url)}
+    emailed = EmailService.send_invitation(user.email, company.name, invite_url, company_id=company.id, name=user.full_name)
+    return {"user_id": user.id, "invite_url": invite_url, "emailed": emailed}
 
 
 def update(db: Session, principal: Principal, user_id: int, data) -> None:

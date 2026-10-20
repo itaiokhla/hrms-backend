@@ -8,14 +8,16 @@ request body, query parameter or header can choose the tenant.
 
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Dict, FrozenSet, Optional
+from typing import Dict, FrozenSet, Optional, Tuple
+from urllib.parse import urlsplit
 
 from fastapi import Depends, Request, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.core.errors import AppError, forbidden, unauthorized
-from app.core.permission_registry import PERMISSIONS, Scope, scope_covers
+from app.core.errors import AppError, forbidden, not_found, unauthorized
+from app.core.hosts import company_allowed_on_host, normalize_host, request_host
+from app.core.permission_registry import PERMISSIONS, TARGETED_SCOPES, Scope, scope_covers
 from app.core.security import (
     ACCESS_COOKIE,
     CSRF_COOKIE,
@@ -50,9 +52,14 @@ class Principal:
     permission_version: int
     subscription_active: bool = True
     extra: dict = field(default_factory=dict)
+    # (permission, LEGAL_ENTITY|BRANCH) -> ids covered by the user's role assignments.
+    targets: Dict[Tuple[str, str], FrozenSet[int]] = field(default_factory=dict)
 
     def scopes(self, code: str) -> FrozenSet[str]:
         return self.grants.get(code, frozenset())
+
+    def scope_targets(self, code: str, scope: str) -> FrozenSet[int]:
+        return self.targets.get((code, scope), frozenset())
 
     def has(self, code: str, scope: Optional[str] = None) -> bool:
         held = self.scopes(code)
@@ -87,6 +94,12 @@ def _check_csrf(request: Request) -> None:
     header = request.headers.get(CSRF_HEADER)
     if not cookie or not header or not tokens_equal(cookie, header):
         raise AppError(status.HTTP_403_FORBIDDEN, "CSRF validation failed", "CSRF_FAILED")
+    # Behind the trusted proxy, a browser Origin must be exactly the host the request arrived on.
+    context = request_host(request)
+    origin = request.headers.get("origin")
+    if context.trusted and origin and origin != "null":
+        if normalize_host(urlsplit(origin).netloc) != context.host:
+            raise AppError(status.HTTP_403_FORBIDDEN, "CSRF validation failed", "CSRF_FAILED")
 
 
 def subscription_is_active(company: Company) -> bool:
@@ -134,7 +147,7 @@ def load_grants(db: Session, user_id: int):
             grants.setdefault(code, set()).add(scope)
     if full_access:
         for perm in PERMISSIONS:
-            grants.setdefault(perm.code, set()).update(s.value for s in perm.scopes)
+            grants.setdefault(perm.code, set()).update(s.value for s in perm.scopes if s not in TARGETED_SCOPES)
     return (
         {code: frozenset(scopes) for code, scopes in grants.items()},
         frozenset(role_ids),
@@ -143,8 +156,39 @@ def load_grants(db: Session, user_id: int):
     )
 
 
+def load_scope_targets(db: Session, user_id: int) -> Dict[Tuple[str, str], FrozenSet[int]]:
+    """Targets of entity/branch-scoped grants, per (permission, scope), from active role assignments."""
+    from app.models.org import RoleAssignmentTarget
+
+    now = utcnow()
+    targeted = tuple(s.value for s in TARGETED_SCOPES)
+    rows = (
+        db.query(RolePermission.permission_code, RolePermission.scope, RoleAssignmentTarget.target_id)
+        .join(UserRoleAssignment, UserRoleAssignment.role_id == RolePermission.role_id)
+        .join(
+            RoleAssignmentTarget,
+            (RoleAssignmentTarget.user_role_assignment_id == UserRoleAssignment.id)
+            & (RoleAssignmentTarget.scope == RolePermission.scope),
+        )
+        .filter(
+            UserRoleAssignment.user_id == user_id,
+            RolePermission.scope.in_(targeted),
+            UserRoleAssignment.effective_from <= now,
+            or_(UserRoleAssignment.effective_until.is_(None), UserRoleAssignment.effective_until > now),
+        )
+        .all()
+    )
+    targets: Dict[Tuple[str, str], set] = {}
+    for code, scope, target_id in rows:
+        targets.setdefault((code, scope), set()).add(target_id)
+    return {key: frozenset(ids) for key, ids in targets.items()}
+
+
 def build_principal(db: Session, user: User, session_id: Optional[str], company: Company) -> Principal:
     grants, role_ids, role_keys, is_admin = load_grants(db, user.id)
+    targeted = {s.value for s in TARGETED_SCOPES}
+    has_targeted = any(scopes & targeted for scopes in grants.values())
+    targets = load_scope_targets(db, user.id) if has_targeted else {}
     employee_id = db.query(Employee.id).filter(Employee.user_id == user.id).scalar()
     return Principal(
         user_id=user.id,
@@ -159,6 +203,7 @@ def build_principal(db: Session, user: User, session_id: Optional[str], company:
         is_company_admin=is_admin,
         permission_version=user.permission_version,
         subscription_active=subscription_is_active(company),
+        targets=targets,
     )
 
 
@@ -179,6 +224,11 @@ def _resolve_principal(request: Request, db: Session) -> Principal:
     if via_cookie:
         _check_csrf(request)
 
+    # A tenant host serves only its own tenant; a session never moves between hosts.
+    context = request_host(request)
+    if not company_allowed_on_host(context, company_id):
+        raise unauthorized("Session expired", "SESSION_EXPIRED")
+
     bind_tenant(db, company_id)
     now = utcnow()
     session_row = db.get(UserSession, session_id)
@@ -187,6 +237,7 @@ def _resolve_principal(request: Request, db: Session) -> Principal:
         or session_row.user_id != user_id
         or session_row.revoked_at is not None
         or session_row.expires_at <= now
+        or (context.trusted and session_row.host and session_row.host != context.host)
     ):
         raise unauthorized("Session expired", "SESSION_EXPIRED")
 
@@ -207,6 +258,19 @@ def _resolve_principal(request: Request, db: Session) -> Principal:
     principal = build_principal(db, user, session_id, company)
     request.state.principal = principal
     return principal
+
+
+def optional_principal(request: Request) -> Optional[Principal]:
+    """The signed-in user if the request carries a valid session, else None (never raises)."""
+    from app.database.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        return _resolve_principal(request, db)
+    except AppError:
+        return None
+    finally:
+        db.close()
 
 
 def get_principal_any_subscription(request: Request, db: Session = Depends(get_db)) -> Principal:
@@ -249,9 +313,16 @@ def require_any(*codes: str):
 # ---------------------------------------------------------------------------
 # Platform administrators (separate principal type, separate cookies)
 # ---------------------------------------------------------------------------
+def require_platform_host(request: Request) -> None:
+    """The platform console exists only on the platform host (01 §6.4 rule 4)."""
+    if not request_host(request).is_platform:
+        raise not_found()
+
+
 def get_platform_principal(request: Request) -> PlatformPrincipal:
     from app.database.db import system_session
 
+    require_platform_host(request)
     token, via_cookie = _extract_token(request, PLATFORM_ACCESS_COOKIE)
     if not token:
         raise unauthorized()

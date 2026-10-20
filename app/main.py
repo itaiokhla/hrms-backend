@@ -27,7 +27,7 @@ app.add_middleware(
     allow_origins=settings.allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-CSRF-Token"],
+    allow_headers=["Content-Type", "Authorization", "X-CSRF-Token", "Idempotency-Key"],
 )
 
 
@@ -44,6 +44,21 @@ async def security_headers(request: Request, call_next):
 
 for router in ROUTERS:
     app.include_router(router)
+
+
+@app.on_event("startup")
+def sync_tenant_hosts() -> None:
+    """Every tenant gets <slug>.<PLATFORM_BASE_DOMAIN> when per-tenant hosts are enabled."""
+    if not settings.platform_base_domain:
+        return
+    try:
+        from app.services import domain_service
+
+        result = domain_service.sync_platform_subdomains()
+        if result["created"]:
+            logger.info("Created %s tenant host(s) under %s", result["created"], settings.platform_base_domain)
+    except Exception:
+        logger.exception("Could not synchronise tenant hosts")
 
 
 @app.on_event("startup")

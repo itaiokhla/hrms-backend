@@ -186,11 +186,14 @@ def create_employee(db: Session, principal: Principal, data: EmployeeCreate) -> 
     if data.base_salary is not None and not principal.has("compensation:manage"):
         raise forbidden("Setting salary requires the Manage compensation permission.")
 
-    values = data.model_dump(exclude={"manager_id"})
+    values = data.model_dump(exclude={"manager_id", "legal_entity_id", "branch_id"})
     values["email"] = data.email.lower()
     employee = Employee(company_id=cid, **values)
     db.add(employee)
     db.flush()
+    from app.services import org_structure_service
+
+    org_structure_service.record_hire(db, employee, principal.user_id, data.legal_entity_id, data.branch_id)
 
     if data.manager_id is not None:
         from app.services import org_service
@@ -230,6 +233,11 @@ def update_employee(db: Session, principal: Principal, employee_id: int, data: E
         _company_ref(db, Shift, principal.company_id, changes["shift_id"], "Shift")
     if "email" in changes and changes["email"]:
         changes["email"] = changes["email"].lower()
+    if "department_id" in changes and changes["department_id"] != employee.department_id:
+        from app.services import org_structure_service
+
+        # Keep placement history: the change becomes a dated assignment instead of an overwrite.
+        org_structure_service.record_department_change(db, principal, employee, changes["department_id"])
     for key, value in changes.items():
         setattr(employee, key, value)
     AuditLogService.log(
@@ -267,6 +275,9 @@ def deactivate_employee(db: Session, principal: Principal, employee_id: int) -> 
     # Historical attendance, leave and payroll stay untouched.
     employee.is_active = False
     employee.termination_date = date.today()
+    from app.services import org_structure_service
+
+    org_structure_service.close_on_termination(db, employee, employee.termination_date)
     AuditLogService.log(
         db, principal, "Employees", "DEACTIVATE", f"Ended employment of {employee.employee_code}", "employee", employee.id
     )
@@ -275,8 +286,14 @@ def deactivate_employee(db: Session, principal: Principal, employee_id: int) -> 
 
 def reactivate_employee(db: Session, principal: Principal, employee_id: int) -> Employee:
     employee = authz.ensure_employee_access(db, principal, "employee:deactivate", employee_id)
+    was_active = employee.is_active
     employee.is_active = True
     employee.termination_date = None
+    if not was_active:
+        from app.services import org_structure_service
+
+        # Rehire: same employee row and code, new placement from today (02 §13 rule 7).
+        org_structure_service.record_rehire(db, employee, principal.user_id, date.today())
     AuditLogService.log(
         db, principal, "Employees", "REACTIVATE", f"Reactivated employee {employee.employee_code}", "employee", employee.id
     )
@@ -346,6 +363,7 @@ def list_departments(db: Session, principal: Principal) -> List[dict]:
             "is_active": d.is_active,
             "head_employee_id": d.head_employee_id,
             "head_name": d.head.full_name if d.head else None,
+            "parent_department_id": d.parent_department_id,
             "employee_count": count,
         }
         for d, count in rows
@@ -363,11 +381,15 @@ def save_department(db: Session, principal: Principal, data, department_id: Opti
         head = _company_ref(db, Employee, cid, data.head_employee_id, "Employee")
         if not head.is_active:
             raise bad_request("The department head must be an active employee.")
+    from app.services import org_structure_service
+
+    parent_id = org_structure_service.validate_department_parent(db, cid, department_id, data.parent_department_id)
     if department_id:
         department = _company_ref(db, Department, cid, department_id, "Department")
     else:
         department = Department(company_id=cid)
         db.add(department)
+    department.parent_department_id = parent_id
     department.name = data.name.strip()
     department.description = data.description
     department.head_employee_id = data.head_employee_id

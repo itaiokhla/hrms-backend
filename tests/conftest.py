@@ -64,6 +64,15 @@ def pytest_configure(config):
             "SYSTEM_DATABASE_URL": owner_url,
             "MIGRATION_DATABASE_URL": owner_url,
             "UPLOAD_DIR": os.path.join(tempfile.gettempdir(), "hrms_test_uploads"),
+            "EMAIL_OUTBOX_DIR": os.path.join(tempfile.gettempdir(), "hrms_test_outbox"),
+            "PROXY_SHARED_SECRET": "test-proxy-secret-that-is-long-enough-123",
+            "PLATFORM_HOSTS": "app.test.local,localhost",
+            "PLATFORM_BASE_DOMAIN": "test.local",
+            "CUSTOM_DOMAIN_CNAME_TARGET": "tenants.test.local",
+            "DOMAIN_DNS_PROVIDER": "fixture",
+            "DOMAIN_DNS_FIXTURE_FILE": os.path.join(tempfile.gettempdir(), "hrms_test_dns.json"),
+            "TLS_PROVIDER": "local-dev",
+            "FRONTEND_URL": "http://app.test.local:3000",
             "DB_POOL_SIZE": "5",
         }
     )
@@ -107,11 +116,26 @@ def clean_database():
     from app.database.db import system_engine
     from app.models import Base
 
+    from app.core.hosts import invalidate_host_cache
+    from app.services.brand_service import invalidate_cache
+
+    invalidate_host_cache()
+    invalidate_cache()
     yield
     tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
     with system_engine.begin() as conn:
         conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+        # Restore the platform brand that migration 0006 installs.
+        conn.execute(text(
+            "INSERT INTO commercial_brand_profiles (owner_type, version, status, display_name, product_name, short_name, "
+            "tagline, show_powered_by, powered_by_label, locked_fields, published_at, published_by, created_by, change_summary) "
+            "VALUES ('PLATFORM', 1, 'PUBLISHED', 'Intertech HRMS', 'Intertech HRMS', 'HRMS', "
+            "'People, attendance, leave and payroll in one place.', true, 'Powered by Intertech HRMS', '{}', now(), "
+            "'migration 0006', 'migration 0006', '[]'::jsonb)"
+        ))
     limiter.reset()
+    invalidate_host_cache()
+    invalidate_cache()
 
 
 @pytest.fixture

@@ -99,6 +99,7 @@ class UserRoleAssignment(TenantMixin, BaseModel):
             name="fk_user_role_assignments_role",
         ),
         UniqueConstraint("user_id", "role_id", name="uq_user_role_assignment"),
+        UniqueConstraint("company_id", "id", name="uq_user_role_assignments_company_id_id"),
         CheckConstraint(
             "effective_until IS NULL OR effective_until > effective_from",
             name="ck_user_role_assignment_window",
