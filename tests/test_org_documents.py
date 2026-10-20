@@ -103,6 +103,19 @@ def test_rows_written_by_an_older_release_are_completed(app):
         db.close()
 
 
+def test_hire_with_manager_keeps_branch_location_for_regional_holidays(app, acme):
+    blr = acme.get("/api/v1/branches").json()[0]
+    delhi = acme.post("/api/v1/branches", json={"legal_entity_id": blr["legal_entity_id"], "code": "DEL", "name": "Delhi"}).json()
+    boss = create_employee(acme, "Boss", branch_id=blr["id"])
+    report = create_employee(acme, "Report", branch_id=delhi["id"], manager_id=boss["id"])
+    assert acme.get(f"/api/v1/employees/{report['id']}").json()["location"] == "Delhi"
+    acme.post("/api/v1/holidays", json={"name": "Delhi Day", "date": "2026-11-11", "location": "Delhi"})
+    acme.post("/api/v1/holidays", json={"name": "Company Day", "date": "2026-11-12"})
+    user = invite_and_activate(app, acme, report, ["employee"])
+    mine = [h["name"] for h in user.get("/api/v1/holidays", params={"year": 2026, "mine": True}).json()]
+    assert mine == ["Delhi Day", "Company Day"]
+
+
 def test_entity_validation_iso_codes_and_country_lock(app, acme):
     for bad in ({"country_code": "XX"}, {"base_currency": "ABC"}, {"timezone": "Mars/Base"}):
         payload = {"code": "BAD", "legal_name": "Bad", "country_code": "IN", "base_currency": "INR", "timezone": "UTC", **bad}

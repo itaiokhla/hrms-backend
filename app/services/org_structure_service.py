@@ -451,6 +451,9 @@ def _sync_legacy(db: Session, employee: Employee, assignment: EmployeeAssignment
     branch = db.get(Branch, assignment.branch_id)
     employee.department_id = assignment.department_id
     employee.location = branch.name if branch else employee.location
+    # Flush now: callers such as org_service.assign_manager refresh the employee from the
+    # database, which would silently discard these values (regional holidays then miss them).
+    db.flush()
 
 
 def change_placement(db: Session, principal: Principal, employee: Employee, data: dict) -> EmployeeAssignment:
