@@ -76,8 +76,9 @@ def login(app, email: str, password: str = PASSWORD) -> ApiClient:
 
 
 def role_id(admin: ApiClient, system_key: str) -> int:
-    roles = admin.get("/api/v1/roles").json()
-    return next(r["id"] for r in roles if r["system_key"] == system_key)
+    r = admin.get("/api/v1/roles")
+    assert r.status_code == 200, r.text
+    return next(role["id"] for role in r.json() if role["system_key"] == system_key)
 
 
 def create_employee(admin: ApiClient, first: str, last: str = "Test", manager_id: Optional[int] = None, **extra) -> dict:
