@@ -116,6 +116,30 @@ def test_hire_with_manager_keeps_branch_location_for_regional_holidays(app, acme
     assert mine == ["Delhi Day", "Company Day"]
 
 
+def test_free_text_location_becomes_a_branch_and_moves_with_the_employee(app, acme):
+    boss = create_employee(acme, "Lead")
+    hired = create_employee(acme, "Pune", location="Pune", manager_id=boss["id"])
+    assert acme.get(f"/api/v1/employees/{hired['id']}").json()["location"] == "Pune"
+    branches = {b["name"]: b for b in acme.get("/api/v1/branches").json()}
+    assert "Pune" in branches
+    history = acme.get(f"/api/v1/employees/{hired['id']}/assignments").json()
+    assert [h["branch"] for h in history if h["is_current"]] == ["Pune"]
+    # Editing the location on the employee form is a dated transfer, not an overwrite.
+    r = acme.put(f"/api/v1/employees/{hired['id']}", json={"location": "Mumbai"})
+    assert r.status_code == 200, r.text
+    assert acme.get(f"/api/v1/employees/{hired['id']}").json()["location"] == "Mumbai"
+    history = acme.get(f"/api/v1/employees/{hired['id']}/assignments").json()
+    assert len(history) == 2 and [(h["reason"], h["branch"]) for h in history if h["is_current"]] == [("TRANSFER", "Mumbai")]
+    acme.post("/api/v1/holidays", json={"name": "Mumbai Day", "date": "2026-11-13", "location": "Mumbai"})
+    user = invite_and_activate(app, acme, hired, ["employee"])
+    assert "Mumbai Day" in [h["name"] for h in user.get("/api/v1/holidays", params={"year": 2026, "mine": True}).json()]
+    # The daily job keeps it that way.
+    from app.cli import org_sync
+
+    org_sync()
+    assert acme.get(f"/api/v1/employees/{hired['id']}").json()["location"] == "Mumbai"
+
+
 def test_entity_validation_iso_codes_and_country_lock(app, acme):
     for bad in ({"country_code": "XX"}, {"base_currency": "ABC"}, {"timezone": "Mars/Base"}):
         payload = {"code": "BAD", "legal_name": "Bad", "country_code": "IN", "base_currency": "INR", "timezone": "UTC", **bad}

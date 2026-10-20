@@ -233,6 +233,16 @@ def update_employee(db: Session, principal: Principal, employee_id: int, data: E
         _company_ref(db, Shift, principal.company_id, changes["shift_id"], "Shift")
     if "email" in changes and changes["email"]:
         changes["email"] = changes["email"].lower()
+    if "location" in changes:
+        location = (changes["location"] or "").strip()
+        if not location:
+            changes.pop("location")  # the placement keeps its branch; clearing the text changes nothing
+        elif location != (employee.location or ""):
+            from app.services import org_structure_service
+
+            # Work location is a branch: the change becomes a dated transfer (before any department change).
+            org_structure_service.record_location_change(db, principal, employee, location)
+            changes["location"] = location[:100]
     if "department_id" in changes and changes["department_id"] != employee.department_id:
         from app.services import org_structure_service
 
