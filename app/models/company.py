@@ -66,11 +66,15 @@ class PlatformAdmin(BaseModel):
 
     Deliberately a separate principal from company users: platform admins
     manage tenants and subscriptions and have no route into tenant HR data.
+    With partner_id set the account is a partner administrator instead: it can
+    use only the partner console (its own clients' aggregate counts and its own
+    brand), never the platform console and never tenant HR data.
     """
 
     __tablename__ = "platform_admins"
 
     email = Column(String(255), nullable=False, unique=True)
+    partner_id = Column(Integer, ForeignKey("partners.id", ondelete="RESTRICT"), nullable=True, index=True)
     full_name = Column(String(150), nullable=False)
     password_hash = Column(String(255), nullable=False)
     is_active = Column(Boolean, nullable=False, default=True)

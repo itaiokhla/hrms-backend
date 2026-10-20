@@ -380,6 +380,26 @@ def default_placement(db: Session, company_id: int, location: Optional[str] = No
     return entity.id, branch
 
 
+def branch_for_location(db: Session, company_id: int, name: str) -> Branch:
+    """The branch a free-text work location means: the branch of that name, else a new one in the
+    default legal entity (as the 0005 backfill does), so location and placement never disagree."""
+    name = name.strip()[:100]
+    branch = db.query(Branch).filter(Branch.company_id == company_id, Branch.name == name).first()
+    if branch is not None:
+        return branch
+    entity_id, _ = default_placement(db, company_id)
+    if entity_id is None:
+        raise bad_request("Create a legal entity first.", "ORG_NO_ENTITY")
+    entity = db.get(LegalEntity, entity_id)
+    taken = {code for (code,) in db.query(Branch.code).filter(Branch.company_id == company_id, Branch.legal_entity_id == entity.id)}
+    code = next(f"B{n:02d}" for n in range(1, 1000) if f"B{n:02d}" not in taken)
+    branch = Branch(company_id=company_id, legal_entity_id=entity.id, code=code, name=name,
+                    country_code=entity.country_code, timezone=entity.timezone, status="ACTIVE")
+    db.add(branch)
+    db.flush()
+    return branch
+
+
 def _guess_country(currency: Optional[str], timezone: Optional[str]) -> str:
     by_currency = {"INR": "IN", "AED": "AE", "USD": "US", "GBP": "GB", "SGD": "SG", "AUD": "AU", "CAD": "CA",
                    "SAR": "SA", "QAR": "QA", "JPY": "JP", "EUR": None}
@@ -413,6 +433,9 @@ def record_hire(db: Session, employee: Employee, user_id: Optional[int], legal_e
         branch = _branch(db, cid, branch_id)
         if legal_entity_id and branch.legal_entity_id != legal_entity_id:
             raise bad_request("The branch does not belong to that legal entity.", "ORG_BRANCH_MISMATCH")
+        entity_id = branch.legal_entity_id
+    elif (employee.location or "").strip() and not legal_entity_id:
+        branch = branch_for_location(db, cid, employee.location)
         entity_id = branch.legal_entity_id
     else:
         entity_id, branch = default_placement(db, cid, employee.location)
@@ -451,6 +474,9 @@ def _sync_legacy(db: Session, employee: Employee, assignment: EmployeeAssignment
     branch = db.get(Branch, assignment.branch_id)
     employee.department_id = assignment.department_id
     employee.location = branch.name if branch else employee.location
+    # Flush now: callers such as org_service.assign_manager refresh the employee from the
+    # database, which would silently discard these values (regional holidays then miss them).
+    db.flush()
 
 
 def change_placement(db: Session, principal: Principal, employee: Employee, data: dict) -> EmployeeAssignment:
@@ -581,6 +607,23 @@ def record_rehire(db: Session, employee: Employee, user_id: Optional[int], start
     return assignment
 
 
+def record_location_change(db: Session, principal: Principal, employee: Employee, location: str) -> None:
+    """A work-location edit on the employee form becomes a dated transfer to that branch."""
+    branch = branch_for_location(db, employee.company_id, location)
+    current = current_assignment(db, employee.id)
+    if current is None or current.branch_id == branch.id or not employee.is_active:
+        return
+    today = date.today()
+    if current.effective_from >= today:
+        current.branch_id, current.legal_entity_id = branch.id, branch.legal_entity_id  # same-day correction
+        db.flush()
+        return
+    change_placement(db, principal, employee, {
+        "branch_id": branch.id, "legal_entity_id": branch.legal_entity_id, "department_id": current.department_id,
+        "effective_from": today.isoformat(), "reason": "TRANSFER", "note": "Work location changed on the employee form",
+    })
+
+
 def record_department_change(db: Session, principal: Principal, employee: Employee, department_id: Optional[int]) -> None:
     """A department edit on the employee form becomes a dated placement change instead of an overwrite."""
     current = current_assignment(db, employee.id)
@@ -700,28 +743,14 @@ def repair_missing_structure(db: Session, company: Company) -> Dict[str, int]:
     missing = db.query(Employee).filter(Employee.company_id == company.id, Employee.id.not_in(placed)).order_by(Employee.id).all()
     if not missing:
         return created
-    entity_id, default_branch = default_placement(db, company.id)
-    entity = db.get(LegalEntity, entity_id)
-
-    def named_branch(name: str) -> Branch:
-        branch = db.query(Branch).filter(Branch.company_id == company.id, Branch.name == name).first()
-        if branch is None:
-            taken = {code for (code,) in db.query(Branch.code).filter(
-                Branch.company_id == company.id, Branch.legal_entity_id == entity.id)}
-            code = next(f"B{n:02d}" for n in range(1, 1000) if f"B{n:02d}" not in taken)
-            branch = Branch(company_id=company.id, legal_entity_id=entity.id, code=code, name=name,
-                            country_code=entity.country_code, timezone=entity.timezone, status="ACTIVE")
-            db.add(branch)
-            db.flush()
-            created["branches"] += 1
-        return branch
-
+    _, default_branch = default_placement(db, company.id)
+    branches_before = db.query(func.count(Branch.id)).filter(Branch.company_id == company.id).scalar()
     for employee in missing:
         location = (employee.location or "").strip()[:100]
         if location:
-            branch = named_branch(location)
+            branch = branch_for_location(db, company.id, location)
         else:
-            default_branch = default_branch or named_branch("Main")
+            default_branch = default_branch or branch_for_location(db, company.id, "Main")
             branch = default_branch
         ended = employee.termination_date if employee.termination_date and employee.termination_date >= employee.hire_date else None
         db.add(EmployeeAssignment(
@@ -731,6 +760,7 @@ def repair_missing_structure(db: Session, company: Company) -> Dict[str, int]:
         ))
         created["placements"] += 1
     db.flush()
+    created["branches"] += db.query(func.count(Branch.id)).filter(Branch.company_id == company.id).scalar() - branches_before
     return created
 
 

@@ -77,6 +77,8 @@ class PlatformPrincipal:
     email: str
     full_name: str
     session_id: str
+    # Set for partner administrators (partner console only).
+    partner_id: Optional[int] = None
 
 
 def _extract_token(request: Request, cookie_name: str):
@@ -319,15 +321,17 @@ def require_platform_host(request: Request) -> None:
         raise not_found()
 
 
-def get_platform_principal(request: Request) -> PlatformPrincipal:
+def _operator_principal(request: Request, kind: str) -> PlatformPrincipal:
+    """Platform operator ("platform") or partner administrator ("partner"); never interchangeable."""
     from app.database.db import system_session
+    from app.models.company import Partner
 
     require_platform_host(request)
     token, via_cookie = _extract_token(request, PLATFORM_ACCESS_COOKIE)
     if not token:
         raise unauthorized()
     claims = decode_jwt(token, "access")
-    if not claims or claims.get("pt") != "platform":
+    if not claims or claims.get("pt") != kind:
         raise unauthorized("Session expired", "SESSION_EXPIRED")
     if via_cookie:
         _check_csrf(request)
@@ -341,6 +345,20 @@ def get_platform_principal(request: Request) -> PlatformPrincipal:
             or session_row.revoked_at is not None
             or session_row.expires_at <= utcnow()
             or not admin.is_active
+            # The account itself decides its kind, not the token: a re-scoped account loses access at once.
+            or (admin.partner_id is not None) != (kind == "partner")
         ):
             raise unauthorized("Session expired", "SESSION_EXPIRED")
-        return PlatformPrincipal(admin.id, admin.email, admin.full_name, session_row.id)
+        if kind == "partner":
+            partner = db.get(Partner, admin.partner_id)
+            if partner is None or partner.status != "active":
+                raise unauthorized("Session expired", "SESSION_EXPIRED")
+        return PlatformPrincipal(admin.id, admin.email, admin.full_name, session_row.id, admin.partner_id)
+
+
+def get_platform_principal(request: Request) -> PlatformPrincipal:
+    return _operator_principal(request, "platform")
+
+
+def get_partner_principal(request: Request) -> PlatformPrincipal:
+    return _operator_principal(request, "partner")

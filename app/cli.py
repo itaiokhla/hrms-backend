@@ -2,6 +2,7 @@
 
     python -m app.cli setup-db-roles --app-role hrms_app      (run as owner, after migrations)
     python -m app.cli create-platform-admin --email ops@example.com --name "Ops"
+    python -m app.cli create-partner-admin --partner payease --email admin@payease.example --name "Partner Admin"
     python -m app.cli rls-status
     python -m app.cli attendance-sweep                         (schedule every ~15 minutes)
     python -m app.cli sync-tenant-hosts                        (after changing PLATFORM_BASE_DOMAIN)
@@ -70,10 +71,11 @@ def setup_db_roles(app_role: str, password: str) -> None:
     print(f"Role '{app_role}' is ready. Point DATABASE_URL at it and keep the owner URL in SYSTEM_DATABASE_URL.")
 
 
-def create_platform_admin(email: str, name: str, password: str) -> None:
+def create_platform_admin(email: str, name: str, password: str, partner_slug: str = None) -> None:
+    """A platform operator, or with partner_slug a partner administrator (partner console only)."""
     from app.core.security import hash_password, password_problem
     from app.database.db import system_session
-    from app.models.company import PlatformAdmin
+    from app.models.company import Partner, PlatformAdmin
 
     problem = password_problem(password, email)
     if problem:
@@ -81,10 +83,16 @@ def create_platform_admin(email: str, name: str, password: str) -> None:
     with system_session() as db:
         email = email.strip().lower()
         if db.query(PlatformAdmin).filter(PlatformAdmin.email == email).first():
-            raise SystemExit("A platform administrator with this email already exists.")
-        db.add(PlatformAdmin(email=email, full_name=name, password_hash=hash_password(password)))
+            raise SystemExit("An operator account with this email already exists.")
+        partner_id = None
+        if partner_slug:
+            partner = db.query(Partner).filter(Partner.slug == partner_slug).first()
+            if partner is None:
+                raise SystemExit(f"No partner with slug {partner_slug!r}.")
+            partner_id = partner.id
+        db.add(PlatformAdmin(email=email, full_name=name, password_hash=hash_password(password), partner_id=partner_id))
         db.commit()
-    print(f"Platform administrator {email} created.")
+    print(f"{'Partner' if partner_slug else 'Platform'} administrator {email} created.")
 
 
 def attendance_sweep() -> None:
@@ -164,6 +172,11 @@ def main(argv=None) -> None:
     admin.add_argument("--email", required=True)
     admin.add_argument("--name", required=True)
 
+    partner_admin = sub.add_parser("create-partner-admin", help="Create a partner administrator (partner console only)")
+    partner_admin.add_argument("--partner", required=True, help="partner slug")
+    partner_admin.add_argument("--email", required=True)
+    partner_admin.add_argument("--name", required=True)
+
     sub.add_parser("rls-status", help="Show whether the app role is subject to row-level security")
     sub.add_parser("attendance-sweep", help="Detect expired shifts and missed location checks; apply retention")
     sub.add_parser("sync-tenant-hosts", help="Create <slug>.<PLATFORM_BASE_DOMAIN> hosts for every company")
@@ -177,6 +190,9 @@ def main(argv=None) -> None:
     elif args.command == "create-platform-admin":
         password = os.environ.get("HRMS_PLATFORM_ADMIN_PASSWORD") or getpass.getpass("Password: ")
         create_platform_admin(args.email, args.name, password)
+    elif args.command == "create-partner-admin":
+        password = os.environ.get("HRMS_PARTNER_ADMIN_PASSWORD") or getpass.getpass("Password: ")
+        create_platform_admin(args.email, args.name, password, partner_slug=args.partner)
     elif args.command == "rls-status":
         from app.database.db import rls_status
 

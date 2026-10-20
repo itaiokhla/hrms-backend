@@ -69,6 +69,10 @@ class CompanyUpdate(StrictModel):
     partner_id: Optional[int] = None
 
 
+def _kind(admin: PlatformAdmin) -> str:
+    return "partner" if admin.partner_id is not None else "platform"
+
+
 def _issue(db, admin: PlatformAdmin, request: Request):
     session_id = str(uuid.uuid4())
     secret = new_token(32)
@@ -84,7 +88,7 @@ def _issue(db, admin: PlatformAdmin, request: Request):
         )
     )
     access = create_jwt(
-        {"sub": str(admin.id), "sid": session_id, "pt": "platform"},
+        {"sub": str(admin.id), "sid": session_id, "pt": _kind(admin)},
         "access",
         timedelta(minutes=settings.access_token_expire_minutes),
     )
@@ -93,10 +97,19 @@ def _issue(db, admin: PlatformAdmin, request: Request):
 
 @router.post("/auth/login")
 def platform_login(data: PlatformLogin, request: Request, response: Response):
+    return operator_login(data, request, response, "platform")
+
+
+def operator_login(data: PlatformLogin, request: Request, response: Response, kind: str):
+    """Sign in a platform operator or a partner administrator; each only through its own console."""
     ip = client_ip(request)
     limiter.check(f"platform-login:{ip}", 10, 900)
     with system_session() as db:
         admin = db.query(PlatformAdmin).filter(func.lower(PlatformAdmin.email) == data.email.lower()).first()
+        if admin is not None and _kind(admin) != kind:
+            # Same generic answer as an unknown account; the other console's account is not touched.
+            verify_password(data.password, None)
+            raise unauthorized("Invalid email or password.", "INVALID_CREDENTIALS")
         ok = verify_password(data.password, admin.password_hash if admin else None)
         if admin is None or not ok or not admin.is_active:
             if admin is not None and not ok:
@@ -116,11 +129,13 @@ def platform_login(data: PlatformLogin, request: Request, response: Response):
         admin.failed_login_count = 0
         admin.last_login_at = utcnow()
         access, refresh = _issue(db, admin, request)
-        AuditLogService.log(db, None, "Platform", "LOGIN", f"Platform admin {admin.email} signed in",
-                            company_id=None, actor_type="platform", actor_id=admin.id, actor_email=admin.email, ip_address=ip)
+        label = "Partner admin" if kind == "partner" else "Platform admin"
+        AuditLogService.log(db, None, "Platform", "LOGIN", f"{label} {admin.email} signed in",
+                            company_id=None, actor_type=kind, actor_id=admin.id, actor_email=admin.email, ip_address=ip)
         db.commit()
         set_auth_cookies(response, access, refresh, platform=True)
-        return {"mfa_required": False, "admin": {"id": admin.id, "email": admin.email, "full_name": admin.full_name}}
+        return {"mfa_required": False, "admin": {"id": admin.id, "email": admin.email, "full_name": admin.full_name,
+                                                 "partner_id": admin.partner_id}}
 
 
 @router.post("/auth/refresh")
@@ -144,7 +159,7 @@ def platform_refresh(request: Request, response: Response):
         new_secret = new_token(32)
         row.previous_refresh_token_hash, row.refresh_token_hash, row.rotated_at = row.refresh_token_hash, hash_token(new_secret), utcnow()
         db.commit()
-        access = create_jwt({"sub": str(admin.id), "sid": row.id, "pt": "platform"}, "access",
+        access = create_jwt({"sub": str(admin.id), "sid": row.id, "pt": _kind(admin)}, "access",
                             timedelta(minutes=settings.access_token_expire_minutes))
         set_auth_cookies(response, access, f"{row.id}.{new_secret}", platform=True)
     return {"ok": True}
@@ -379,6 +394,39 @@ def update_partner(partner_id: int, data: PartnerWrite, request: Request,
         db.commit()
         brand_service.invalidate_cache()
         return _partner_row(db, partner)
+
+
+class PartnerAdminCreate(StrictModel):
+    email: EmailStr
+    full_name: str = Field(..., min_length=2, max_length=150)
+    password: str = Field(..., min_length=8, max_length=128)
+
+
+@router.post("/partners/{partner_id}/admins")
+def create_partner_admin(partner_id: int, data: PartnerAdminCreate, request: Request,
+                         admin: PlatformPrincipal = Depends(get_platform_principal)):
+    """A partner administrator: partner console only, scoped to this partner."""
+    from app.core.security import hash_password, password_problem
+
+    problem = password_problem(data.password, data.email)
+    if problem:
+        raise bad_request(problem)
+    with system_session() as db:
+        partner = db.get(Partner, partner_id)
+        if partner is None:
+            raise not_found("Partner")
+        email = data.email.strip().lower()
+        if db.query(PlatformAdmin.id).filter(func.lower(PlatformAdmin.email) == email).first():
+            raise bad_request("An operator account with this email already exists.")
+        account = PlatformAdmin(email=email, full_name=data.full_name.strip(), password_hash=hash_password(data.password),
+                                partner_id=partner.id)
+        db.add(account)
+        db.flush()
+        AuditLogService.log(db, None, "Platform", "PARTNER_ADMIN_CREATED", f"{email} administers partner {partner.name}",
+                            "partner", partner.id, client_ip(request), company_id=None, actor_type="platform",
+                            actor_id=admin.admin_id, actor_email=admin.email)
+        db.commit()
+        return {"id": account.id, "email": account.email, "full_name": account.full_name, "partner_id": partner.id}
 
 
 class CommercialBrandWrite(StrictModel):
