@@ -39,3 +39,13 @@ evidence and `tests/test_cross_tenant_attacks.py`, `tests/test_tenant_isolation.
 | 18 | Report aggregates across companies | Own totals only |
 | 19 | Concurrent interleaved requests from three tenants | Each always sees only its own rows |
 | 20 | Background job without or with another tenant context | Refused by the ORM guard and RLS |
+
+## Open finding (needs the repository owner's decision)
+
+**Development secrets are tracked in git and pushed to `origin/main`.** Commit `4c12c69` added the
+development database directory `.local-postgres/` (1,520 files, including `.app_password` and
+`.secret_key`) and `.local-secrets/` (`wl-proxy-secret`, `wl-stack.env`, `wl-e2e.json`,
+`gps-e2e.json`), although `.gitignore` excludes both. They are development-only values, but they are
+in the remote history. Recommended: `git rm -r --cached .local-postgres .local-secrets`, rotate the
+proxy secret and the development keys, and treat anything that reused them as exposed. Rewriting
+history was not done here because it affects every clone and the owner's working database.
