@@ -38,7 +38,11 @@ VISIBLE = {
         "emp1": ["emp1"], "emp2": ["emp2"],
     },
 }
+# Company Administrators read payroll only through an explicit payroll role, never through full access
+# (registry 2026.10.4, EC-SEC-03): the founding administrator holds payroll_manager from signup (decision
+# I-08) and administrators of stacks seeded earlier receive it from migration 0010 (EC-MIG-08).
 PAYROLL_READERS = {("alpha", "admin"), ("alpha", "finance"), ("beta", "admin"), ("beta", "payroll"), ("gamma", "admin")}
+PAYROLL_ROLE_KEYS = {"payroll_manager", "payroll_processor", "payroll_approver", "finance_payments"}
 USER_ADMINS = {"admin", "hr"}
 BRAND_ADMINS = {"admin"}
 
@@ -80,6 +84,10 @@ def main() -> None:
                 failures.append(f"{company['name']} {person['name']}: login {status}")
                 rows.append(row)
                 continue
+            me = browser.get("/auth/me").json()
+            row["payroll_role"] = sorted(r["system_key"] for r in me.get("roles", []) if r.get("system_key") in PAYROLL_ROLE_KEYS)
+            if me.get("is_company_admin") and (ckey, pkey) in PAYROLL_READERS and not row["payroll_role"]:
+                failures.append(f"{company['name']} {person['name']}: administrator reads payroll without a payroll role")
             listing = browser.get("/employees", limit=200).json()
             seen = sorted(by_employee.get(item["id"], f"?{item['id']}") for item in listing["items"])
             expected = VISIBLE[ckey][pkey]
@@ -97,7 +105,7 @@ def main() -> None:
                 failures.append(f"{company['name']} {person['name']}: sees {row['payroll_rows']} payroll rows, expected own only")
             salaries = [item.get("base_salary") for item in listing["items"] if item["id"] != person["employee_id"]]
             row["salary_fields_visible_for_others"] = sum(1 for s in salaries if s not in (None, "", "hidden"))
-            if (ckey, pkey) not in PAYROLL_READERS and pkey not in ("admin",) and row["salary_fields_visible_for_others"]:
+            if (ckey, pkey) not in PAYROLL_READERS and row["salary_fields_visible_for_others"]:
                 failures.append(f"{company['name']} {person['name']}: sees salaries of others")
             row["users_admin"] = browser.get("/users").status_code
             if (row["users_admin"] == 200) != (pkey in USER_ADMINS):

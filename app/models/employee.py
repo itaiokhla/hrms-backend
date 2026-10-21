@@ -16,6 +16,7 @@ from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import relationship
 
 from app.models.base import BaseModel, TenantMixin
+from app.models.leave import APPROVAL_MODULES
 
 RELATION_TYPES = ("functional", "project", "dotted_line")
 
@@ -293,5 +294,5 @@ class ApprovalDelegation(TenantMixin, BaseModel):
         ),
         CheckConstraint("delegator_employee_id <> delegate_employee_id", name="ck_delegation_not_self"),
         CheckConstraint("ends_on >= starts_on", name="ck_delegation_window"),
-        CheckConstraint("module IN ('leave')", name="ck_delegation_module"),
+        CheckConstraint(f"module IN {APPROVAL_MODULES}", name="ck_delegation_module"),
     )

@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, Integer, String
+from sqlalchemy import CHAR, Boolean, CheckConstraint, Column, DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
@@ -51,6 +51,16 @@ class Company(BaseModel):
     # Platform abuse kill switch (01 §15.12): the tenant falls back to the platform brand.
     brand_disabled_at = Column(DateTime(timezone=True), nullable=True)
     brand_disabled_reason = Column(String(255), nullable=True)
+    # Group reports convert into this currency with a disclosed FX snapshot (02 §8, §16).
+    reporting_currency = Column(CHAR(3), nullable=True)
+    # Where the tenant's data is stored (reserved; one region today).
+    data_region = Column(String(20), nullable=True)
+    # When the administrator finished (or dismissed) the setup checklist.
+    setup_completed_at = Column(DateTime(timezone=True), nullable=True)
+    # Payroll configuration profile materialized for this tenant (STARTER_V1 at signup, LEGACY_V1 by
+    # migration 0011) and when; tenants never inherit live registry defaults (decisions I-13, I-14).
+    payroll_profile_version = Column(String(20), nullable=True)
+    payroll_profile_applied_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         CheckConstraint(f"status IN {COMPANY_STATUSES}", name="ck_companies_status"),
@@ -58,6 +68,7 @@ class Company(BaseModel):
             f"subscription_status IN {SUBSCRIPTION_STATUSES}",
             name="ck_companies_subscription_status",
         ),
+        CheckConstraint("reporting_currency ~ '^[A-Z]{3}$'", name="ck_companies_reporting_currency"),
     )
 
 

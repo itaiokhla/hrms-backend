@@ -5,6 +5,11 @@ baseline migration is applied as the owner role, and the application runs
 as a separate NOSUPERUSER/NOBYPASSRLS role exactly like production, so the
 RLS policies are genuinely exercised. Set TEST_DATABASE_ADMIN_URL to use an
 existing PostgreSQL server (e.g. a Neon branch) instead.
+
+HRMS_TEST_NO_DB=1 runs only the pure-logic suite (tests/payroll_unit) without
+starting PostgreSQL, so several such runs can happen at once. Database runs
+share one server and database: run them one at a time (scripts/pytest_serial.py
+waits for a machine-wide lock).
 """
 
 import os
@@ -19,6 +24,8 @@ ROOT = Path(__file__).resolve().parent.parent
 APP_ROLE = "hrms_app_test"
 APP_ROLE_PASSWORD = "app-role-test-password"
 DB_NAME = "hrms_test"
+NO_DB = os.environ.get("HRMS_TEST_NO_DB") == "1"
+PURE_SUITE = ROOT / "tests" / "payroll_unit"
 
 _server = None
 
@@ -36,6 +43,8 @@ def _start_postgres() -> str:
 
 
 def pytest_configure(config):
+    if NO_DB:
+        return
     import psycopg2
     from sqlalchemy.engine import make_url
 
@@ -74,6 +83,9 @@ def pytest_configure(config):
             "TLS_PROVIDER": "local-dev",
             "FRONTEND_URL": "http://app.test.local:3000",
             "DB_POOL_SIZE": "5",
+            "JOBS_MODE": "inline",
+            # Test-only key (base64 of 32 bytes); production keys come from the secrets manager.
+            "PAYROLL_MASTER_KEY": "dGVzdC1vbmx5LXBheXJvbGwtbWFzdGVyLWtleS0zMmI=",
         }
     )
     result = subprocess.run(
@@ -108,8 +120,20 @@ def pytest_unconfigure(config):
         _server.cleanup()
 
 
+def pytest_collection_modifyitems(config, items):
+    if not NO_DB:
+        return
+    skip = pytest.mark.skip(reason="needs the database (unset HRMS_TEST_NO_DB)")
+    for item in items:
+        if PURE_SUITE not in Path(str(item.fspath)).resolve().parents:
+            item.add_marker(skip)
+
+
 @pytest.fixture(autouse=True)
 def clean_database():
+    if NO_DB:
+        yield
+        return
     from sqlalchemy import text
 
     from app.core.rate_limit import limiter

@@ -4,7 +4,14 @@
 
 The registry in app/core/permission_registry.py is the single source of
 truth; the frontend imports the generated file instead of hard-coding
-permission strings.
+permission strings. Besides codes and scopes it carries the payroll
+confidentiality metadata (full_access_scopes: the scopes the Company
+Administrator holds implicitly; payroll_confidential), deprecated aliases and
+the targeted scopes (LEGAL_ENTITY, BRANCH, PAY_GROUP).
+
+Importing the registry needs no database; app.config may still require
+DATABASE_URL/SECRET_KEY, so dummy values are fine:
+    DATABASE_URL=postgresql://u:p@localhost:5999/x SECRET_KEY=<40 chars> ENVIRONMENT=test python scripts/export_permissions.py
 """
 
 import json
@@ -14,7 +21,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.core.permission_registry import PERMISSIONS, REGISTRY_VERSION, SCOPE_LABELS, Scope  # noqa: E402
+from app.core.permission_registry import (  # noqa: E402
+    PERMISSIONS,
+    REGISTRY_VERSION,
+    SCOPE_LABELS,
+    TARGETED_SCOPES,
+    Scope,
+)
 
 DEFAULT_OUT = ROOT.parent / "hrms-frontend" / "src" / "lib" / "permissions.generated.ts"
 
@@ -39,6 +52,9 @@ def render() -> str:
         "export const SCOPES = [" + ", ".join(f'"{s.value}"' for s in Scope) + "] as const;",
         "export type Scope = (typeof SCOPES)[number];",
         "",
+        "/** Scopes that cover only the targets stored on the role assignment (none = no access). */",
+        "export const TARGETED_SCOPES: Scope[] = [" + ", ".join(f'"{s.value}"' for s in TARGETED_SCOPES) + "];",
+        "",
         "export const SCOPE_LABELS: Record<Scope, string> = "
         + json.dumps({s.value: SCOPE_LABELS[s] for s in Scope}, indent=2)
         + ";",
@@ -49,6 +65,12 @@ def render() -> str:
         "  description: string;",
         '  sensitivity: "standard" | "confidential" | "restricted";',
         "  scopes: Scope[];",
+        "  /** Scopes a full-access (Company Administrator) role holds without an explicit grant. */",
+        "  full_access_scopes: Scope[];",
+        "  /** Excluded from implicit full access (entirely or except SELF): needs an explicit payroll role. */",
+        "  payroll_confidential: boolean;",
+        "  /** Legacy alias kept for one release; grant the v2 codes instead. */",
+        "  deprecated: boolean;",
         "}",
         "",
         "export const PERMISSION_META: Record<PermissionCode, PermissionMeta> = "
@@ -60,12 +82,19 @@ def render() -> str:
                     "description": p.description,
                     "sensitivity": p.sensitivity,
                     "scopes": [s.value for s in p.scopes],
+                    "full_access_scopes": [s.value for s in p.implied_scopes],
+                    "payroll_confidential": p.payroll_confidential,
+                    "deprecated": p.deprecated,
                 }
                 for p in PERMISSIONS
             },
             indent=2,
         )
         + " as Record<PermissionCode, PermissionMeta>;",
+        "",
+        "export const DEPRECATED_PERMISSIONS: PermissionCode[] = "
+        + json.dumps([p.code for p in PERMISSIONS if p.deprecated])
+        + ";",
         "",
     ]
     return "\n".join(lines)

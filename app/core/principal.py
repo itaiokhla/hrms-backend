@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, forbidden, not_found, unauthorized
 from app.core.hosts import company_allowed_on_host, normalize_host, request_host
-from app.core.permission_registry import PERMISSIONS, TARGETED_SCOPES, Scope, scope_covers
+from app.core.permission_registry import TARGETED_SCOPES, Scope, full_access_grants, scope_covers
 from app.core.security import (
     ACCESS_COOKIE,
     CSRF_COOKIE,
@@ -52,7 +52,7 @@ class Principal:
     permission_version: int
     subscription_active: bool = True
     extra: dict = field(default_factory=dict)
-    # (permission, LEGAL_ENTITY|BRANCH) -> ids covered by the user's role assignments.
+    # (permission, LEGAL_ENTITY|BRANCH|PAY_GROUP) -> ids covered by the user's role assignments.
     targets: Dict[Tuple[str, str], FrozenSet[int]] = field(default_factory=dict)
 
     def scopes(self, code: str) -> FrozenSet[str]:
@@ -113,7 +113,11 @@ def subscription_is_active(company: Company) -> bool:
 
 
 def load_grants(db: Session, user_id: int):
-    """Effective permissions: the additive union of all active role grants."""
+    """Effective permissions: the additive union of all active role grants.
+
+    A full-access role adds registry.full_access_grants(): every permission at its non-targeted
+    scopes except payroll-confidential ones, which need an explicit payroll role (3.9 §5.1).
+    """
     now = utcnow()
     rows = (
         db.query(
@@ -148,8 +152,8 @@ def load_grants(db: Session, user_id: int):
         if code and scope:
             grants.setdefault(code, set()).add(scope)
     if full_access:
-        for perm in PERMISSIONS:
-            grants.setdefault(perm.code, set()).update(s.value for s in perm.scopes if s not in TARGETED_SCOPES)
+        for code, scope in full_access_grants():
+            grants.setdefault(code, set()).add(scope)
     return (
         {code: frozenset(scopes) for code, scopes in grants.items()},
         frozenset(role_ids),
@@ -159,7 +163,7 @@ def load_grants(db: Session, user_id: int):
 
 
 def load_scope_targets(db: Session, user_id: int) -> Dict[Tuple[str, str], FrozenSet[int]]:
-    """Targets of entity/branch-scoped grants, per (permission, scope), from active role assignments."""
+    """Targets of entity/branch/pay-group-scoped grants, per (permission, scope), from active role assignments."""
     from app.models.org import RoleAssignmentTarget
 
     now = utcnow()

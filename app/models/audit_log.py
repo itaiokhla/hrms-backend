@@ -1,4 +1,5 @@
 from sqlalchemy import Column, ForeignKey, Index, Integer, String
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.models.base import BaseModel
 
@@ -8,7 +9,9 @@ class AuditLog(BaseModel):
 
     company_id is NULL only for platform-level events. The application
     database role is granted INSERT/SELECT but never UPDATE/DELETE on this
-    table, and tenant rows are protected by row-level security.
+    table, and tenant rows are protected by row-level security. `details`
+    holds structured before/after values, masked by AuditLogService.log
+    (3.9 §3.11); rows written before it existed keep NULL.
     """
 
     __tablename__ = "audit_logs"
@@ -23,5 +26,6 @@ class AuditLog(BaseModel):
     entity_id = Column(String(50), nullable=True)
     description = Column(String(500), nullable=False)
     ip_address = Column(String(64), nullable=True)
+    details = Column(JSONB, nullable=True)
 
     __table_args__ = (Index("ix_audit_logs_company_created", "company_id", "created_at"),)

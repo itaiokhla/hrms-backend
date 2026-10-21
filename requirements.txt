@@ -29,3 +29,5 @@ uharfbuzz==0.56.3
 publicsuffixlist==1.1.0.20261018
 dnspython==2.9.0
 pycountry==26.2.16
+# Payroll v2: CLDR number/currency formatting on the server (payslips, exports)
+babel==2.16.0

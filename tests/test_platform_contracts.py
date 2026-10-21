@@ -39,6 +39,10 @@ PUBLIC_ROUTES = {
 NON_TENANT_COMPANY_COLUMNS = {
     "audit_logs": "written by platform and system actors too; read only through company-filtered queries",
     "auth_handoff_codes": "read and written only by the system role; the app role has no privilege on it",
+    # Payroll v2 (0009): NULL company_id is a platform row.
+    "fx_rates": "platform rates (company_id NULL) are shared; RLS limits tenant rows and writes to the own tenant",
+    "jobs": "claimed across tenants by the worker through the system session; tenant reads filter company_id in "
+            "app/payroll/services/jobs.py and payloads carry ids only",
 }
 SYSTEM_ONLY_TABLES = ("auth_handoff_codes", "platform_admins", "platform_sessions", "commercial_brand_profiles",
                       "commercial_brand_assets", "partners")
