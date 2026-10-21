@@ -1,6 +1,6 @@
 from datetime import date
 from decimal import Decimal
-from typing import Optional
+from typing import Annotated, Optional
 
 from pydantic import EmailStr, Field
 
@@ -77,7 +77,8 @@ class ShiftWrite(StrictModel):
     name: str = Field(..., min_length=1, max_length=100)
     start_time: str = Field(..., pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     end_time: str = Field(..., pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
-    duration_hours: Optional[int] = Field(None, ge=1, le=24)
+    # Decimal hours such as 8.5 (shifts.duration_hours is NUMERIC(4,2) since migration 0016).
+    duration_hours: Optional[Annotated[Decimal, Field(gt=0, le=24, max_digits=4, decimal_places=2)]] = None
     is_flexible: bool = False
     description: Optional[str] = Field(None, max_length=500)
     is_active: bool = True

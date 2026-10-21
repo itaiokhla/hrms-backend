@@ -162,6 +162,9 @@ class Settings(BaseSettings):
             self.secret_key = secrets.token_urlsafe(48)
         if self.environment == "production" and not self.cookie_secure:
             raise ValueError("COOKIE_SECURE must be true in production")
+        if self.environment in ("production", "staging") and self.db_echo:
+            # SQL echo logs statement parameters (salaries, encrypted bank fields, tokens) and bypasses redaction.
+            raise ValueError("DB_ECHO must be off in production and staging")
         if self.location_tracking_min_interval_minutes < 1 or (
             self.environment in ("production", "staging") and self.location_tracking_min_interval_minutes < 15
         ):

@@ -8,6 +8,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -67,7 +68,9 @@ class Shift(TenantMixin, BaseModel):
     name = Column(String(100), nullable=False)
     start_time = Column(String(5), nullable=False)
     end_time = Column(String(5), nullable=False)
-    duration_hours = Column(Integer, nullable=True)
+    # Decimal hours (8.5); gross of breaks unless unpaid_break_minutes says how much of it is unpaid.
+    duration_hours = Column(Numeric(4, 2), nullable=True)
+    unpaid_break_minutes = Column(SmallInteger, nullable=True)
     is_flexible = Column(Boolean, default=False, nullable=False)
     description = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
@@ -82,6 +85,10 @@ class Shift(TenantMixin, BaseModel):
     __table_args__ = (
         UniqueConstraint("company_id", "id", name="uq_shifts_company_id_id"),
         UniqueConstraint("company_id", "name", name="uq_shifts_company_name"),
+        CheckConstraint("duration_hours IS NULL OR (duration_hours > 0 AND duration_hours <= 24)",
+                        name="ck_shifts_duration"),
+        CheckConstraint("unpaid_break_minutes IS NULL OR unpaid_break_minutes BETWEEN 0 AND 1440",
+                        name="ck_shifts_unpaid_break"),
     )
 
 

@@ -64,6 +64,13 @@ class Attendance(TenantMixin, BaseModel):
     # Closed without a punch-out (no end time is ever invented for it).
     closed_at = Column(DateTime(timezone=True), nullable=True)
     closed_reason = Column(String(40), nullable=True)
+    # Raw minutes against the session's shift (NULL = unknown: no fixed shift, or recorded before 0016);
+    # grace periods are policy and are applied by payroll, not here (3.4 §11).
+    late_minutes = Column(Integer, nullable=True)
+    early_exit = Column(Boolean, nullable=False, default=False, server_default="false")
+    early_exit_minutes = Column(Integer, nullable=True)
+    # Bumped by every change of times, status or breaks; each version is in source_change_log (3.4 §16).
+    row_version = Column(Integer, nullable=False, default=1, server_default="1")
     # Periodic location tracking. The server owns the schedule; browsers only
     # follow it, so a missed reading is detected here even if no page is open.
     tracking_state = Column(String(20), nullable=False, default="NOT_APPLICABLE", server_default="NOT_APPLICABLE")
@@ -92,6 +99,12 @@ class Attendance(TenantMixin, BaseModel):
         ),
         CheckConstraint(f"tracking_state IN {TRACKING_STATES}", name="ck_attendance_tracking_state"),
         CheckConstraint("closed_at IS NULL OR check_out_time IS NULL", name="ck_attendance_closed_without_out"),
+        CheckConstraint("late_minutes IS NULL OR late_minutes >= 0", name="ck_attendance_late_minutes"),
+        CheckConstraint(
+            "early_exit_minutes IS NULL OR early_exit_minutes >= 0", name="ck_attendance_early_exit_minutes"
+        ),
+        CheckConstraint("NOT early_exit OR early_exit_minutes > 0", name="ck_attendance_early_exit"),
+        CheckConstraint("row_version >= 1", name="ck_attendance_row_version"),
         # One record per person per day, whichever path (self, kiosk, manual) creates it.
         UniqueConstraint("company_id", "employee_id", "date", name="uq_attendance_employee_day"),
         UniqueConstraint("company_id", "id", name="uq_attendance_company_id_id"),

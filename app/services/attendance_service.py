@@ -131,6 +131,82 @@ def hours_for(record: Attendance, breaks: List[AttendanceBreak], now: datetime) 
     return attendance_hours.compute(record.check_in_time, record.check_out_time, intervals, now=now, live=is_live(record))
 
 
+def content_hash(record: Attendance, breaks: List[AttendanceBreak]) -> str:
+    """Version hash of a session with its breaks, as payroll snapshots and the source change log store it."""
+    from app.payroll.services.time_inputs import content_hash as _hash
+
+    return _hash(content(record, breaks))
+
+
+def content(record: Attendance, breaks: List[AttendanceBreak]) -> dict:
+    """The pay-relevant fields of a session (break ids change on correction, so they are left out)."""
+    return {
+        "id": record.id, "employee_id": record.employee_id, "date": record.date, "status": record.status,
+        "check_in_time": record.check_in_time, "check_out_time": record.check_out_time,
+        "closed_at": record.closed_at, "closed_reason": record.closed_reason, "shift_id": record.shift_id,
+        "late_minutes": record.late_minutes, "early_exit_minutes": record.early_exit_minutes,
+        "breaks": sorted(
+            [{"kind": b.kind, "started_at": b.started_at, "ended_at": b.ended_at, "is_paid": bool(b.is_paid)} for b in breaks],
+            key=lambda b: (b["started_at"], b["ended_at"] or b["started_at"])),
+    }
+
+
+def shift_window(shift: Optional[Shift], session_date: date, check_in: datetime, tz) -> Optional[tuple]:
+    """Scheduled (start, end) of the shift occurrence a session belongs to; None without a fixed shift.
+
+    Overnight shifts end the next day; the occurrence is the one whose start is nearest the punch-in, so
+    a night shift punched in after midnight is still measured against the start of the evening before.
+    """
+    if shift is None or shift.is_flexible:
+        return None
+    try:
+        sh, sm = (int(x) for x in shift.start_time.split(":"))
+        eh, em = (int(x) for x in shift.end_time.split(":"))
+    except (AttributeError, ValueError):
+        return None
+    candidates = []
+    for offset in (-1, 0, 1):
+        base = session_date + timedelta(days=offset)
+        start = tz.localize(datetime.combine(base, time(sh, sm)))
+        end_day = base + timedelta(days=1) if (eh, em) <= (sh, sm) else base
+        end = tz.localize(datetime.combine(end_day, time(eh, em)))
+        candidates.append((abs((check_in - start).total_seconds()), start, end))
+    _, start, end = min(candidates, key=lambda c: c[0])
+    return start, end
+
+
+def apply_timing(db: Session, company: Company, record: Attendance) -> None:
+    """Raw late and early-exit minutes against the session's shift (3.4 §11); grace is payroll policy."""
+    shift = db.get(Shift, record.shift_id) if record.shift_id else None
+    window = shift_window(shift, record.date, record.check_in_time, _tz(company)) if record.status != "absent" else None
+    if window is None:
+        record.late_minutes, record.early_exit_minutes, record.early_exit = None, None, False
+        return
+    start, end = window
+    record.late_minutes = max(0, int((record.check_in_time - start).total_seconds() // 60))
+    if record.check_out_time is None:
+        record.early_exit_minutes, record.early_exit = None, False
+        return
+    minutes = max(0, int((end - record.check_out_time).total_seconds() // 60))
+    record.early_exit_minutes, record.early_exit = minutes, minutes > 0
+
+
+def record_version(db: Session, record: Attendance, change: str, actor_user_id: Optional[int], *, bump: bool = True) -> None:
+    """A new version of the session: bump row_version and append it to the source change log (3.4 §16)."""
+    from app.payroll.services import time_inputs
+
+    if bump:
+        record.row_version = (record.row_version or 1) + 1
+    db.flush()
+    breaks = breaks_by_session(db, [record.id])[record.id]
+    time_inputs.log_change(
+        db, record.company_id, record_type="attendance", record_id=record.id, change=change,
+        content=content(record, breaks),
+        employee_id=record.employee_id, date_from=record.date, actor_user_id=actor_user_id,
+        details={"row_version": record.row_version, "status": record.status},
+    )
+
+
 def session_state(record: Optional[Attendance], breaks: List[AttendanceBreak]) -> str:
     if record is None:
         return NOT_PUNCHED_IN
@@ -178,6 +254,7 @@ def expire_if_needed(db: Session, record: Attendance, policy: AttendancePolicy, 
     record.closed_reason = "MISSING_PUNCH_OUT"
     _event(db, record, "SESSION_CLOSED", now, "system", None,
            note=f"No punch-out within {policy.max_shift_hours} hours; closed for HR correction")
+    record_version(db, record, "UPDATED", None)
     AuditLogService.log(db, None, "Attendance", "AUTO_CLOSE",
                         f"Shift of employee #{record.employee_id} from {record.date} closed without a punch-out",
                         "attendance", record.id, company_id=record.company_id, actor_type="system")
@@ -321,7 +398,9 @@ def _punch_out(db, principal, company, employee, policy, meta: EventMeta, score,
         db.flush()  # the break closes before the session does (both are checked by triggers)
     location_service.stop_tracking(db, live, policy, now, "PUNCHED_OUT")
     live.check_out_time = now
+    apply_timing(db, company, live)
     db.flush()
+    record_version(db, live, "UPDATED", principal.user_id)
     event = _event(db, live, "PUNCH_OUT", now, source, principal.user_id, key=meta.idempotency_key, score=score,
                    location_status=location.event_status, note=note, details=location_service.event_details(location))
     location_service.record_event_sample(db, live, event, location, policy, now, meta.client_sent_at)
@@ -514,8 +593,10 @@ def record_manual(db: Session, principal: Principal, data) -> Attendance:
         db.flush()
 
     was_live = record is not None and is_live(record)
+    created = record is None
     if record is None:
-        record = Attendance(company_id=principal.company_id, employee_id=employee.id, date=data.date)
+        record = Attendance(company_id=principal.company_id, employee_id=employee.id, date=data.date,
+                            shift_id=employee.shift_id)
     record.date = data.date
     record.check_in_time = data.check_in_time
     record.check_out_time = data.check_out_time
@@ -550,6 +631,8 @@ def record_manual(db: Session, principal: Principal, data) -> Attendance:
     db.flush()
     if is_live(record) and record.tracking_state == location_service.PAUSED and _open_break(db, record.id) is None:
         location_service.resume_tracking(record, policy, now)  # the lunch it was paused for no longer exists
+    apply_timing(db, company, record)
+    record_version(db, record, "CREATED" if created else "UPDATED", principal.user_id, bump=not created)
     after = _snapshot(record, breaks_by_session(db, [record.id])[record.id])
     _event(db, record, "CORRECTION", now, "manual", principal.user_id,
            note=(data.notes or "Manual attendance entry")[:500], details={"before": before, "after": after})
@@ -599,6 +682,10 @@ def serialize(record: Attendance, employee: Optional[Employee] = None, *, breaks
         "notes": record.notes,
         "attendance_state": session_state(record, breaks),
         "closed_reason": record.closed_reason,
+        "late_minutes": record.late_minutes,
+        "early_exit": bool(record.early_exit),
+        "early_exit_minutes": record.early_exit_minutes,
+        "row_version": record.row_version,
         "hours": hours.as_dict(),
         "breaks": [_break_payload(b) for b in breaks],
         "tracking_state": record.tracking_state,

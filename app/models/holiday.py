@@ -1,4 +1,6 @@
-from sqlalchemy import Boolean, CheckConstraint, Column, Date, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean, CheckConstraint, Column, Date, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint, text,
+)
 
 from app.models.base import BaseModel, TenantMixin
 
@@ -25,7 +27,10 @@ class Holiday(TenantMixin, BaseModel):
     holiday_type = Column(String(10), nullable=False, default="COMPANY")
 
     __table_args__ = (
-        UniqueConstraint("company_id", "date", "name", name="uq_holidays_company_date_name"),
+        UniqueConstraint("company_id", "id", name="uq_holidays_company_id_id"),
+        # One holiday of a name per date and calendar: two branches may each observe "Pongal" (0016).
+        Index("uq_holidays_calendar_date_name", "company_id", text("COALESCE(calendar_id, 0)"), "date",
+              text("lower(name)"), unique=True),
         Index("ix_holidays_company_date", "company_id", "date"),
         Index("ix_holidays_calendar_date", "calendar_id", "date"),
         ForeignKeyConstraint(

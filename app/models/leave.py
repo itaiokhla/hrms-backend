@@ -10,6 +10,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    TypeDecorator,
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -18,6 +19,10 @@ from sqlalchemy.orm import relationship
 from app.models.base import BaseModel, TenantMixin
 
 LEAVE_STATUSES = ("pending", "approved", "rejected", "cancelled")
+START_PORTIONS = ("FULL", "SECOND_HALF")
+END_PORTIONS = ("FULL", "FIRST_HALF")
+CANCELLATION_STATUSES = ("pending", "approved", "rejected")
+LEAVE_TYPE_KINDS = ("COMP_OFF",)
 STEP_STATUSES = ("waiting", "pending", "approved", "rejected", "skipped", "cancelled")
 # Leave chains use the first four (the leave API accepts no others); payroll modules add the last two.
 APPROVER_TYPES = (
@@ -30,6 +35,18 @@ APPROVAL_MODULES = (
 )
 
 
+class LeaveDays(TypeDecorator):
+    """NUMERIC(5,2) leave days read back as an int when whole (3, as before half days) and a Decimal otherwise."""
+
+    impl = Numeric(5, 2)
+    cache_ok = True
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return int(value) if value == value.to_integral_value() else value.normalize()
+
+
 class LeaveType(TenantMixin, BaseModel):
     __tablename__ = "leave_types"
 
@@ -39,8 +56,15 @@ class LeaveType(TenantMixin, BaseModel):
     is_paid = Column(Boolean, nullable=False, default=True)
     is_unlimited = Column(Boolean, nullable=False, default=False)
     is_active = Column(Boolean, nullable=False, default=True)
+    # Weekly offs and holidays inside a request are leave days of this type (3.4 §7.1, EC-LV-06, EC-LV-10).
+    counts_non_working_days = Column(Boolean, nullable=False, default=False)
+    allow_half_day = Column(Boolean, nullable=False, default=True)
+    kind = Column(String(20), nullable=True)  # COMP_OFF; NULL for ordinary leave
 
-    __table_args__ = (UniqueConstraint("company_id", "code", name="uq_leave_types_company_code"),)
+    __table_args__ = (
+        UniqueConstraint("company_id", "code", name="uq_leave_types_company_code"),
+        CheckConstraint("kind IN ('COMP_OFF')", name="ck_leave_types_kind"),
+    )
 
 
 class ApprovalChainStep(TenantMixin, BaseModel):
@@ -101,13 +125,22 @@ class Leave(TenantMixin, BaseModel):
     leave_type = Column(String(30), nullable=False)
     start_date = Column(Date, nullable=False, index=True)
     end_date = Column(Date, nullable=False, index=True)
-    number_of_days = Column(Integer, nullable=False)
+    # Leave days charged (half days are 0.5); weekly offs and holidays count only per the leave type.
+    number_of_days = Column(LeaveDays(), nullable=False)
+    start_portion = Column(String(12), nullable=False, default="FULL")
+    end_portion = Column(String(12), nullable=False, default="FULL")
     reason = Column(Text, nullable=True)
     status = Column(String(20), default="pending", nullable=False, index=True)
     current_step = Column(Integer, nullable=True)
     decided_by_user_id = Column(Integer, nullable=True)
     decided_at = Column(DateTime(timezone=True), nullable=True)
     remarks = Column(Text, nullable=True)
+    # Cancelling approved leave is itself approved (EC-LV-04); status stays approved until then.
+    cancellation_status = Column(String(12), nullable=True)
+    cancellation_reason = Column(Text, nullable=True)
+    cancellation_requested_at = Column(DateTime(timezone=True), nullable=True)
+    cancellation_decided_at = Column(DateTime(timezone=True), nullable=True)
+    cancellation_decided_by_user_id = Column(Integer, nullable=True)
 
     employee = relationship("Employee", primaryjoin="Leave.employee_id == Employee.id", foreign_keys=[employee_id])
     approvals = relationship(
@@ -126,6 +159,13 @@ class Leave(TenantMixin, BaseModel):
         UniqueConstraint("company_id", "id", name="uq_leaves_company_id_id"),
         CheckConstraint(f"status IN {LEAVE_STATUSES}", name="ck_leaves_status"),
         CheckConstraint("end_date >= start_date", name="ck_leaves_dates"),
+        CheckConstraint(f"start_portion IN {START_PORTIONS}", name="ck_leaves_start_portion"),
+        CheckConstraint(f"end_portion IN {END_PORTIONS}", name="ck_leaves_end_portion"),
+        CheckConstraint(
+            "NOT (start_date = end_date AND start_portion = 'SECOND_HALF' AND end_portion = 'FIRST_HALF')",
+            name="ck_leaves_portions",
+        ),
+        CheckConstraint(f"cancellation_status IN {CANCELLATION_STATUSES}", name="ck_leaves_cancellation_status"),
         Index("ix_leaves_company_status", "company_id", "status"),
     )
 

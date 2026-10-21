@@ -9,7 +9,8 @@ from app.core.principal import Principal, get_principal, require
 from app.database.db import get_db
 from app.schemas.admin import AssetAssign, AssetReturn, AssetStatus, AssetWrite, HolidayWrite
 from app.services import asset_service, holiday_service
-from app.services.audit_log_service import AuditLogService
+from app.models.audit_log import AuditLog
+from app.payroll.audit import PAYROLL_AUDIT_MODULES, PAYROLL_AUDIT_PERMISSION
 from app.services.notification_service import NotificationService
 
 router = APIRouter(prefix="/api/v1", tags=["Operations"])
@@ -145,7 +146,15 @@ def read_one(notification_id: int, principal: Principal = Depends(get_principal)
 def audit_logs(skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
                module: Optional[str] = Query(None, max_length=50),
                principal: Principal = Depends(require("audit:read")), db: Session = Depends(get_db)):
-    total, rows = AuditLogService.list(db, principal, skip, limit, module)
+    # Payroll events are payroll-confidential: rows, totals and module filters exclude them without
+    # payroll:audit:read (3.9 §5.1).
+    query = db.query(AuditLog).filter(AuditLog.company_id == principal.company_id)
+    if module:
+        query = query.filter(AuditLog.module == module)
+    if not principal.has(PAYROLL_AUDIT_PERMISSION):
+        query = query.filter(AuditLog.module.notin_(PAYROLL_AUDIT_MODULES))
+    total = query.count()
+    rows = query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).offset(skip).limit(limit).all()
     return {
         "total": total,
         "logs": [

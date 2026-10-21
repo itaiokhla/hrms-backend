@@ -1,5 +1,5 @@
 from datetime import date
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import Field
 
@@ -11,6 +11,9 @@ class LeaveApply(StrictModel):
     start_date: date
     end_date: date
     reason: Optional[str] = Field(None, max_length=1000)
+    # Half days (leave.half_day.enabled): the first day may start at the second half, the last end at the first.
+    start_portion: Literal["FULL", "SECOND_HALF"] = "FULL"
+    end_portion: Literal["FULL", "FIRST_HALF"] = "FULL"
 
 
 class LeaveDecision(StrictModel):

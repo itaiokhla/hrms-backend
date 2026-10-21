@@ -45,6 +45,8 @@ from . import (  # noqa: E402,F401
     payroll_config,
     security_keys,
     time_inputs,
+    variable_inputs,
+    work_items,
 )
 
 TENANT_TABLES = sorted(

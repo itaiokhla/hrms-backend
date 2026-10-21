@@ -36,8 +36,9 @@ def grant_app_role(connection, role: str) -> None:
     connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
     for table in TENANT_TABLES:
         connection.execute(text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO {role}"))
-    # Attendance events are append-only (a trigger also refuses changes).
+    # Attendance events and loan ledgers are append-only (triggers also refuse changes).
     connection.execute(text(f"REVOKE UPDATE, DELETE ON attendance_events FROM {role}"))
+    connection.execute(text(f"REVOKE UPDATE, DELETE ON loan_transactions FROM {role}"))
     # Issued documents are immutable; only the stored-file pointer may be filled in later.
     connection.execute(text(f"REVOKE UPDATE, DELETE ON issued_documents FROM {role}"))
     connection.execute(text(f"GRANT UPDATE (sha256, storage_path, updated_at) ON issued_documents TO {role}"))

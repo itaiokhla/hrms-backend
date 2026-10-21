@@ -15,10 +15,15 @@ Routing rules (explicit, so behaviour after organisational change is predictable
   only during an active delegation window and only while that approver
   still has authority. Company-wide approvers may override, which is
   recorded as such.
+* Approval generates one leave_days row per date (weekly offs and holidays
+  are charged only when the leave type counts non-working days) and USE
+  balance transactions; cancelling approved leave is itself a request that
+  an approver decides, after which the days are voided and given back.
 """
 
 from datetime import date, timedelta
-from typing import Dict, List, Optional
+from decimal import Decimal
+from typing import Dict, List, Optional, Union
 
 from sqlalchemy import extract, func
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -30,6 +35,7 @@ from app.core.security import utcnow
 from app.models.company import Company
 from app.models.employee import Department, Employee
 from app.models.leave import ApprovalChainStep, Leave, LeaveApproval, LeaveType
+from app.models.time_inputs import LeaveBalanceTransaction
 from app.models.rbac import Role, UserRoleAssignment
 from app.models.user import User
 from app.services.audit_log_service import AuditLogService
@@ -54,35 +60,56 @@ def leave_types(db: Session, company_id: int, include_inactive: bool = False) ->
     return query.order_by(LeaveType.name).all()
 
 
+def days_out(value) -> Union[int, float]:
+    """Leave days for JSON: whole days stay integers (as before half days existed)."""
+    days = Decimal(value or 0)
+    return int(days) if days == days.to_integral_value() else float(days)
+
+
+def balance_totals(db: Session, company_id: int, employee_id: int, year: int) -> Dict[str, Dict[str, Decimal]]:
+    """Per leave type: used (USE transactions), other balance movements and pending requests of ``year``."""
+    totals: Dict[str, Dict[str, Decimal]] = {}
+
+    def bucket(code: str) -> Dict[str, Decimal]:
+        return totals.setdefault(code, {"used": Decimal(0), "adjusted": Decimal(0), "pending": Decimal(0)})
+
+    for code, reason, delta in (
+        db.query(LeaveBalanceTransaction.leave_type, LeaveBalanceTransaction.reason,
+                 func.coalesce(func.sum(LeaveBalanceTransaction.delta), 0))
+        .filter(LeaveBalanceTransaction.company_id == company_id, LeaveBalanceTransaction.employee_id == employee_id,
+                extract("year", LeaveBalanceTransaction.effective_date) == year)
+        .group_by(LeaveBalanceTransaction.leave_type, LeaveBalanceTransaction.reason)
+    ):
+        if reason == "USE":
+            bucket(code)["used"] -= Decimal(delta)
+        else:
+            bucket(code)["adjusted"] += Decimal(delta)
+    for code, days in (
+        db.query(Leave.leave_type, func.coalesce(func.sum(Leave.number_of_days), 0))
+        .filter(Leave.company_id == company_id, Leave.employee_id == employee_id, Leave.status == "pending",
+                extract("year", Leave.start_date) == year)
+        .group_by(Leave.leave_type)
+    ):
+        bucket(code)["pending"] += Decimal(days)
+    return totals
+
+
 def balances(db: Session, company_id: int, employee_id: int, year: Optional[int] = None) -> Dict[str, dict]:
-    year = year or date.today().year
-    sums = (
-        db.query(Leave.leave_type, Leave.status, func.coalesce(func.sum(Leave.number_of_days), 0))
-        .filter(
-            Leave.company_id == company_id,
-            Leave.employee_id == employee_id,
-            extract("year", Leave.start_date) == year,
-            Leave.status.in_(("approved", "pending")),
-        )
-        .group_by(Leave.leave_type, Leave.status)
-        .all()
-    )
-    used: Dict[str, int] = {}
-    pending: Dict[str, int] = {}
-    for code, status, days in sums:
-        (used if status == "approved" else pending)[code] = int(days)
+    year = year or today_for(db.get(Company, company_id)).year
+    totals = balance_totals(db, company_id, employee_id, year)
     result = {}
     for lt in leave_types(db, company_id):
-        u, p = used.get(lt.code, 0), pending.get(lt.code, 0)
+        t = totals.get(lt.code, {"used": Decimal(0), "adjusted": Decimal(0), "pending": Decimal(0)})
+        entitled = Decimal(lt.annual_quota) + t["adjusted"]
         result[lt.code] = {
             "name": lt.name,
             "is_paid": lt.is_paid,
             "is_unlimited": lt.is_unlimited,
             "total": lt.annual_quota,
-            "used": u,
-            "pending": p,
-            "remaining": None if lt.is_unlimited else max(lt.annual_quota - u, 0),
-            "available": None if lt.is_unlimited else max(lt.annual_quota - u - p, 0),
+            "used": days_out(t["used"]),
+            "pending": days_out(t["pending"]),
+            "remaining": None if lt.is_unlimited else days_out(max(entitled - t["used"], Decimal(0))),
+            "available": None if lt.is_unlimited else days_out(max(entitled - t["used"] - t["pending"], Decimal(0))),
         }
     return result
 
@@ -138,7 +165,7 @@ def _step_has_approver(db: Session, requester: Employee, step: LeaveApproval) ->
 
 def _notify_step(db: Session, leave: Leave, requester: Employee, step: LeaveApproval) -> None:
     title = "Leave request awaiting your approval"
-    message = f"{requester.full_name} requested {leave.number_of_days} day(s) of {leave.leave_type} leave."
+    message = f"{requester.full_name} requested {days_out(leave.number_of_days)} day(s) of {leave.leave_type} leave."
     if step.approver_type == "role":
         for user_id in role_member_user_ids(db, step.role_id, exclude_user_id=requester.user_id)[:25]:
             NotificationService.create(db, user_id, title, message, "leave", "/leaves")
@@ -157,6 +184,10 @@ def _finalize(db: Session, leave: Leave, requester: Employee, status: str, actor
     leave.current_step = None
     leave.decided_at = utcnow()
     leave.decided_by_user_id = actor_user_id
+    if status == "approved":
+        from app.payroll.services import time_inputs
+
+        time_inputs.generate_leave_days(db, leave, actor_user_id)
     if requester.user_id:
         NotificationService.create(
             db, requester.user_id, f"Leave request {status}",
@@ -233,8 +264,17 @@ def _approver_can_act(db: Session, principal: Principal, requester: Employee) ->
     return principal.has("leave:approve") and authz.can_access_employee(db, principal, "leave:approve", requester.id)
 
 
+def _cancellation_pending(leave: Leave) -> bool:
+    return leave.status == "approved" and leave.cancellation_status == "pending"
+
+
 def can_act(db: Session, principal: Principal, leave: Leave, requester: Employee) -> Optional[str]:
-    if leave.status != "pending" or principal.employee_id == leave.employee_id:
+    if principal.employee_id == leave.employee_id:
+        return None
+    if _cancellation_pending(leave):
+        # Whoever may approve this person's leave decides the cancellation.
+        return "approver" if _approver_can_act(db, principal, requester) else None
+    if leave.status != "pending":
         return None
     step = _current_step(leave)
     if step is None:
@@ -263,7 +303,38 @@ def can_act(db: Session, principal: Principal, leave: Leave, requester: Employee
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+def _portions(db: Session, company_id: int, leave_type: LeaveType, data) -> tuple:
+    start_portion = getattr(data, "start_portion", None) or "FULL"
+    end_portion = getattr(data, "end_portion", None) or "FULL"
+    if start_portion not in ("FULL", "SECOND_HALF") or end_portion not in ("FULL", "FIRST_HALF"):
+        raise bad_request("A leave starts with a full day or the second half and ends with a full day or the first half.",
+                          "INVALID_PORTION")
+    if data.start_date == data.end_date and start_portion == "SECOND_HALF" and end_portion == "FIRST_HALF":
+        raise bad_request("Choose either the first or the second half of the day.", "INVALID_PORTION")
+    if (start_portion, end_portion) != ("FULL", "FULL"):
+        from app.payroll.services import settings as settings_engine
+
+        enabled = settings_engine.resolve(db, company_id, "leave.half_day.enabled", on=data.start_date).value
+        if enabled is not True:
+            raise bad_request("Half-day leave is not enabled for your company.", "HALF_DAY_DISABLED")
+        if not leave_type.allow_half_day:
+            raise bad_request(f"{leave_type.name} is taken in whole days only.", "HALF_DAY_NOT_ALLOWED")
+    return start_portion, end_portion
+
+
+def _slots_taken(leave: Leave) -> Dict[date, str]:
+    from app.payroll.services import time_inputs
+
+    return {
+        d: time_inputs.portion_on(d, leave.start_date, leave.end_date, leave.start_portion or "FULL",
+                                  leave.end_portion or "FULL")
+        for d in (leave.start_date + timedelta(days=n) for n in range((leave.end_date - leave.start_date).days + 1))
+    }
+
+
 def apply(db: Session, principal: Principal, data) -> Leave:
+    from app.payroll.services import time_inputs
+
     if not principal.has("leave:apply"):
         raise forbidden()
     employee = authz.own_employee(db, principal)
@@ -281,23 +352,32 @@ def apply(db: Session, principal: Principal, data) -> Leave:
     )
     if leave_type is None:
         raise bad_request("Unknown leave type.", "INVALID_LEAVE_TYPE")
+    start_portion, end_portion = _portions(db, principal.company_id, leave_type, data)
 
-    days = (data.end_date - data.start_date).days + 1
+    days, plan = time_inputs.plan_leave(db, principal.company_id, employee.id, leave_type, data.start_date,
+                                        data.end_date, start_portion, end_portion)
+    if not all(facts.employed for facts, _, _ in plan):
+        raise bad_request("Leave can only be taken while employed.", "OUTSIDE_EMPLOYMENT")
+    if days <= 0:
+        raise bad_request("The selected dates are weekly offs or holidays; no leave is needed.", "NO_WORKING_DAYS")
     if not leave_type.is_unlimited:
         balance = balances(db, principal.company_id, employee.id, data.start_date.year)[leave_type.code]
-        if balance["available"] < days:
+        if Decimal(str(balance["available"])) < days:
             raise bad_request(
                 f"Insufficient {leave_type.name} balance. Available: {balance['available']} day(s).",
                 "INSUFFICIENT_BALANCE",
             )
-    overlap = db.query(Leave.id).filter(
+    wanted = {facts.date: portion for facts, portion, _ in plan}
+    for other in db.query(Leave).filter(
         Leave.employee_id == employee.id,
         Leave.status.in_(("pending", "approved")),
         Leave.start_date <= data.end_date,
         Leave.end_date >= data.start_date,
-    ).first()
-    if overlap:
-        raise conflict("You already have leave booked on some of these dates.", "LEAVE_OVERLAP")
+    ):
+        for day, portion in _slots_taken(other).items():
+            mine = wanted.get(day)
+            if mine is not None and (mine == "FULL" or portion == "FULL" or mine == portion):
+                raise conflict("You already have leave booked on some of these dates.", "LEAVE_OVERLAP")
 
     leave = Leave(
         company_id=principal.company_id,
@@ -305,6 +385,8 @@ def apply(db: Session, principal: Principal, data) -> Leave:
         leave_type=leave_type.code,
         start_date=data.start_date,
         end_date=data.end_date,
+        start_portion=start_portion,
+        end_portion=end_portion,
         number_of_days=days,
         reason=data.reason,
         status="pending",
@@ -334,8 +416,9 @@ def apply(db: Session, principal: Principal, data) -> Leave:
     db.flush()
     advance(db, leave, employee)
     AuditLogService.log(
-        db, principal, "Leave", "APPLY", f"{employee.full_name} applied for {days} day(s) of {leave_type.code} leave",
-        "leave", leave.id,
+        db, principal, "Leave", "APPLY",
+        f"{employee.full_name} applied for {days_out(days)} day(s) of {leave_type.code} leave",
+        "leave", leave.id, details={"start_portion": start_portion, "end_portion": end_portion, "days": str(days)},
     )
     return leave
 
@@ -366,6 +449,8 @@ def decide(db: Session, principal: Principal, leave_id: int, approve: bool, rema
             raise bad_request(f"This request is already {leave.status}.")
         raise forbidden("This request is not awaiting your approval.")
 
+    if _cancellation_pending(leave):
+        return _decide_cancellation(db, principal, leave, requester, approve, remarks)
     step = _current_step(leave)
     step.status = "approved" if approve else "rejected"
     step.acted_by_user_id = principal.user_id
@@ -389,12 +474,57 @@ def decide(db: Session, principal: Principal, leave_id: int, approve: bool, rema
     return leave
 
 
+def _decide_cancellation(db: Session, principal: Principal, leave: Leave, requester: Employee, approve: bool,
+                         remarks: Optional[str]) -> Leave:
+    leave.cancellation_status = "approved" if approve else "rejected"
+    leave.cancellation_decided_at = utcnow()
+    leave.cancellation_decided_by_user_id = principal.user_id
+    leave.remarks = remarks or leave.remarks
+    if approve:
+        from app.payroll.services import time_inputs
+
+        leave.status = "cancelled"
+        time_inputs.void_leave_days(db, leave, "CANCELLED", principal.user_id)
+    outcome = "approved" if approve else "rejected"
+    if requester.user_id:
+        NotificationService.create(
+            db, requester.user_id, f"Leave cancellation {outcome}",
+            f"Cancelling your {leave.leave_type} leave from {leave.start_date} to {leave.end_date} was {outcome}.",
+            "leave", "/employee/leaves",
+        )
+    AuditLogService.log(
+        db, principal, "Leave", "CANCEL_APPROVE" if approve else "CANCEL_REJECT",
+        f"{outcome.capitalize()} cancelling leave #{leave.id} of {requester.full_name}",
+        "leave", leave.id, details={"cancellation_status": leave.cancellation_status, "remarks": remarks},
+    )
+    return leave
+
+
 def cancel(db: Session, principal: Principal, leave_id: int) -> Leave:
+    """Pending leave is withdrawn at once; approved leave gets a cancellation request (EC-LV-04)."""
     leave = _load_leave(db, principal, leave_id, lock=True)
     if leave.employee_id != principal.employee_id:
         raise not_found("Leave request")
+    if leave.status == "approved":
+        if leave.cancellation_status == "pending":
+            raise conflict("Cancelling this leave is already awaiting approval.", "CANCELLATION_PENDING")
+        leave.cancellation_status = "pending"
+        leave.cancellation_requested_at = utcnow()
+        leave.cancellation_decided_at = None
+        leave.cancellation_decided_by_user_id = None
+        requester = db.get(Employee, leave.employee_id)
+        manager = _active_employee(db, requester.manager_id)
+        if manager is not None and manager.user_id:
+            NotificationService.create(
+                db, manager.user_id, "Leave cancellation awaiting your approval",
+                f"{requester.full_name} asked to cancel approved {leave.leave_type} leave from {leave.start_date}.",
+                "leave", "/leaves",
+            )
+        AuditLogService.log(db, principal, "Leave", "CANCEL_REQUESTED", f"Requested cancellation of leave #{leave.id}",
+                            "leave", leave.id)
+        return leave
     if leave.status != "pending":
-        raise bad_request("Only pending requests can be cancelled.")
+        raise bad_request("Only pending or approved requests can be cancelled.")
     leave.status = "cancelled"
     leave.current_step = None
     for step in leave.approvals:
@@ -443,7 +573,10 @@ def serialize(db: Session, leave: Leave, requester: Employee, can_act_as: Option
         "leave_type": leave.leave_type,
         "start_date": leave.start_date.isoformat(),
         "end_date": leave.end_date.isoformat(),
-        "number_of_days": leave.number_of_days,
+        "number_of_days": days_out(leave.number_of_days),
+        "start_portion": leave.start_portion or "FULL",
+        "end_portion": leave.end_portion or "FULL",
+        "cancellation_status": leave.cancellation_status,
         "reason": leave.reason,
         "status": leave.status,
         "remarks": leave.remarks,
@@ -478,7 +611,8 @@ def approval_inbox(db: Session, principal: Principal) -> List[dict]:
     pending = (
         db.query(Leave)
         .options(selectinload(Leave.approvals), joinedload(Leave.employee))
-        .filter(Leave.company_id == principal.company_id, Leave.status == "pending")
+        .filter(Leave.company_id == principal.company_id,
+                (Leave.status == "pending") | ((Leave.status == "approved") & (Leave.cancellation_status == "pending")))
         .order_by(Leave.start_date)
         .limit(500)
         .all()
@@ -545,6 +679,12 @@ def save_leave_type(db: Session, principal: Principal, data, type_id: Optional[i
         lt = db.query(LeaveType).filter(LeaveType.company_id == principal.company_id, LeaveType.id == type_id).first()
         if lt is None:
             raise not_found("Leave type")
+        if data.code != lt.code and db.query(Leave.id).filter(
+            Leave.company_id == principal.company_id, Leave.leave_type == lt.code
+        ).first():
+            # History refers to the code: renaming it would orphan leaves and balances (EC-LV-11).
+            raise conflict("This leave type has leave history; its code cannot change. Deactivate it instead.",
+                           "LEAVE_TYPE_CODE_FROZEN")
     else:
         lt = LeaveType(company_id=principal.company_id)
         db.add(lt)
