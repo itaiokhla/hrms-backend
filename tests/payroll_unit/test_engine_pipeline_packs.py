@@ -182,3 +182,31 @@ def test_statutory_outputs_are_reported():
     outputs = result.stage_outputs["statutory"]
     assert {item["component"] for item in outputs["liabilities"]} >= {"ZZ_PENSION_EE", "ZZ_PENSION_ER"}
     assert outputs["taxable"] is not None
+
+
+def test_section_17_with_both_real_stages_and_the_in_fixture_pack():
+    """3.5 §17 with no test stage at all: IN fixture statutory lines and the loan taken by engine.deductions.
+
+    Gross is exactly 1,01,975.65; net is gross − EPF 3,000 − PT 200 − TDS − loan 2,000; replay reproduces it.
+    """
+    from app.payroll.packs.in_fixture import EPF, PT, TDS
+    from tests.payroll_unit.test_engine_golden import section_17_snapshot
+
+    pack = packs.find_pack("IN", on=dt.date(2026, 11, 30), environment="test")
+    pf_tags = ["LOP_APPLICABLE", "PART_OF_CTC", "PART_OF_GROSS", "OT_BASE", "IN_PF_WAGE", "TAXABLE_INCOME"]
+    data = section_17_snapshot()
+    data["settings"].update({scheme.switch_key: True for scheme in (EPF, PT, TDS)})
+    data["settings"]["payroll.loans.enabled"] = True
+    data.update(components=catalogue(component("BASIC", tags=pf_tags, proration="BY_PAID_DAYS", version_id=101)),
+                employee={"employee_id": 501, "hire_date": "2022-04-01", "country": "IN", "subdivision": "IN-MH",
+                          "protected": {"gender": "MALE"}},
+                pack=packs.pack_snapshot(pack), tax_profile={"regime": "NEW"})
+    result = calculate(data)
+    got = amounts(result)
+    assert result.totals.gross == D("101975.65")
+    assert got["IN_EPF_EE"] == D("3000.00") and got["IN_PT"] == D("200.00") and got["LOAN_RECOVERY"] == D("2000.00")
+    tax = got.get("IN_TDS", D(0))
+    assert result.totals.net == D("96775.65") - tax
+    assert issue(result, "INVARIANT_VIOLATION") is None
+    assert sum(p.amount for p in result.payments) == result.totals.net
+    assert replay(data, result.calc_hash)[0]

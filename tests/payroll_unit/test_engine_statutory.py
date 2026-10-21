@@ -291,6 +291,33 @@ def test_ec_sta_17_known_determination_raises_no_new_flag():
     assert "PACK_STATE_DETERMINED" not in codes(issues)
 
 
+def test_ec_sta_20_contractor_gets_no_statutory_lines_and_a_review_issue():
+    lines = zz_lines()
+    result, issues = statutory.apply(Ctx(employee={"worker_class": "CONTRACTOR"}), lines)
+    assert result == lines
+    (issue,) = issues
+    assert (issue.code, issue.severity, issue.waivable) == ("WORKER_CLASS_REVIEW", "BLOCKING", True)
+    for worker_class in ("EMPLOYEE", "INTERN", "APPRENTICE"):
+        result, issues = statutory.apply(Ctx(employee={"worker_class": worker_class}), zz_lines())
+        assert "ZZ_PENSION_EE" in by_code(result) and "WORKER_CLASS_REVIEW" not in codes(issues)
+
+
+def test_ec_sta_09_several_tax_jurisdictions_require_specialist_review():
+    profile = {"resident": True, "tax_jurisdictions": ["IN", "AE"]}
+    result, issues = statutory.apply(Ctx(tax_profile=profile), zz_lines())
+    assert "ZZ_WHT" in by_code(result)                       # withholding still follows the pack
+    assert [(i.code, i.severity) for i in issues] == [("TAX_SPECIALIST_REVIEW", "WARNING")]
+    assert "Requires specialist review" in issues[0].message
+    for single in (["US-CA", "US-NY"], ["IN"], "IN", []):
+        _, issues = statutory.apply(Ctx(tax_profile={"resident": True, "tax_jurisdictions": single}), zz_lines())
+        assert not issues, single
+    _, issues = statutory.apply(Ctx(tax_profile={"resident": True, "tax_jurisdictions": ["IN", "QQ"]}), zz_lines())
+    assert codes(issues) == ["TAX_SPECIALIST_REVIEW"]        # unrecognised: reviewed, never guessed
+    # residency comes from the declaration, never from citizenship
+    result, _ = statutory.apply(Ctx(tax_profile={"resident": False}, employee={"nationality": "ZZ"}), zz_lines())
+    assert by_code(result)["ZZ_WHT"].trace["details"]["resident"] is False
+
+
 def test_frequency_not_supported_by_the_pack_blocks():
     _, issues = statutory.apply(Ctx(frequency="WEEKLY"), zz_lines())
     assert codes(issues) == ["PACK_FREQUENCY_UNSUPPORTED"]

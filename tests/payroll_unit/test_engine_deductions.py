@@ -4,7 +4,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Optional
 
 import pytest
 

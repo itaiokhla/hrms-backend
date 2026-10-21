@@ -585,7 +585,7 @@ def test_net_based_structure_is_solved_to_a_gross_ec_cmp_15(monkeypatch):
     assert result.totals.net == D("93800.00")
     trace = result.stage_outputs["gross_up"]["S1"]
     assert trace["converged"] and len(trace["iterations"]) <= 50
-    assert abs(D(trace["gross"]) - D("97000.00")) <= D("0.01")  # the smallest gross within one minor unit
+    assert D(trace["gross"]) == D("97000.00")  # the smallest gross whose net is within one minor unit
     lop = calculate(snapshot(segments=[seg(net_based("93800.00"))], days=days(per_day=absent(nov(12), nov(13))),
                              settings=settings(payroll__structures__net_based_enabled=True)))
     assert amounts(lop)["BASIC"] == D("45266.67")  # 48,500 × 28 ÷ 30

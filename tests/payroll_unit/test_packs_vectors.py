@@ -232,3 +232,13 @@ def test_us_supplemental_withholding_above_one_million():
     # 1,000 at 22% + 1,000 above $1M at 37%
     assert lines["US_FITW"].amount == D("590.00")
     assert "US_FIT_NOT_IMPLEMENTED" in {i.code for i in issues}
+
+
+def test_i07_every_fixture_line_is_marked_fixture_at_the_source():
+    """Even outside the engine gate (vectors, previews), an IN fixture line is never mistaken for law."""
+    for vector in in_fixture.PACK.test_vectors():
+        lines, _, _, _ = _run(in_fixture.PACK, vector.id)
+        assert all(line.fixture and "FIXTURE" in line.tags and line.statutory for line in lines.values()), vector.id
+    for pack, vector_id in ((zz_test.PACK, "ZZ-V01"), (us_draft.PACK, "US-V01"), (ae_draft.PACK, "AE-V01")):
+        lines, _, _, _ = _run(pack, vector_id)
+        assert lines and not any(line.fixture or "FIXTURE" in line.tags for line in lines.values()), vector_id
