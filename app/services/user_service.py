@@ -11,7 +11,9 @@ from typing import List, Optional
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.authz import ensure_all_employees_access
 from app.core.errors import bad_request, conflict, forbidden, not_found
+from app.core.permission_registry import Scope
 from app.core.principal import Principal, load_grants
 from app.core.security import utcnow
 from app.database.db import system_session
@@ -198,6 +200,7 @@ def set_status(db: Session, principal: Principal, user_id: int, status: str) -> 
         raise bad_request("Invited users become active when they accept their invitation.")
     if status != "active":
         rbac_service.assert_not_last_admin(db, principal.company_id, user.id)
+        rbac_service.assert_not_last_payroll_approver(db, principal.company_id, user.id)
         auth_service.revoke_user_sessions(db, user.id, f"account_{status}")
         location_service.stop_for_employee(db, principal.company_id, _employee_id_of(db, user), f"ACCOUNT_{status.upper()}")
     previous = user.status
@@ -228,13 +231,21 @@ def set_roles(db: Session, principal: Principal, user_id: int, role_ids: List[in
 
 
 def set_assigned_employees(db: Session, principal: Principal, user_id: int, employee_ids: List[int]) -> None:
+    """Replace the user's ASSIGNED_GROUP list, which every assigned-group grant of all their roles shares.
+
+    The caller must hold at COMPANY scope (or be an administrator) every permission the user holds at
+    ASSIGNED_GROUP, and must see every listed employee (audit 01 D-2).
+    """
     user = _get(db, principal, user_id)
     _guard_target(db, principal, user)
     ids = set(employee_ids)
+    if not principal.is_company_admin:
+        grouped = sorted(code for code, scopes in load_grants(db, user.id)[0].items() if Scope.ASSIGNED_GROUP.value in scopes)
+        denied = [code for code in grouped if not principal.has_company_scope(code)]
+        if denied:
+            raise forbidden(f"You cannot delegate: {', '.join(denied)}")
     if ids:
-        found = db.query(func.count(Employee.id)).filter(Employee.company_id == principal.company_id, Employee.id.in_(ids)).scalar()
-        if found != len(ids):
-            raise not_found("Employee")
+        ensure_all_employees_access(db, principal, "employee:read", ids)
     db.query(ScopeAssignment).filter(ScopeAssignment.user_id == user.id).delete(synchronize_session=False)
     for employee_id in sorted(ids):
         db.add(ScopeAssignment(company_id=principal.company_id, user_id=user.id, employee_id=employee_id,

@@ -117,6 +117,14 @@ class Settings(BaseSettings):
     default_work_hours_per_day: float = 8.0
     late_penalty_amount: float = 100.0
 
+    # Payroll v2 (docs/payroll/implementation/ARCHITECTURE.md)
+    # Background jobs: "inline" (tests: run right after the enqueuing transaction commits),
+    # "thread" (dev/demo stacks: worker thread inside the API process), "worker" (python -m app.worker).
+    jobs_mode: str = "thread"
+    # Base64 of a 32-byte key protecting per-tenant data keys (bank account numbers, tax identifiers).
+    # Required outside development and test; never logged, never sent to the browser.
+    payroll_master_key: str = ""
+
     # Subscription
     trial_days: int = 14
 

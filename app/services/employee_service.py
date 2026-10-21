@@ -258,12 +258,27 @@ def update_employee(db: Session, principal: Principal, employee_id: int, data: E
     return employee
 
 
-def deactivate_employee(db: Session, principal: Principal, employee_id: int) -> Employee:
+def deactivate_employee(db: Session, principal: Principal, employee_id: int,
+                        last_working_day: Optional[date] = None, note: Optional[str] = None) -> Employee:
+    """End employment on `last_working_day` (default: today in the employee's legal-entity timezone).
+
+    The day cannot be in the future (access ends now) or before the hire date. Every placement ends on
+    it: the active one is closed and later ones are removed (audit 01 D-4).
+    """
     employee = authz.ensure_employee_access(db, principal, "employee:deactivate", employee_id)
     if authz.is_self(principal, employee.id):
         raise forbidden("You cannot end your own employment.")
     if not employee.is_active:
         return employee
+    from app.services import org_structure_service
+
+    local_today = org_structure_service.employee_local_today(db, employee)
+    end = last_working_day or local_today
+    if end > local_today:
+        raise bad_request("The last working day cannot be in the future: record the termination on or after it.",
+                          "TERMINATION_DATE_FUTURE")
+    if employee.hire_date and end < employee.hire_date:
+        raise bad_request("The last working day cannot be before the hire date.", "TERMINATION_DATE_INVALID")
     reports = db.query(func.count(Employee.id)).filter(
         Employee.manager_id == employee.id, Employee.is_active.is_(True)
     ).scalar()
@@ -274,6 +289,7 @@ def deactivate_employee(db: Session, principal: Principal, employee_id: int) -> 
 
     if employee.user_id:
         rbac_service.assert_not_last_admin(db, principal.company_id, employee.user_id)
+        rbac_service.assert_not_last_payroll_approver(db, principal.company_id, employee.user_id)
         user = db.get(User, employee.user_id)
         if user and user.status in ("active", "invited", "suspended"):
             user.status = "deactivated"
@@ -284,12 +300,13 @@ def deactivate_employee(db: Session, principal: Principal, employee_id: int) -> 
     location_service.stop_for_employee(db, principal.company_id, employee.id, "EMPLOYMENT_ENDED")
     # Historical attendance, leave and payroll stay untouched.
     employee.is_active = False
-    employee.termination_date = date.today()
-    from app.services import org_structure_service
-
-    org_structure_service.close_on_termination(db, employee, employee.termination_date)
+    employee.termination_date = end
+    placements = org_structure_service.close_on_termination(db, employee, end)
     AuditLogService.log(
-        db, principal, "Employees", "DEACTIVATE", f"Ended employment of {employee.employee_code}", "employee", employee.id
+        db, principal, "Employees", "DEACTIVATE",
+        f"Ended employment of {employee.employee_code}; last working day {end.isoformat()}", "employee", employee.id,
+        details={"last_working_day": end.isoformat(), "note": (" ".join((note or "").split())[:500] or None),
+                 **placements},
     )
     return employee
 

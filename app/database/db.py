@@ -39,7 +39,14 @@ class TenantContextError(RuntimeError):
 
 
 def _make_engine(url: str) -> Engine:
-    kwargs = {"echo": settings.db_echo, "future": True, "pool_pre_ping": True}
+    # Statement parameters (salaries, account numbers, names) never reach logs or error messages
+    # unless SQL echo is explicitly switched on for local debugging (EC-SEC-08).
+    kwargs = {
+        "echo": settings.db_echo,
+        "hide_parameters": not settings.db_echo,
+        "future": True,
+        "pool_pre_ping": True,
+    }
     if url.startswith("sqlite"):
         kwargs["connect_args"] = {"check_same_thread": False}
     else:

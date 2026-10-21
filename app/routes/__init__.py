@@ -15,6 +15,7 @@ from app.routes import (
     settings,
     users,
 )
+from app.payroll.routes import ROUTERS as PAYROLL_V2_ROUTERS
 
 ROUTERS = [
     branding.public,
@@ -26,6 +27,8 @@ ROUTERS = [
     organization.router,
     attendance.router,
     leaves.router,
+    # Payroll v2 first: the legacy router's /payroll/{payroll_id} would shadow /payroll/runs etc.
+    *PAYROLL_V2_ROUTERS,
     payroll.router,
     operations.router,
     reports.router,

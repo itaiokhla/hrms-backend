@@ -449,11 +449,16 @@ def test_payroll_audit_rows_hidden_without_payroll_audit_read(app):
     assert hr_view["total"] == len(hr_view["logs"])
     assert _audit(hr, module="Payroll Runs") == {"total": 0, "logs": []}
     assert _audit(hr, module="Payroll Roles")["total"] == 0
+    # Every payroll-module row of this tenant (the three planted above, the founder's payroll role grant and
+    # whatever signup provisioning wrote), counted independently of the API under test.
+    payroll_rows = _sql("SELECT count(*) FROM audit_logs WHERE company_id = :c AND module = ANY(:m)",
+                        c=founder.company_id, m=list(PAYROLL_AUDIT_MODULES))[0][0]
+    assert payroll_rows >= 4
     for reader in (auditor, founder):
         view = _audit(reader)
         modules = [r["module"] for r in view["logs"]]
         assert {"Payroll Runs", "Bank Accounts", "Payroll", "Payroll Roles"} <= set(modules)
-        assert view["total"] == hr_view["total"] + 4
+        assert view["total"] == hr_view["total"] + payroll_rows
         assert _audit(reader, module="Payroll Runs")["total"] == 1  # never another tenant's rows
 
 

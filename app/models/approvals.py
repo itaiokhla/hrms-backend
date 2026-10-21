@@ -27,6 +27,8 @@ from app.models.leave import APPROVAL_MODULES, APPROVER_TYPES, STEP_STATUSES
 
 APPROVAL_REQUEST_STATUSES = ("PENDING", "APPROVED", "REJECTED", "CANCELLED")
 ACTED_AS = ("approver", "delegate", "override")
+# Request steps also accept the engine's default "holders of the approve permission" step (migration 0014).
+REQUEST_APPROVER_TYPES = APPROVER_TYPES + ("permission_holders",)
 
 
 class ApprovalRequest(TenantMixin, BaseModel):
@@ -70,6 +72,7 @@ class ApprovalRequest(TenantMixin, BaseModel):
             "uq_approval_requests_one_pending", "company_id", "module", "subject_type", "subject_id",
             unique=True, postgresql_where=text("status = 'PENDING'"),
         ),
+        Index("ix_approval_requests_pending", "company_id", "module", postgresql_where=text("status = 'PENDING'")),
     )
 
 
@@ -111,7 +114,8 @@ class ApprovalRequestStep(TenantMixin, BaseModel):
             name="fk_approval_request_steps_user",
         ),
         CheckConstraint("step_order >= 1", name="ck_approval_request_steps_order"),
-        CheckConstraint(f"approver_type IN {APPROVER_TYPES}", name="ck_approval_request_steps_type"),
+        # The engine's default chain ("holders of the module's approve permission") adds one type (0014).
+        CheckConstraint(f"approver_type IN {REQUEST_APPROVER_TYPES}", name="ck_approval_request_steps_type"),
         CheckConstraint(
             "(approver_type = 'role') = (role_id IS NOT NULL)", name="ck_approval_request_steps_role_required"
         ),

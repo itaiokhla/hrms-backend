@@ -83,6 +83,9 @@ class UserSession(TenantMixin, BaseModel):
     # Host the session was created on (sessions never move between hosts; removing a
     # domain revokes its sessions). NULL for sessions created before hosts were tracked.
     host = Column(String(253), nullable=True, index=True)
+    # Last successful step-up re-authentication of this session and how it was proven (3.7 §3.2).
+    step_up_at = Column(DateTime(timezone=True), nullable=True)
+    step_up_method = Column(String(20), nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -90,6 +93,9 @@ class UserSession(TenantMixin, BaseModel):
             ["users.company_id", "users.id"],
             ondelete="CASCADE",
             name="fk_user_sessions_user",
+        ),
+        CheckConstraint(
+            "step_up_method IS NULL OR step_up_method IN ('TOTP', 'EMAIL_OTP')", name="ck_user_sessions_step_up_method"
         ),
     )
 

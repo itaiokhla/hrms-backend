@@ -62,6 +62,26 @@ def sync_tenant_hosts() -> None:
 
 
 @app.on_event("startup")
+def start_payroll_runtime() -> None:
+    """Payroll v2 runtime: refuse a missing or malformed master key, redact logs, start the embedded worker."""
+    from app import worker
+    from app.payroll.services import jobs, keys
+
+    keys.check_master_key()
+    jobs.install_log_redaction()
+    if worker.validate_mode() == "thread":
+        worker.start_embedded()
+
+
+@app.on_event("shutdown")
+def stop_payroll_runtime() -> None:
+    if settings.jobs_mode == "thread":
+        from app import worker
+
+        worker.stop_embedded()
+
+
+@app.on_event("startup")
 def report_isolation_status() -> None:
     try:
         status = rls_status()

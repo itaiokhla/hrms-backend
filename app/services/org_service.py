@@ -276,13 +276,16 @@ def end_secondary_line(db: Session, principal: Principal, line_id: int) -> None:
 # ---------------------------------------------------------------------------
 # Approval delegations
 # ---------------------------------------------------------------------------
-def active_delegators_for(db: Session, delegate_employee_id: Optional[int], on: Optional[date] = None) -> List[int]:
+def active_delegators_for(
+    db: Session, delegate_employee_id: Optional[int], on: Optional[date] = None, module: str = "leave"
+) -> List[int]:
+    """Employees whose `module` approvals the delegate may act on, on `on` (revoked or expired never count)."""
     if delegate_employee_id is None:
         return []
     on = on or date.today()
     rows = db.query(ApprovalDelegation.delegator_employee_id).filter(
         ApprovalDelegation.delegate_employee_id == delegate_employee_id,
-        ApprovalDelegation.module == "leave",
+        ApprovalDelegation.module == module,
         ApprovalDelegation.revoked_at.is_(None),
         ApprovalDelegation.starts_on <= on,
         ApprovalDelegation.ends_on >= on,

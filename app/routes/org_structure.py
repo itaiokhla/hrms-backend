@@ -1,8 +1,9 @@
-"""Organisation structure API: legal entities, branches, placement history and scope targets."""
+"""Organisation structure API: legal entities, branches, placement history, termination and scope targets."""
 
+from datetime import date
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Body, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Query, Request, UploadFile
 from pydantic import Field
 from sqlalchemy.orm import Session
 
@@ -12,10 +13,13 @@ from app.core.permission_registry import PERMISSIONS_BY_CODE, TARGETED_SCOPES
 from app.core.principal import Principal, get_principal_any_subscription, require, require_any
 from app.database.db import get_db
 from app.models.org import Branch, LegalEntity, RoleAssignmentTarget
+from app.models.pay_org import PayGroup
 from app.models.rbac import Role, RolePermission, UserRoleAssignment
 from app.models.user import User
+from app.payroll.api_types import DecimalStr
+from app.payroll.services import idempotency
 from app.schemas.auth import StrictModel
-from app.services import brand_asset_service, brand_service, org_structure_service
+from app.services import brand_asset_service, brand_service, employee_service, org_structure_service
 from app.services.audit_log_service import AuditLogService
 
 router = APIRouter(prefix="/api/v1", tags=["Organization structure"])
@@ -230,6 +234,9 @@ def branch_status(branch_id: int, action: str, principal: Principal = Depends(re
 # Placement (effective-dated assignments)
 # ---------------------------------------------------------------------------
 class PlacementChange(StrictModel):
+    """A new placement from `effective_from`. Payroll dimensions left out continue from the current
+    placement (or take their defaults); null clears an optional one or picks the default of a required one."""
+
     legal_entity_id: Optional[int] = None
     branch_id: int
     department_id: Optional[int] = None
@@ -237,6 +244,19 @@ class PlacementChange(StrictModel):
     reason: str = Field("TRANSFER", max_length=20)
     note: Optional[str] = Field(None, max_length=500)
     is_primary: Optional[bool] = None
+    pay_group_id: Optional[int] = None
+    grade_id: Optional[int] = None
+    employment_type_id: Optional[int] = None
+    designation_id: Optional[int] = None
+    cost_center_id: Optional[int] = None
+    work_week_pattern_id: Optional[int] = None
+    shift_id: Optional[int] = None
+    fte: Optional[DecimalStr] = None
+
+
+class TerminationWrite(StrictModel):
+    last_working_day: date
+    note: Optional[str] = Field(None, max_length=500)
 
 
 @router.get("/employees/{employee_id}/assignments")
@@ -257,6 +277,18 @@ def change_placement(employee_id: int, data: PlacementChange, principal: Princip
     return org_structure_service.history(db, principal.company_id, employee_id)
 
 
+@router.post("/employees/{employee_id}/termination")
+def terminate(employee_id: int, data: TerminationWrite, request: Request,
+              principal: Principal = Depends(require("employee:deactivate")), db: Session = Depends(get_db)):
+    """End employment on a chosen last working day (not the click date); every placement ends on it."""
+    def handler():
+        employee = employee_service.deactivate_employee(db, principal, employee_id, data.last_working_day, data.note)
+        return 200, {"employee_id": employee.id, "is_active": employee.is_active,
+                     "termination_date": employee.termination_date.isoformat() if employee.termination_date else None}
+
+    return idempotency.execute(db, principal, request, handler, body=data.model_dump(mode="json"))
+
+
 # ---------------------------------------------------------------------------
 # Scope targets of one user's role assignments (LEGAL_ENTITY / BRANCH scopes)
 # ---------------------------------------------------------------------------
@@ -264,6 +296,7 @@ class TargetWrite(StrictModel):
     role_id: int
     legal_entity_ids: List[int] = Field(default_factory=list, max_length=200)
     branch_ids: List[int] = Field(default_factory=list, max_length=500)
+    pay_group_ids: List[int] = Field(default_factory=list, max_length=500)
 
 
 class TargetsWrite(StrictModel):
@@ -298,6 +331,7 @@ def _targets_view(db: Session, principal: Principal, user_id: int) -> List[dict]
             "permissions": grants,
             "legal_entity_ids": sorted(t.target_id for t in targets if t.scope == "LEGAL_ENTITY"),
             "branch_ids": sorted(t.target_id for t in targets if t.scope == "BRANCH"),
+            "pay_group_ids": sorted(t.target_id for t in targets if t.scope == "PAY_GROUP"),
         })
     return result
 
@@ -317,8 +351,11 @@ def set_targets(user_id: int, data: TargetsWrite, principal: Principal = Depends
         raise not_found("User")
     if user.id == principal.user_id:
         raise forbidden("You cannot change the reach of your own roles.")
-    entity_ids = {e.id for e in db.query(LegalEntity).filter(LegalEntity.company_id == principal.company_id)}
-    branch_ids = {b.id for b in db.query(Branch).filter(Branch.company_id == principal.company_id)}
+    known = {
+        "LEGAL_ENTITY": {i for (i,) in db.query(LegalEntity.id).filter(LegalEntity.company_id == principal.company_id)},
+        "BRANCH": {i for (i,) in db.query(Branch.id).filter(Branch.company_id == principal.company_id)},
+        "PAY_GROUP": {i for (i,) in db.query(PayGroup.id).filter(PayGroup.company_id == principal.company_id)},
+    }
     for item in data.assignments:
         assignment = db.query(UserRoleAssignment).filter(
             UserRoleAssignment.company_id == principal.company_id, UserRoleAssignment.user_id == user.id,
@@ -327,17 +364,24 @@ def set_targets(user_id: int, data: TargetsWrite, principal: Principal = Depends
         if assignment is None:
             raise not_found("Role assignment")
         grants = _targeted_grants(db, item.role_id)
-        wanted = {"LEGAL_ENTITY": set(item.legal_entity_ids), "BRANCH": set(item.branch_ids)}
-        if not wanted["LEGAL_ENTITY"] <= entity_ids or not wanted["BRANCH"] <= branch_ids:
-            raise not_found("Legal entity or branch")
+        wanted = {"LEGAL_ENTITY": set(item.legal_entity_ids), "BRANCH": set(item.branch_ids),
+                  "PAY_GROUP": set(item.pay_group_ids)}
+        if any(not ids <= known[scope] for scope, ids in wanted.items()):
+            raise not_found("Legal entity, branch or pay group")
+        existing: Dict[str, set] = {}
+        for target in db.query(RoleAssignmentTarget).filter(RoleAssignmentTarget.user_role_assignment_id == assignment.id):
+            existing.setdefault(target.scope, set()).add(target.target_id)
         for scope, ids in wanted.items():
             if ids and scope not in grants:
                 raise bad_request(f"This role has no {scope.replace('_', ' ').lower()}-scoped permissions.")
-            # Delegation: only someone with company-wide reach over every targeted permission may set targets.
+            if ids == existing.get(scope, set()):
+                continue
+            # Delegation: only someone with company-wide reach over every targeted permission may add or
+            # remove targets (audit 01 D-13: a removal changes someone else's reach too).
             for code in grants.get(scope, []):
-                if ids and not (principal.is_company_admin or principal.has_company_scope(code)):
+                if not (principal.is_company_admin or principal.has_company_scope(code)):
                     label = PERMISSIONS_BY_CODE[code].label if code in PERMISSIONS_BY_CODE else code
-                    raise forbidden(f"You need company-wide '{label}' to grant it for selected locations.")
+                    raise forbidden(f"You need company-wide '{label}' to change its targets.")
         db.query(RoleAssignmentTarget).filter(RoleAssignmentTarget.user_role_assignment_id == assignment.id).delete(
             synchronize_session=False
         )
@@ -347,8 +391,11 @@ def set_targets(user_id: int, data: TargetsWrite, principal: Principal = Depends
                                             scope=scope, target_id=target_id, created_by_user_id=principal.user_id))
         AuditLogService.log(
             db, principal, "Users", "SCOPE_TARGETS",
-            f"{user.email}: role #{item.role_id} covers entities {sorted(wanted['LEGAL_ENTITY'])} and branches "
-            f"{sorted(wanted['BRANCH'])}", "user", user.id,
+            f"{user.email}: role #{item.role_id} covers entities {sorted(wanted['LEGAL_ENTITY'])}, branches "
+            f"{sorted(wanted['BRANCH'])} and pay groups {sorted(wanted['PAY_GROUP'])}", "user", user.id,
+            details={"role_id": item.role_id,
+                     "before": {scope: sorted(existing.get(scope, set())) for scope in wanted},
+                     "after": {scope: sorted(ids) for scope, ids in wanted.items()}},
         )
     user.permission_version += 1
     db.commit()

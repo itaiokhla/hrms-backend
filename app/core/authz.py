@@ -8,20 +8,29 @@ Every protected operation is decided from three independent inputs:
 Scopes are turned into SQL sub-selects of employee ids that are applied to
 the database query itself, so lists, counts, searches, aggregates and
 exports all see exactly the same authorised set. Default is deny.
+
+Targeted scopes (LEGAL_ENTITY, BRANCH, PAY_GROUP) match the employee's primary placement in
+employee_assignments: today's by default, or any placement overlapping a period for payroll
+objects, so history follows the record's date (02 §15.2, EC-ORG-14).
 """
 
 from dataclasses import dataclass, field
-from typing import Iterable, List, Optional
+from datetime import date
+from typing import Iterable, List, Optional, Tuple
 
-from sqlalchemy import ColumnElement, Select, false, literal, select, true, union
+from sqlalchemy import ColumnElement, Select, and_, false, literal, or_, select, true, union
 from sqlalchemy.orm import Session
 
 from app.core import hierarchy
 from app.core.errors import forbidden, not_found
-from app.core.permission_registry import Scope
+from app.core.permission_registry import TARGET_ASSIGNMENT_COLUMNS, TARGETED_SCOPES, Scope
 from app.core.principal import Principal
 from app.models.employee import Department, Employee
+from app.models.org import EmployeeAssignment
 from app.models.rbac import ScopeAssignment
+
+# Inclusive date window [start, end] of a payroll object (pay period, effective date).
+Period = Tuple[date, date]
 
 
 @dataclass
@@ -45,17 +54,38 @@ class EmployeeScope:
         return column.in_(union(*self.selects))
 
 
-def employee_scope(db: Session, principal: Principal, permission: str) -> EmployeeScope:
+def employee_scope(
+    db: Session, principal: Principal, permission: str, *, period: Optional[Period] = None
+) -> EmployeeScope:
+    """Employees in scope for `permission`: placements of today, or (with `period`) of any day in it."""
     scopes = principal.scopes(permission)
     if not scopes:
         return EmployeeScope()
     if Scope.COMPANY.value in scopes:
         return EmployeeScope(all_company=True)
+    if period is not None:
+        _check_period(period)
+    return EmployeeScope(
+        selects=relationship_selects(principal, permission, period=period)
+        + targeted_selects(principal, permission, period=period)
+    )
 
+
+def employee_scope_during(db: Session, principal: Principal, permission: str, start: date, end: date) -> EmployeeScope:
+    """Employees who were inside the scope at any time in [start, end] (payroll history, 3.9 §5.4)."""
+    return employee_scope(db, principal, permission, period=(start, end))
+
+
+def relationship_selects(principal: Principal, permission: str, *, period: Optional[Period] = None) -> List[Select]:
+    """Employee ids reached through the user's own position: SELF, reporting lines, departments, assigned group.
+
+    With `period`, DEPARTMENT matches department placements overlapping it. Reporting lines are
+    today's (there is no manager history yet); payroll permissions never offer those scopes.
+    """
+    scopes = principal.scopes(permission)
     cid = principal.company_id
     me = principal.employee_id
     selects: List[Select] = []
-
     if me is not None:
         if Scope.SELF.value in scopes:
             selects.append(select(Employee.id).where(Employee.company_id == cid, Employee.id == me))
@@ -68,27 +98,69 @@ def employee_scope(db: Session, principal: Principal, permission: str) -> Employ
         if Scope.DEPARTMENT.value in scopes:
             headed = select(Department.id).where(Department.company_id == cid, Department.head_employee_id == me)
             own = select(Employee.department_id).where(Employee.company_id == cid, Employee.id == me)
-            selects.append(
-                select(Employee.id).where(
-                    Employee.company_id == cid,
-                    Employee.department_id.in_(_with_child_departments(cid, union(headed, own))),
+            departments = _with_child_departments(cid, union(headed, own))
+            if period is None:
+                selects.append(
+                    select(Employee.id).where(Employee.company_id == cid, Employee.department_id.in_(departments))
                 )
-            )
+            else:
+                selects.append(
+                    select(EmployeeAssignment.employee_id).where(
+                        EmployeeAssignment.company_id == cid,
+                        EmployeeAssignment.department_id.in_(departments),
+                        _overlap_filter(*period),
+                    )
+                )
     if Scope.ASSIGNED_GROUP.value in scopes:
         selects.append(
             select(ScopeAssignment.employee_id).where(
                 ScopeAssignment.company_id == cid, ScopeAssignment.user_id == principal.user_id
             )
         )
-    # Entity and branch scopes cover only their explicit targets; no targets means no access.
-    for scope, column in ((Scope.LEGAL_ENTITY, "legal_entity_id"), (Scope.BRANCH, "branch_id")):
-        if scope.value in scopes:
-            targets = principal.scope_targets(permission, scope.value)
-            if targets:
-                from app.services.org_structure_service import current_assignment_select
+    return selects
 
-                selects.append(current_assignment_select(cid, column, targets))
-    return EmployeeScope(selects=selects)
+
+def targeted_selects(principal: Principal, permission: str, *, period: Optional[Period] = None) -> List[Select]:
+    """Employee ids placed in the targets of LEGAL_ENTITY / BRANCH / PAY_GROUP grants (none without targets)."""
+    scopes = principal.scopes(permission)
+    cid = principal.company_id
+    selects: List[Select] = []
+    for scope in TARGETED_SCOPES:
+        if scope.value not in scopes:
+            continue
+        targets = principal.scope_targets(permission, scope.value)
+        if not targets:
+            continue
+        column = TARGET_ASSIGNMENT_COLUMNS[scope]
+        if period is None:
+            from app.services.org_structure_service import current_assignment_select
+
+            selects.append(current_assignment_select(cid, column, targets))
+        else:
+            selects.append(assignment_overlap_select(cid, column, targets, *period))
+    return selects
+
+
+def assignment_overlap_select(company_id: int, column: str, ids: Iterable[int], start: date, end: date) -> Select:
+    """Employee ids with a primary placement in `ids` (by `column`) on any day of [start, end]."""
+    target = getattr(EmployeeAssignment, column)
+    return select(EmployeeAssignment.employee_id).where(
+        EmployeeAssignment.company_id == company_id, target.in_(sorted(ids)), _overlap_filter(start, end)
+    )
+
+
+def _overlap_filter(start: date, end: date) -> ColumnElement:
+    return and_(
+        EmployeeAssignment.is_primary.is_(True),
+        EmployeeAssignment.effective_from <= end,
+        or_(EmployeeAssignment.effective_to.is_(None), EmployeeAssignment.effective_to >= start),
+    )
+
+
+def _check_period(period: Period) -> None:
+    start, end = period
+    if not isinstance(start, date) or not isinstance(end, date) or start > end:
+        raise ValueError("period must be (start, end) dates with start <= end")
 
 
 def _with_child_departments(company_id: int, roots: Select) -> Select:

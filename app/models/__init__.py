@@ -31,6 +31,22 @@ from .branding import (
     TenantDomain,
 )
 
+# Payroll v2 (docs/payroll/implementation/ARCHITECTURE.md §3): importing registers the models.
+from . import (  # noqa: E402,F401
+    approvals,
+    catalogue,
+    compensation,
+    country_packs,
+    jobs,
+    pay_documents,
+    pay_org,
+    pay_runs,
+    payments,
+    payroll_config,
+    security_keys,
+    time_inputs,
+)
+
 TENANT_TABLES = sorted(
     m.__tablename__ for m in BaseModel.__subclasses__() if issubclass(m, TenantMixin)
 )

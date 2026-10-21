@@ -127,6 +127,9 @@ def provision_company(
     db.add(employee)
     db.flush()
     org_structure_service.record_hire(db, employee, user.id)
+    from app.payroll.services import provisioning
+
+    provisioning.provision_tenant(db, company, user, employee)
     return company, user
 
 

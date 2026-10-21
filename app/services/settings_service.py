@@ -1,4 +1,11 @@
-"""Per-company settings with a typed whitelist (no arbitrary keys)."""
+"""Per-company settings with a typed whitelist (no arbitrary keys).
+
+Compatibility facade over the payroll settings engine v2 (3.1 §2.4): the legacy keys that have a
+v2 setting (graceTime, lunchIsPaid, payrollSeparationOfDuties) are read from and written through
+the v2 engine at TENANT level for the company's today, with its validation and change control;
+writes are mirrored into company_settings so a code rollback still sees the latest value. Every
+other key keeps the company_settings row and today's fallback to the default on invalid values.
+"""
 
 import json
 import logging
@@ -119,7 +126,28 @@ def _read(key: str, raw: str):
         return SETTINGS[key][1]
 
 
+# Legacy keys whose value lives in the v2 engine (settings_registry aliases).
+V2_KEYS = ("graceTime", "lunchIsPaid", "payrollSeparationOfDuties")
+
+
+def _v2_values(db: Session, company_id: int, keys) -> Dict[str, Any]:
+    from app.payroll.services import settings as engine
+
+    company = db.get(Company, company_id)
+    resolved = engine.resolve_many(db, company_id, keys, on=engine.company_today(company), strict=False)
+    values = {}
+    for key, result in resolved.items():
+        if result.ok:
+            values[key] = result.value
+        else:
+            logger.warning("Ignoring invalid stored value for setting %s", key)
+            values[key] = SETTINGS[key][1]
+    return values
+
+
 def get_value(db: Session, company_id: int, key: str):
+    if key in V2_KEYS:
+        return _v2_values(db, company_id, [key])[key]
     row = db.query(CompanySetting).filter(CompanySetting.company_id == company_id, CompanySetting.key == key).first()
     if row is None or row.value is None:
         return SETTINGS[key][1]
@@ -128,12 +156,27 @@ def get_value(db: Session, company_id: int, key: str):
 
 def get_values(db: Session, company_id: int, keys: Iterable[str]) -> Dict[str, Any]:
     keys = list(keys)
+    legacy = [k for k in keys if k not in V2_KEYS]
     stored = {
         r.key: r.value
-        for r in db.query(CompanySetting).filter(CompanySetting.company_id == company_id, CompanySetting.key.in_(keys))
+        for r in db.query(CompanySetting).filter(CompanySetting.company_id == company_id, CompanySetting.key.in_(legacy))
         if r.value is not None
-    }
-    return {key: _read(key, stored[key]) if key in stored else SETTINGS[key][1] for key in keys}
+    } if legacy else {}
+    v2 = _v2_values(db, company_id, [k for k in keys if k in V2_KEYS]) if len(legacy) < len(keys) else {}
+    return {key: v2[key] if key in v2 else (_read(key, stored[key]) if key in stored else SETTINGS[key][1])
+            for key in keys}
+
+
+def _write_v2(db: Session, principal: Principal, key: str, value) -> bool:
+    """Write through the v2 engine; returns whether the value is now in force (not pending approval)."""
+    from app.payroll.services import settings as engine
+    from app.payroll.settings_registry import SettingValidationError
+
+    try:
+        result = engine.write_tenant_value(db, principal, key, value, reason="Company settings")
+    except SettingValidationError as error:
+        raise bad_request(f"Invalid value for {key}: {error.message}")
+    return result["status"] in ("ACTIVE", "UNCHANGED")
 
 
 def get_all(db: Session, company_id: int) -> dict:
@@ -186,6 +229,9 @@ def update(db: Session, principal: Principal, data: Dict[str, Any], only: Iterab
             if key in before and before[key] == coerced:
                 continue  # saving a form unchanged is not an attempt to change the control
             raise bad_request(f"Only company administrators can change {key}.")
+        if key in V2_KEYS and not _write_v2(db, principal, key, coerced):
+            changed.append(key)
+            continue
         row = db.query(CompanySetting).filter(
             CompanySetting.company_id == principal.company_id, CompanySetting.key == key
         ).first()

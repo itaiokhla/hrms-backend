@@ -7,9 +7,14 @@
 * An employee's placement is a history of primary assignments. A change starts a new
   row on its effective date and closes the previous one the day before; rows never
   overlap (database trigger). Concurrent assignments are not enabled.
+* A placement also carries the payroll dimensions (pay group of its legal entity, grade,
+  employment type, designation, cost center, work week, shift, FTE; app.payroll.services.
+  org_dimensions); a caller scoped to some entities or branches may move people only into them.
+* Termination ends every placement on the last working day: the active row is closed and rows
+  that would start later are removed, so nothing stays open after it.
 * For backwards compatibility the current primary assignment is copied into the
-  legacy columns employees.department_id and employees.location (= branch name), so
-  existing screens, holiday matching and reports keep working.
+  legacy columns employees.department_id, employees.shift_id and employees.location
+  (= branch name), so existing screens, holiday matching and reports keep working.
 
 Supported here: country/currency metadata for every ISO code. Statutory payroll
 rules per country are NOT implemented (no country packs exist yet).
@@ -24,12 +29,15 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.clock import utcnow
 from app.core.errors import bad_request, conflict, not_found
 from app.core.principal import Principal
 from app.models.company import Company
 from app.models.employee import Department, Employee
+from app.models.holiday import Holiday
 from app.models.org import ASSIGNMENT_REASONS, Branch, EmployeeAssignment, LegalEntity
 from app.models.payroll import Payroll
+from app.payroll.services import org_dimensions
 from app.services.audit_log_service import AuditLogService
 
 FINALIZED_PAYROLL = ("approved", "processed")
@@ -253,6 +261,8 @@ def serialize_branch(branch: Branch, entity: Optional[LegalEntity], counts: Opti
         "subdivision_code": branch.subdivision_code,
         "timezone": branch.timezone,
         "status": branch.status,
+        "holiday_calendar_id": branch.holiday_calendar_id,
+        "work_week_pattern_id": branch.work_week_pattern_id,
         "employee_count": (counts or {}).get(branch.id, 0),
     }
 
@@ -298,7 +308,8 @@ def save_branch(db: Session, principal: Principal, data: dict, branch_id: Option
     subdivision = valid_subdivision(country, data.get("subdivision_code")) if "subdivision_code" in data else (
         branch.subdivision_code if branch else None)
     tz = valid_timezone(data.get("timezone") or (branch.timezone if branch else entity.timezone))
-    if branch is None:
+    created = branch is None
+    if created:
         branch = Branch(company_id=cid, status="ACTIVE")
         db.add(branch)
     old_name = branch.name
@@ -307,15 +318,21 @@ def save_branch(db: Session, principal: Principal, data: dict, branch_id: Option
     branch.subdivision_code, branch.timezone = subdivision, tz
     if "address" in data:
         branch.address = _address(data.get("address"), country)
+    if created:
+        with db.no_autoflush:  # a name clash must surface in the flush below, as a 409
+            org_dimensions.apply_branch_defaults(db, branch)
     try:
         db.flush()
     except IntegrityError:
         db.rollback()
         raise conflict("Another branch already uses this name or code.", "ORG_BRANCH_TAKEN")
     if old_name and old_name != branch.name:
-        # Keep the legacy location column (used by holiday calendars) in step with the branch name.
+        # Keep the legacy location columns (regional holidays match them by text) in step with the name (D-7).
         db.query(Employee).filter(Employee.company_id == cid, Employee.location == old_name).update(
             {Employee.location: branch.name}, synchronize_session=False
+        )
+        db.query(Holiday).filter(Holiday.company_id == cid, Holiday.location == old_name).update(
+            {Holiday.location: branch.name}, synchronize_session=False
         )
     AuditLogService.log(db, principal, "Organization", "BRANCH_SAVED", f"Saved branch {branch.code} ({branch.name})",
                         "branch", branch.id)
@@ -395,6 +412,7 @@ def branch_for_location(db: Session, company_id: int, name: str) -> Branch:
     code = next(f"B{n:02d}" for n in range(1, 1000) if f"B{n:02d}" not in taken)
     branch = Branch(company_id=company_id, legal_entity_id=entity.id, code=code, name=name,
                     country_code=entity.country_code, timezone=entity.timezone, status="ACTIVE")
+    org_dimensions.apply_branch_defaults(db, branch)
     db.add(branch)
     db.flush()
     return branch
@@ -421,13 +439,14 @@ def provision_structure(db: Session, company: Company, country_code: Optional[st
     db.flush()
     branch = Branch(company_id=company.id, legal_entity_id=entity.id, code="B01", name="Main", country_code=country,
                     timezone=company.timezone or "UTC", status="ACTIVE")
+    org_dimensions.apply_branch_defaults(db, branch)  # at signup org_starter links it once the rows exist
     db.add(branch)
     db.flush()
     return entity, branch
 
 
 def record_hire(db: Session, employee: Employee, user_id: Optional[int], legal_entity_id: Optional[int] = None,
-                branch_id: Optional[int] = None) -> Optional[EmployeeAssignment]:
+                branch_id: Optional[int] = None, dimensions: Optional[dict] = None) -> Optional[EmployeeAssignment]:
     cid = employee.company_id
     if branch_id:
         branch = _branch(db, cid, branch_id)
@@ -447,10 +466,12 @@ def record_hire(db: Session, employee: Employee, user_id: Optional[int], legal_e
     if branch is None:
         raise bad_request("Create a branch for this legal entity first.", "ORG_NO_BRANCH")
     _assert_active_placement(db, cid, entity_id, branch)
+    dims = org_dimensions.placement_dimensions(db, cid, entity_id=entity_id, branch=branch, data=dimensions or {},
+                                               base=None, employee=employee)
     assignment = EmployeeAssignment(
         company_id=cid, employee_id=employee.id, legal_entity_id=entity_id, branch_id=branch.id,
         department_id=employee.department_id, is_primary=True, reason="HIRE", effective_from=employee.hire_date,
-        created_by_user_id=user_id,
+        created_by_user_id=user_id, **dims,
     )
     db.add(assignment)
     db.flush()
@@ -466,6 +487,23 @@ def _assert_active_placement(db: Session, company_id: int, entity_id: int, branc
         raise bad_request("The branch does not belong to that legal entity.", "ORG_BRANCH_MISMATCH")
 
 
+def _assert_destination_allowed(principal: Principal, entity_id: int, branch_id: int,
+                                current: Optional[EmployeeAssignment]) -> None:
+    """D-8: a caller with entity- or branch-scoped employee:update moves people only into their own targets.
+
+    Company-wide holders move anyone anywhere; staying in the same entity and branch is not a move.
+    A destination outside the caller's reach is reported like an unknown branch (404).
+    """
+    code = "employee:update"
+    if principal.is_company_admin or principal.has_company_scope(code):
+        return
+    if current is not None and (current.legal_entity_id, current.branch_id) == (entity_id, branch_id):
+        return
+    if entity_id in principal.scope_targets(code, "LEGAL_ENTITY") or branch_id in principal.scope_targets(code, "BRANCH"):
+        return
+    raise not_found("Branch")
+
+
 def _sync_legacy(db: Session, employee: Employee, assignment: EmployeeAssignment) -> None:
     """Mirror the placement that is in effect today into the legacy employee columns."""
     today = date.today()
@@ -474,9 +512,23 @@ def _sync_legacy(db: Session, employee: Employee, assignment: EmployeeAssignment
     branch = db.get(Branch, assignment.branch_id)
     employee.department_id = assignment.department_id
     employee.location = branch.name if branch else employee.location
+    if assignment.shift_id:
+        employee.shift_id = assignment.shift_id
     # Flush now: callers such as org_service.assign_manager refresh the employee from the
     # database, which would silently discard these values (regional holidays then miss them).
     db.flush()
+
+
+def _placement_key(assignment: EmployeeAssignment) -> tuple:
+    return (assignment.legal_entity_id, assignment.branch_id, assignment.department_id,
+            *(getattr(assignment, f) for f in org_dimensions.PLACEMENT_FIELDS))
+
+
+def _placement_view(assignment: Optional[EmployeeAssignment]) -> Optional[dict]:
+    if assignment is None:
+        return None
+    keys = ("legal_entity_id", "branch_id", "department_id") + org_dimensions.PLACEMENT_FIELDS
+    return {k: (str(getattr(assignment, k)) if k == "fte" else getattr(assignment, k)) for k in keys}
 
 
 def change_placement(db: Session, principal: Principal, employee: Employee, data: dict) -> EmployeeAssignment:
@@ -512,6 +564,7 @@ def change_placement(db: Session, principal: Principal, employee: Employee, data
         .with_for_update()
         .first()
     )
+    _assert_destination_allowed(principal, entity_id, branch.id, current)
     if current is not None and effective <= current.effective_from:
         raise conflict(
             f"The change must start after the current placement began ({current.effective_from.isoformat()}).",
@@ -519,9 +572,12 @@ def change_placement(db: Session, principal: Principal, employee: Employee, data
         )
     if effective < employee.hire_date:
         raise bad_request("The change cannot start before the hire date.", "ORG_DATE_INVALID")
-    # A finalized pay period is never changed retroactively (retro pay is not implemented). Only
-    # entity and branch decide pay context; a department-only change does not touch payroll.
-    moves_pay_context = current is None or (current.legal_entity_id, current.branch_id) != (entity_id, branch.id)
+    dims = org_dimensions.placement_dimensions(db, cid, entity_id=entity_id, branch=branch, data=data, base=current,
+                                               employee=employee)
+    # A finalized pay period is never changed retroactively (retro pay is not implemented). Entity,
+    # branch and pay group decide pay context; a department-only change does not touch payroll.
+    moves_pay_context = current is None or (current.legal_entity_id, current.branch_id, current.pay_group_id) != (
+        entity_id, branch.id, dims["pay_group_id"])
     finalized = db.query(func.max(Payroll.salary_month)).filter(
         Payroll.company_id == cid, Payroll.employee_id == employee.id, Payroll.status.in_(FINALIZED_PAYROLL)
     ).scalar() if moves_pay_context else None
@@ -532,19 +588,17 @@ def change_placement(db: Session, principal: Principal, employee: Employee, data
                 f"Payroll up to {last_day.isoformat()} is already approved; choose a date after it.",
                 "ORG_PERIOD_FINALIZED",
             )
-    if current is not None and (current.legal_entity_id, current.branch_id, current.department_id) == (
-        entity_id, branch.id, department_id
-    ):
-        raise bad_request("The new placement is the same as the current one.", "ORG_NO_CHANGE")
-    if current is not None:
-        current.effective_to = effective - timedelta(days=1)
-        db.flush()
     assignment = EmployeeAssignment(
         company_id=cid, employee_id=employee.id, legal_entity_id=entity_id, branch_id=branch.id,
         department_id=department_id, is_primary=True, reason=reason,
         note=(" ".join(str(data.get("note") or "").split())[:500] or None),
-        effective_from=effective, effective_to=None, created_by_user_id=principal.user_id,
+        effective_from=effective, effective_to=None, created_by_user_id=principal.user_id, **dims,
     )
+    if current is not None and _placement_key(current) == _placement_key(assignment):
+        raise bad_request("The new placement is the same as the current one.", "ORG_NO_CHANGE")
+    if current is not None:
+        current.effective_to = effective - timedelta(days=1)
+        db.flush()
     db.add(assignment)
     db.flush()
     _sync_legacy(db, employee, assignment)
@@ -556,26 +610,51 @@ def change_placement(db: Session, principal: Principal, employee: Employee, data
         db, principal, "Organization", "PLACEMENT",
         f"{employee.employee_code}: {reason} to branch {branch.code} from {effective.isoformat()}.{note}"[:500],
         "employee", employee.id,
+        details={"reason": reason, "effective_from": effective.isoformat(), "assignment_id": assignment.id,
+                 "previous_assignment_id": current.id if current is not None else None,
+                 "before": _placement_view(current), "after": _placement_view(assignment)},
     )
     return assignment
 
 
-def close_on_termination(db: Session, employee: Employee, end: date) -> None:
-    current = current_assignment(db, employee.id, end) or (
+def close_on_termination(db: Session, employee: Employee, end: date) -> dict:
+    """End every placement on the last working day `end` (D-4): close the row active then and remove
+    rows that would only start after it, so nothing stays open after the termination."""
+    rows = (
         db.query(EmployeeAssignment)
-        .filter(EmployeeAssignment.employee_id == employee.id, EmployeeAssignment.is_primary.is_(True),
-                EmployeeAssignment.effective_to.is_(None))
-        .first()
+        .filter(EmployeeAssignment.company_id == employee.company_id, EmployeeAssignment.employee_id == employee.id)
+        .order_by(EmployeeAssignment.effective_from)
+        .with_for_update()
+        .all()
     )
-    if current is not None:
-        if current.effective_from > end:
-            db.delete(current)  # a future placement that never started
-        else:
-            current.effective_to = end
+    closed, removed = [], []
+    for row in rows:
+        if row.effective_from > end:
+            removed.append(row.id)
+            db.delete(row)  # a placement that never started
+        elif row.effective_to is None or row.effective_to > end:
+            closed.append(row.id)
+            row.effective_to = end
     db.flush()
+    return {"closed_assignment_ids": closed, "removed_assignment_ids": removed}
 
 
-def record_rehire(db: Session, employee: Employee, user_id: Optional[int], start: date) -> Optional[EmployeeAssignment]:
+def employee_local_today(db: Session, employee: Employee) -> date:
+    """Today in the timezone of the legal entity the employee is placed in (D-11)."""
+    entity = entity_for_employee_on(db, employee.company_id, employee.id, date.today())
+    zone = entity.timezone if entity is not None else None
+    if zone is None:
+        company = db.get(Company, employee.company_id)
+        zone = company.timezone if company is not None else None
+    try:
+        tz = pytz.timezone(zone or "UTC")
+    except pytz.UnknownTimeZoneError:
+        tz = pytz.utc
+    return utcnow().astimezone(tz).date()
+
+
+def record_rehire(db: Session, employee: Employee, user_id: Optional[int], start: date,
+                  dimensions: Optional[dict] = None) -> Optional[EmployeeAssignment]:
     """Rehire keeps the same employee row and code and opens a new placement (02 §13 rule 7)."""
     last = (
         db.query(EmployeeAssignment)
@@ -587,24 +666,46 @@ def record_rehire(db: Session, employee: Employee, user_id: Optional[int], start
         if last.effective_to is None:
             return last
         start = last.effective_to + timedelta(days=1)
+    base = None
     if last is not None:
         branch = db.get(Branch, last.branch_id)
         entity_id = last.legal_entity_id
         if branch is None or branch.status != "ACTIVE":
             entity_id, branch = default_placement(db, employee.company_id, None)
+        else:
+            base = last
     else:
         entity_id, branch = default_placement(db, employee.company_id, employee.location)
     if branch is None:
         return None
+    dims = org_dimensions.placement_dimensions(db, employee.company_id, entity_id=entity_id, branch=branch,
+                                               data=dimensions or {}, base=base, employee=employee)
     assignment = EmployeeAssignment(
         company_id=employee.company_id, employee_id=employee.id, legal_entity_id=entity_id, branch_id=branch.id,
         department_id=employee.department_id, is_primary=True, reason="REHIRE", effective_from=start,
-        created_by_user_id=user_id,
+        created_by_user_id=user_id, **dims,
     )
     db.add(assignment)
     db.flush()
     _sync_legacy(db, employee, assignment)
     return assignment
+
+
+def _correct_in_place(db: Session, principal: Principal, employee: Employee, current: EmployeeAssignment,
+                      **changes) -> None:
+    """Correct a placement that starts today in place (no history to keep yet), with an audit (D-13)."""
+    before = _placement_view(current)
+    for key, value in changes.items():
+        setattr(current, key, value)
+    db.flush()
+    _sync_legacy(db, employee, current)
+    after = _placement_view(current)
+    if before != after:
+        AuditLogService.log(
+            db, principal, "Organization", "PLACEMENT_CORRECTED",
+            f"{employee.employee_code}: placement from {current.effective_from.isoformat()} corrected", "employee",
+            employee.id, details={"assignment_id": current.id, "before": before, "after": after},
+        )
 
 
 def record_location_change(db: Session, principal: Principal, employee: Employee, location: str) -> None:
@@ -615,8 +716,13 @@ def record_location_change(db: Session, principal: Principal, employee: Employee
         return
     today = date.today()
     if current.effective_from >= today:
-        current.branch_id, current.legal_entity_id = branch.id, branch.legal_entity_id  # same-day correction
-        db.flush()
+        # Same-day correction: the destination is authorized like a transfer (D-8) and the entity-bound
+        # dimensions (pay group, cost center) and the branch work week follow the new branch.
+        _assert_destination_allowed(principal, branch.legal_entity_id, branch.id, current)
+        dims = org_dimensions.placement_dimensions(db, employee.company_id, entity_id=branch.legal_entity_id,
+                                                   branch=branch, data={}, base=current, employee=employee)
+        _correct_in_place(db, principal, employee, current, branch_id=branch.id,
+                          legal_entity_id=branch.legal_entity_id, **dims)
         return
     change_placement(db, principal, employee, {
         "branch_id": branch.id, "legal_entity_id": branch.legal_entity_id, "department_id": current.department_id,
@@ -631,8 +737,7 @@ def record_department_change(db: Session, principal: Principal, employee: Employ
         return
     today = date.today()
     if current.effective_from >= today:
-        current.department_id = department_id  # same-day correction of a placement that starts today
-        db.flush()
+        _correct_in_place(db, principal, employee, current, department_id=department_id)
         return
     change_placement(db, principal, employee, {
         "branch_id": current.branch_id, "legal_entity_id": current.legal_entity_id, "department_id": department_id,
@@ -650,6 +755,7 @@ def history(db: Session, company_id: int, employee_id: int) -> List[dict]:
     entities = {e.id: e for e in db.query(LegalEntity).filter(LegalEntity.company_id == company_id)}
     branches = {b.id: b for b in db.query(Branch).filter(Branch.company_id == company_id)}
     departments = {d.id: d.name for d in db.query(Department).filter(Department.company_id == company_id)}
+    codes = org_dimensions.dimension_codes_map(db, company_id)
     today = date.today()
     return [
         {
@@ -668,6 +774,9 @@ def history(db: Session, company_id: int, employee_id: int) -> List[dict]:
             "effective_to": a.effective_to.isoformat() if a.effective_to else None,
             "is_current": a.effective_from <= today and (a.effective_to is None or a.effective_to >= today),
             "is_future": a.effective_from > today,
+            **{key: getattr(a, key) for key in org_dimensions.PLACEMENT_FIELDS if key != "fte"},
+            "fte": str(a.fte) if a.fte is not None else None,
+            **{f"{kind}_code": codes[kind].get(getattr(a, column)) for kind, column in org_dimensions.CODE_COLUMNS},
         }
         for a in rows
     ]
@@ -753,10 +862,12 @@ def repair_missing_structure(db: Session, company: Company) -> Dict[str, int]:
             default_branch = default_branch or branch_for_location(db, company.id, "Main")
             branch = default_branch
         ended = employee.termination_date if employee.termination_date and employee.termination_date >= employee.hire_date else None
+        dims = org_dimensions.placement_dimensions(db, company.id, entity_id=branch.legal_entity_id, branch=branch,
+                                                   data={}, base=None, employee=employee)
         db.add(EmployeeAssignment(
             company_id=company.id, employee_id=employee.id, legal_entity_id=branch.legal_entity_id, branch_id=branch.id,
             department_id=employee.department_id, is_primary=True, reason="MIGRATION",
-            effective_from=employee.hire_date, effective_to=ended,
+            effective_from=employee.hire_date, effective_to=ended, **dims,
         ))
         created["placements"] += 1
     db.flush()

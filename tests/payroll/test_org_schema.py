@@ -121,8 +121,13 @@ def test_ec_org_01_every_new_table_is_isolated_across_three_tenants(tenants):
             assert conn.execute(text(f"SELECT count(*) FROM {table}")).scalar() == 0
     with as_owner() as conn:
         for table in NEW_TABLES:
-            stored = conn.execute(text(f"SELECT company_id, code, name FROM {table} ORDER BY company_id")).fetchall()
+            # Signup also provisions starter rows (MONTHLY, PERMANENT, MON_FRI, COMPANY); check the rows planted here.
+            stored = conn.execute(text(
+                f"SELECT company_id, code, name FROM {table} WHERE code = 'SHARED' ORDER BY company_id"
+            )).fetchall()
             assert [tuple(r) for r in stored] == [(cid, "SHARED", "SHARED") for cid in sorted(ids.values())], table
+            hijacked = conn.execute(text(f"SELECT count(*) FROM {table} WHERE name = 'hijacked' OR code LIKE 'PLANT-%'"))
+            assert hijacked.scalar() == 0, table
 
 
 def test_ec_org_01_codes_are_unique_per_tenant_only(tenants):

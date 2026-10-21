@@ -67,6 +67,12 @@ def save(db: Session, principal: Principal, data, holiday_id: Optional[int] = No
         db.add(holiday)
     for key, value in data.model_dump().items():
         setattr(holiday, key, value or None if key == "location" else value)
+    if not holiday_id:
+        from app.payroll.services import org_dimensions
+
+        # The payroll view of the same holiday: its branch's (or the company) calendar and its type (3.4 §8).
+        holiday.holiday_type = org_dimensions.default_holiday_type(bool(holiday.is_optional))
+        holiday.calendar_id = org_dimensions.calendar_for_holiday(db, principal.company_id, holiday.location, principal)
     db.flush()
     AuditLogService.log(db, principal, "Holidays", "SAVE", f"Saved holiday '{holiday.name}' on {holiday.date}", "holiday", holiday.id)
     return holiday

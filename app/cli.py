@@ -9,13 +9,16 @@
     python -m app.cli domain-checks                            (schedule every ~5 minutes)
     python -m app.cli org-sync                                 (daily, and after any code rollback: repairs
                                                                missing structure, applies future-dated placements)
+    python -m app.cli payroll-inventory [--company-id N] [--json]   (read-only legacy payroll inventory, payroll v2 M0)
 """
 
 import argparse
 import getpass
+import json
 import os
 import re
 import sys
+from decimal import Decimal
 
 from sqlalchemy import create_engine, text
 
@@ -52,6 +55,14 @@ def grant_app_role(connection, role: str) -> None:
         "commercial_brand_assets", "auth_handoff_codes",
     ):
         connection.execute(text(f"REVOKE ALL ON {table} FROM {role}"))
+    # Payroll v2 platform tables (0009): read-only catalogue state; FX rates and jobs are written by
+    # tenants for their own rows (fx_rates RLS) or through the jobs service, never deleted.
+    for table in ("platform_setting_values", "country_capabilities"):
+        connection.execute(text(f"REVOKE ALL ON {table} FROM {role}"))
+        connection.execute(text(f"GRANT SELECT ON {table} TO {role}"))
+    for table in ("fx_rates", "jobs"):
+        connection.execute(text(f"REVOKE ALL ON {table} FROM {role}"))
+        connection.execute(text(f"GRANT SELECT, INSERT, UPDATE ON {table} TO {role}"))
     connection.execute(text(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {role}"))
 
 
@@ -161,6 +172,155 @@ def org_sync() -> None:
             db.close()
 
 
+def _legacy_recompute(db, row, employee):
+    """Today's legacy amounts for a stored row from today's data (payroll_service.calculate, audit 02 §2).
+
+    Overtime hours and bonus are the stored inputs; attendance, holidays and structures are read now,
+    so a difference is drift since generation, never a correction. None when no structure covers the month.
+    """
+    from app.models.attendance import Attendance
+    from app.services import payroll_service as legacy
+
+    year, month = row.salary_month.year, row.salary_month.month
+    structure = legacy.active_structure(db, row.employee_id, year, month)
+    if structure is None or employee is None:
+        return None
+    first, last = legacy._month_bounds(year, month)
+    statuses = [s for (s,) in db.query(Attendance.status).filter(
+        Attendance.employee_id == row.employee_id, Attendance.date >= first, Attendance.date <= last)]
+    wdays = legacy.working_days(db, row.company_id, employee, year, month)
+    gross = sum((legacy._money(getattr(structure, column)) for column in (
+        "basic_salary", "house_rent_allowance", "dearness_allowance", "conveyance_allowance", "other_allowances")),
+        Decimal("0"))
+    per_day = gross / Decimal(wdays) if wdays else Decimal("0")
+    deductions = (legacy._money(per_day * statuses.count("absent"))
+                  + legacy._money(per_day * statuses.count("half-day") * Decimal("0.5"))
+                  + legacy._money(Decimal(str(settings.late_penalty_amount)) * statuses.count("late")))
+    hours_per_day = Decimal(str(settings.default_work_hours_per_day))
+    overtime = legacy._money(per_day / hours_per_day * legacy._money(row.overtime_hours)) if hours_per_day else Decimal("0")
+    net = gross + overtime + legacy._money(row.bonus) - deductions
+    return {"gross_salary": gross, "total_deductions": deductions, "net_salary": legacy._money(max(net, Decimal("0")))}
+
+
+def _company_payroll_inventory(db, company) -> dict:
+    from collections import Counter
+
+    from app.models.branding import IssuedDocument
+    from app.models.employee import Employee
+    from app.models.payroll import Payroll, SalaryStructure
+
+    rows = db.query(Payroll).filter(Payroll.company_id == company.id).order_by(Payroll.salary_month, Payroll.id).all()
+    issued = {source_id for (source_id,) in db.query(IssuedDocument.source_id).filter(
+        IssuedDocument.company_id == company.id, IssuedDocument.document_type == "PAYSLIP")}
+    structures = db.query(SalaryStructure.id, SalaryStructure.employee_id).filter(
+        SalaryStructure.company_id == company.id).order_by(SalaryStructure.id).all()
+    employees = {e.id: e for e in db.query(Employee).filter(Employee.company_id == company.id)}
+    with_structure = {employee_id for _, employee_id in structures}
+
+    by_month: dict = {}
+    for row in rows:
+        month = by_month.setdefault(row.salary_month.strftime("%Y-%m"), {})
+        month[row.status] = month.get(row.status, 0) + 1
+    clipped = []
+    for row in rows:
+        earnings = row.gross_salary + row.overtime_amount + row.bonus
+        if row.net_salary == 0 and row.total_deductions > earnings:
+            clipped.append({"payroll_id": row.id, "employee_id": row.employee_id,
+                            "salary_month": row.salary_month.isoformat(), "currency": row.currency,
+                            "earnings": str(earnings), "total_deductions": str(row.total_deductions),
+                            "net_salary": str(row.net_salary), "shortfall": str(row.total_deductions - earnings)})
+    drift = []
+    for row in rows:
+        recomputed = _legacy_recompute(db, row, employees.get(row.employee_id))
+        stored = {k: getattr(row, k) for k in ("gross_salary", "total_deductions", "net_salary")}
+        if recomputed != stored:
+            drift.append({"payroll_id": row.id, "salary_month": row.salary_month.isoformat(),
+                          "stored": {k: str(v) for k, v in stored.items()},
+                          "recomputed": {k: str(v) for k, v in recomputed.items()} if recomputed else None})
+    return {
+        "company_id": company.id,
+        "company_name": company.name,
+        "slug": company.slug,
+        "payroll_rows": {
+            "total": len(rows),
+            "by_status": dict(sorted(Counter(r.status for r in rows).items())),
+            "by_currency": dict(sorted(Counter(r.currency for r in rows).items())),
+            "by_month": {m: dict(sorted(s.items())) for m, s in by_month.items()},
+        },
+        # The legacy table has no currency column: every structure's currency is implied by its employee's entity.
+        "salary_structures_without_currency": {"count": len(structures), "structure_ids": [s for s, _ in structures]},
+        "clipped_net_rows": clipped,
+        # "processed" only means "marked paid": no legacy row carries payment evidence.
+        "processed_without_payment_evidence": [r.id for r in rows if r.status == "processed"],
+        "finalized_without_issued_payslip": [r.id for r in rows if r.status != "draft" and r.id not in issued],
+        "rows_without_legal_entity": [r.id for r in rows if r.legal_entity_id is None],
+        "rows_with_overtime_or_bonus": [r.id for r in rows if r.overtime_amount or r.bonus],
+        "employees_without_structure": [
+            {"employee_id": e.id, "employee_code": e.employee_code, "is_active": e.is_active}
+            for e in sorted(employees.values(), key=lambda e: e.employee_code) if e.id not in with_structure
+        ],
+        "recalculation_drift": drift,
+    }
+
+
+def payroll_inventory(company_id: int = None) -> list:
+    """Per-tenant inventory of legacy payroll (payroll v2 M0), read through the system session in a
+    READ ONLY transaction: nothing is written, fixed or migrated."""
+    from app.database.db import system_session
+    from app.models.company import Company
+
+    with system_session() as db:
+        if db.get_bind().dialect.name == "postgresql":
+            db.execute(text("SET TRANSACTION READ ONLY"))
+        query = db.query(Company).order_by(Company.id)
+        if company_id is not None:
+            query = query.filter(Company.id == company_id)
+        companies = query.all()
+        if company_id is not None and not companies:
+            raise SystemExit(f"No company with id {company_id}.")
+        report = [_company_payroll_inventory(db, company) for company in companies]
+        db.rollback()
+    return report
+
+
+def _ids(values) -> str:
+    return ", ".join(f"#{v}" for v in values)
+
+
+def print_payroll_inventory(report: list, as_json: bool = False) -> None:
+    if as_json:
+        print(json.dumps({"companies": report}, indent=2, sort_keys=True))
+        return
+    for c in report:
+        rows = c["payroll_rows"]
+        statuses = ", ".join(f"{k} {v}" for k, v in rows["by_status"].items())
+        print(f"Company {c['company_id']} - {c['company_name']} ({c['slug']})")
+        print(f"  Legacy payroll rows: {rows['total']}" + (f" ({statuses})" if statuses else ""))
+        for month, counts in rows["by_month"].items():
+            print(f"    {month}: " + ", ".join(f"{k} {v}" for k, v in counts.items()))
+        if rows["by_currency"]:
+            print("  By currency: " + ", ".join(f"{k} {v}" for k, v in rows["by_currency"].items()))
+        print(f"  Salary structures without currency: {c['salary_structures_without_currency']['count']}"
+              " (the legacy table has no currency column)")
+        print(f"  Clipped net rows: {len(c['clipped_net_rows'])}")
+        for r in c["clipped_net_rows"]:
+            print(f"    #{r['payroll_id']} {r['salary_month'][:7]} {r['currency']}: deductions {r['total_deductions']} "
+                  f"exceed earnings {r['earnings']} (net stored {r['net_salary']}, shortfall {r['shortfall']})")
+        for label, key in (("Processed without payment evidence", "processed_without_payment_evidence"),
+                           ("Approved/processed without issued payslip", "finalized_without_issued_payslip"),
+                           ("Rows without legal entity", "rows_without_legal_entity"),
+                           ("Rows with overtime or bonus", "rows_with_overtime_or_bonus")):
+            print(f"  {label}: {len(c[key])}" + (f" ({_ids(c[key])})" if c[key] else ""))
+        missing = c["employees_without_structure"]
+        codes = ", ".join(e["employee_code"] + ("" if e["is_active"] else " (inactive)") for e in missing)
+        print(f"  Employees without salary structure: {len(missing)}" + (f" ({codes})" if codes else ""))
+        print(f"  Recalculation drift (report only): {len(c['recalculation_drift'])}")
+        for d in c["recalculation_drift"]:
+            now = d["recomputed"]
+            print(f"    #{d['payroll_id']} {d['salary_month'][:7]}: stored net {d['stored']['net_salary']}, "
+                  + (f"today {now['net_salary']}" if now else "no salary structure covers the month today"))
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -182,6 +342,9 @@ def main(argv=None) -> None:
     sub.add_parser("sync-tenant-hosts", help="Create <slug>.<PLATFORM_BASE_DOMAIN> hosts for every company")
     sub.add_parser("domain-checks", help="Run DNS/TLS verification for custom domains")
     sub.add_parser("org-sync", help="Apply effective-dated placements to the legacy employee columns")
+    inventory = sub.add_parser("payroll-inventory", help="Read-only inventory of legacy payroll rows per company")
+    inventory.add_argument("--company-id", type=int, default=None)
+    inventory.add_argument("--json", action="store_true", help="machine-readable output")
 
     args = parser.parse_args(argv)
     if args.command == "setup-db-roles":
@@ -205,6 +368,8 @@ def main(argv=None) -> None:
         domain_checks()
     elif args.command == "org-sync":
         org_sync()
+    elif args.command == "payroll-inventory":
+        print_payroll_inventory(payroll_inventory(args.company_id), as_json=args.json)
 
 
 if __name__ == "__main__":
