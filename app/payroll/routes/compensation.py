@@ -227,6 +227,8 @@ class PreviewIn(StrictModel):
     pay_basis_amount: PayBasisIn
     version: Optional[int] = Field(None, ge=1)
     overrides: Optional[Dict[str, OverrideIn]] = None
+    # Unsaved lines of the editor: validated like a save, evaluated, never persisted (F-43).
+    lines: Optional[List[LineIn]] = Field(None, max_length=structures.MAX_LINES)
 
 
 class ValidateIn(StrictModel):
@@ -297,7 +299,8 @@ def preview_structure(template_id: int, data: PreviewIn, principal: Principal = 
                       db: Session = Depends(get_db)):
     return structures.preview(db, principal, template_id, pay_basis_amount=data.pay_basis_amount.decimal,
                               number=data.version, overrides=_overrides(data.overrides),
-                              currency=data.pay_basis_amount.currency)
+                              currency=data.pay_basis_amount.currency,
+                              lines=None if data.lines is None else [line.to_input() for line in data.lines])
 
 
 @router.post("/salary-structures/{template_id}/publish")
@@ -452,7 +455,8 @@ def preview_change(employee_id: int, data: ChangePreviewIn, principal: Principal
 class CycleIn(StrictModel):
     name: str = Field(min_length=1, max_length=150)
     population: Optional[Dict[str, Any]] = None
-    method: Dict[str, Any]
+    # The full method ({"type": ..., ...}) may be given now or later with PUT; preview needs it (F-43).
+    method: Optional[Dict[str, Any]] = None
     effective_from: date
 
 

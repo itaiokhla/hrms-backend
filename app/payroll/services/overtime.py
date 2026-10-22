@@ -312,6 +312,7 @@ def serialize(entry: OvertimeEntry, *, employee: Employee | None = None, request
         "id": entry.id,
         "employee_id": entry.employee_id,
         "employee_name": employee.full_name if employee is not None else None,
+        "employee_code": employee.employee_code if employee is not None else None,
         "date": entry.date.isoformat(),
         "start_at": _iso(entry.start_at),
         "end_at": _iso(entry.end_at),

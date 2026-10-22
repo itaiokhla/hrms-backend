@@ -207,6 +207,7 @@ def set_status(db: Session, principal: Principal, user_id: int, status: str) -> 
     user.status = status
     user.permission_version += 1
     AuditLogService.log(db, principal, "Users", "STATUS", f"{user.email}: {previous} -> {status}", "user", user.id)
+    _reroute_approvals(db, principal.company_id)
 
 
 def revoke_sessions(db: Session, principal: Principal, user_id: int) -> int:
@@ -215,6 +216,13 @@ def revoke_sessions(db: Session, principal: Principal, user_id: int) -> int:
     count = auth_service.revoke_user_sessions(db, user.id, "admin_revoked")
     AuditLogService.log(db, principal, "Users", "SESSIONS_REVOKED", f"Signed out {count} session(s) of {user.email}", "user", user.id)
     return count
+
+
+def _reroute_approvals(db: Session, company_id: int) -> None:
+    """Pending approval requests whose approver just lost access move on (F-29, EC-RUN-21)."""
+    from app.payroll.services import approvals
+
+    approvals.reroute_after_access_change(db, company_id)
 
 
 def _employee_id_of(db: Session, user: User) -> Optional[int]:
@@ -252,3 +260,4 @@ def set_assigned_employees(db: Session, principal: Principal, user_id: int, empl
                                created_by_user_id=principal.user_id))
     user.permission_version += 1
     AuditLogService.log(db, principal, "Users", "ASSIGNED_GROUP", f"{user.email} now covers {len(ids)} assigned employee(s)", "user", user.id)
+    _reroute_approvals(db, principal.company_id)

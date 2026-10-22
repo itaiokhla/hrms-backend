@@ -413,6 +413,15 @@ DERIVED_SOURCES: Final[Mapping[str, str]] = MappingProxyType(
 )
 
 
+# Derived defaults that name an optional record. When none exists the setting is unset rather than
+# invalid: the banking calendar falls back to the country's national holiday calendar (else weekends
+# only), approvals use the engine's default chain (holders of the module's approve permission), and the
+# funding account is chosen when a payment batch is created.
+OPTIONAL_REFERENCE_SOURCES: Final = frozenset(
+    {"COUNTRY_BANKING_CALENDAR", "DEFAULT_PAYROLL_APPROVAL_CHAIN", "ENTITY_PRIMARY_FUNDING_ACCOUNT"}
+)
+
+
 def _module_of(key: str) -> str:
     for prefix, module in _MODULE_BY_PREFIX:
         if key.startswith(prefix):
@@ -1607,13 +1616,19 @@ def registry_fingerprint() -> str:
 
 
 def derive_default(key: str, context: Mapping[str, Any]) -> Any:
-    """Turn a ``Derived`` PLATFORM default into a value from context, or fail closed."""
+    """Turn a ``Derived`` PLATFORM default into a value from context, or fail closed.
+
+    Optional references (OPTIONAL_REFERENCE_SOURCES) whose record the context cannot name resolve to
+    None: the setting is unset and its consumer applies the documented fallback.
+    """
     defn = definition(key)
     if not isinstance(defn.default, Derived):
         return defn.default
     source = defn.default.source
     fact = DERIVED_SOURCES[source]
     if context.get(fact) is None:
+        if source in OPTIONAL_REFERENCE_SOURCES:
+            return None
         raise _fail(
             "DEFAULT_UNRESOLVED", defn.key,
             f"{defn.label}: the default ({defn.default.description}) needs {fact}", fact=fact,

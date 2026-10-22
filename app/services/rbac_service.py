@@ -323,6 +323,8 @@ def update_role(
             role.permissions.append(RolePermission(company_id=principal.company_id, permission_code=code, scope=scope))
         bump_permission_versions_for_role(db, role.id)
     AuditLogService.log(db, principal, "Roles", "UPDATE", f"Updated role '{role.name}'", "role", role.id)
+    if grants is not None and current - wanted:
+        reroute_approvals(db, principal.company_id)
     return role
 
 
@@ -417,7 +419,16 @@ def set_user_roles(db: Session, principal: Principal, target: User, role_ids: Se
             target.id,
         )
     _audit_payroll_role_changes(db, principal, target, to_add, to_remove, self_change)
+    if to_remove:
+        reroute_approvals(db, principal.company_id)
     return roles
+
+
+def reroute_approvals(db: Session, company_id: int) -> None:
+    """Pending approval requests whose approver lost a role or grant move on (F-29, EC-RUN-21)."""
+    from app.payroll.services import approvals
+
+    approvals.reroute_after_access_change(db, company_id)
 
 
 def _audit_payroll_role_changes(

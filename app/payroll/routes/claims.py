@@ -88,6 +88,17 @@ def list_claims(
     return {"total": total, "items": items}
 
 
+@router.get("/payroll/reimbursement-claim-types")
+def list_claim_types(
+    employee_id: Optional[int] = Query(None, ge=1, description="Default: the caller"),
+    on: Optional[date] = Query(None, alias="date"),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    """Claim types of the reimbursement policy resolved for the caller or an employee in scope (F-44)."""
+    return service.claim_types(db, principal, employee_id, on)
+
+
 @router.post("/payroll/reimbursement-claims", status_code=201)
 def create_claim(data: ClaimIn, request: Request, principal: Principal = Depends(get_principal),
                  db: Session = Depends(get_db)):

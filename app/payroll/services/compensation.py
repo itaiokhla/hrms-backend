@@ -105,10 +105,12 @@ def arrears_proposals(db: Session, principal: Principal | None, assignment: Comp
                       periods: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Arrears proposals for a backdated assignment reaching finalized periods (3.3 §8.3, EC-CMP-12).
 
-    No-op until pay runs exist: the corrections milestone recalculates each finalized period with the new
-    compensation and proposes the differences for approval; finalized runs never change.
+    Each finalized period is recalculated from its frozen snapshot with the new compensation only and the
+    differences are proposed for approval (app.payroll.services.retro); finalized runs never change.
     """
-    return []
+    from app.payroll.services import retro
+
+    return retro.on_compensation_change(db, principal, assignment, periods)
 
 
 def mark_runs_stale(db: Session, company_id: int, employee_id: int, from_date: dt.date) -> int:

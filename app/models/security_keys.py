@@ -5,7 +5,7 @@ from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKeyConstraint, 
 from app.models.base import BaseModel, TenantMixin
 
 DATA_KEY_STATUSES = ("ACTIVE", "RETIRED")
-DATA_KEY_PURPOSES = ("PAYROLL_PII",)
+DATA_KEY_PURPOSES = ("PAYROLL_PII", "MFA_SECRET")
 
 
 class TenantDataKey(TenantMixin, BaseModel):

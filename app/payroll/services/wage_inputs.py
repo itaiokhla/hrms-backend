@@ -160,6 +160,28 @@ def require_covers(principal: Principal, permission: str, legal_entity_id: int, 
         raise not_found(what)
 
 
+def employee_refs(db: Session, company_id: int, employee_ids: Iterable[int]) -> Dict[int, dict]:
+    """{employee_id: {"employee_name", "employee_code"}} for the given employees of the company. Callers pass
+    only the employees of records they already returned through their scope (F-44), so a name never
+    reaches anyone who cannot see the record."""
+    ids = sorted({i for i in employee_ids if i is not None})
+    if not ids:
+        return {}
+    rows = db.query(Employee.id, Employee.first_name, Employee.last_name, Employee.employee_code).filter(
+        Employee.company_id == company_id, Employee.id.in_(ids))
+    return {i: {"employee_name": f"{first or ''} {last or ''}".strip(), "employee_code": code}
+            for i, first, last, code in rows}
+
+
+def with_employee_refs(db: Session, company_id: int, items: List[dict], key: str = "employee_id") -> List[dict]:
+    """Adds employee_name and employee_code next to `key` in each serialized record (in place)."""
+    refs = employee_refs(db, company_id, (item.get(key) for item in items))
+    for item in items:
+        ref = refs.get(item.get(key)) or {"employee_name": None, "employee_code": None}
+        item.update(ref)
+    return items
+
+
 def scope_clause(principal: Principal, permission: str, model):
     """SQL filter for lists and counts: the same rule as ``covers``."""
     return access.run_employee_clause(principal, permission, model.legal_entity_id, model.pay_group_id,
@@ -599,13 +621,14 @@ def _load(db: Session, principal: Principal, input_id: int, permission: str, *, 
 
 
 def get_input(db: Session, principal: Principal, input_id: int) -> dict:
-    return serialize(_load(db, principal, input_id, READ))
+    [item] = with_employee_refs(db, principal.company_id, [serialize(_load(db, principal, input_id, READ))])
+    return item
 
 
 def list_inputs(
     db: Session, principal: Principal, *, status: Optional[str] = None, employee_id: Optional[int] = None,
     pay_group_id: Optional[int] = None, period_start: Optional[date] = None, component_code: Optional[str] = None,
-    skip: int = 0, limit: int = 50,
+    skip: int = 0, limit: int = 50, legal_entity_id: Optional[int] = None,
 ) -> Tuple[int, List[dict]]:
     if not principal.has(READ):
         raise forbidden()
@@ -617,13 +640,15 @@ def list_inputs(
         query = query.filter(WageInput.employee_id == employee_id)
     if pay_group_id is not None:
         query = query.filter(WageInput.pay_group_id == pay_group_id)
+    if legal_entity_id is not None:
+        query = query.filter(WageInput.legal_entity_id == legal_entity_id)
     if period_start is not None:
         query = query.filter(WageInput.target_period_start == period_start)
     if component_code:
         query = query.filter(WageInput.component_code == component_code)
     total = query.count()
     rows = query.order_by(WageInput.target_period_start.desc(), WageInput.id.desc()).offset(skip).limit(limit).all()
-    return total, [serialize(r) for r in rows]
+    return total, with_employee_refs(db, principal.company_id, [serialize(r) for r in rows])
 
 
 def update_input(db: Session, principal: Principal, input_id: int, changes: Mapping[str, Any], *,
@@ -1105,6 +1130,23 @@ def serialize_import(row: WageInputImport, *, with_rows: bool = True) -> dict:
 
 def get_import(db: Session, principal: Principal, import_id: int) -> dict:
     return serialize_import(_load_import(db, principal, import_id))
+
+
+def list_imports(db: Session, principal: Principal, *, status: Optional[str] = None, skip: int = 0,
+                 limit: int = 50) -> Tuple[int, List[dict]]:
+    """Imports the caller may open (the `_load_import` rule: everyone's with company-wide import access,
+    otherwise their own), newest first, without the per-row details (F-44)."""
+    if not principal.has(IMPORT):
+        raise forbidden()
+    query = db.query(WageInputImport).filter(WageInputImport.company_id == principal.company_id)
+    if not principal.has_company_scope(IMPORT):
+        query = query.filter(WageInputImport.created_by_user_id == principal.user_id)
+    if status:
+        query = query.filter(WageInputImport.status == status)
+    total = query.count()
+    rows = query.order_by(WageInputImport.created_at.desc(), WageInputImport.id.desc()).offset(skip).limit(limit).all()
+    return total, [{**serialize_import(r, with_rows=False), "bytes": r.bytes,
+                    "created_by_user_id": r.created_by_user_id} for r in rows]
 
 
 def commit_import(db: Session, principal: Principal, import_id: int) -> WageInputImport:

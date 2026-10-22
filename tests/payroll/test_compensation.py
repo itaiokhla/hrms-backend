@@ -264,12 +264,22 @@ def test_ec_cmp_12_ec_cmp_13_backdated_revision_calls_the_arrears_and_stale_hook
     assert details["backdated"] is True and details["arrears_proposals"] == 1 and details["stale_runs"] == 1
 
 
-def test_arrears_hook_is_a_documented_no_op_until_runs_exist(world):
+def test_compensation_hooks_are_answered_by_pay_runs(world):
+    """F-37: runs.install_hooks() replaced the "until runs exist" hooks with run-backed answers."""
     from app.payroll.services import compensation as comp_service
+    from app.payroll.services import runs
 
-    assert comp_service.finalized_periods(None, 1, 1, month_start(world["admin"].company_id)) == []
-    assert comp_service.arrears_proposals(None, None, None, []) == []
-    assert comp_service.mark_runs_stale(None, 1, 1, month_start(world["admin"].company_id)) == 0
+    assert comp_service.finalized_periods is runs.finalized_periods
+    assert comp_service.mark_runs_stale is runs._compensation_stale
+    cid = world["admin"].company_id
+    db = session(cid)
+    try:
+        # Nothing is finalized or locked yet: no period to correct, no proposal, no stale run.
+        assert comp_service.finalized_periods(db, cid, world["worker"]["id"], month_start(cid)) == []
+        assert comp_service.arrears_proposals(db, None, None, []) == []
+        assert comp_service.mark_runs_stale(db, cid, world["worker"]["id"], month_start(cid)) == 0
+    finally:
+        db.close()
 
 
 def test_ec_cmp_10_overlapping_in_force_assignments_are_refused_by_the_database(world):

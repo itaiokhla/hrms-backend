@@ -93,6 +93,9 @@ def assign_manager(
     from app.services import leave_service
 
     leave_service.reroute_pending_for(db, principal.company_id, [employee.id])
+    from app.payroll.services import approvals
+
+    approvals.reroute_after_access_change(db, principal.company_id)  # other modules too (F-29, EC-RUN-21)
 
     if audit:
         AuditLogService.log(

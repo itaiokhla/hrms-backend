@@ -256,7 +256,7 @@ def mfa_setup(principal: Principal = Depends(get_principal_any_subscription), db
     from app.models.company import Company
 
     user = db.get(User, principal.user_id)
-    result = auth_service.mfa_setup(user, db.get(Company, principal.company_id).name)
+    result = auth_service.mfa_setup(db, user, db.get(Company, principal.company_id).name)
     db.commit()
     return result
 

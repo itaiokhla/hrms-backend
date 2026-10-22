@@ -160,6 +160,7 @@ class EmployeeAssignment(TenantMixin, BaseModel):
             ["company_id", "department_id"], ["departments.company_id", "departments.id"],
             name="fk_employee_assignments_department",
         ),
+        UniqueConstraint("company_id", "id", name="uq_employee_assignments_company_id_id"),
         ForeignKeyConstraint(
             ["company_id", "legal_entity_id", "pay_group_id"],
             ["pay_groups.company_id", "pay_groups.legal_entity_id", "pay_groups.id"],

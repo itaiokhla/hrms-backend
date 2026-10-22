@@ -871,6 +871,17 @@ def reroute_pending(db: Session, company_id: int, *, module: Optional[str] = Non
     return moved
 
 
+def reroute_after_access_change(db: Session, company_id: int) -> int:
+    """Hook for changes that can remove an approver (F-29, EC-RUN-21): a user suspended, deactivated or
+    whose employment ended, roles or role grants or scope targets changed, a reporting line changed.
+
+    Flushes the caller's pending change first so eligibility is evaluated against it. Idempotent: a request
+    whose current step still has an eligible approver does not move. Never commits.
+    """
+    db.flush()
+    return reroute_pending(db, company_id)
+
+
 # ---------------------------------------------------------------------------
 # Queries
 # ---------------------------------------------------------------------------
@@ -1039,3 +1050,84 @@ def subjects_awaiting(db: Session, principal: Principal, module: str, subject_ty
         .all()
     )
     return [r.subject_id for r in rows if _can_act(ctx, r, principal) is not None]
+
+
+def request_counts(db: Session, principal: Principal, *, mine: bool = True, status: Optional[str] = None) -> dict:
+    """Per-module counts for inbox badges (F-44) with exactly the rules of `list_requests`: requests awaiting
+    the caller (mine, PENDING only) or visible to them, within the newest MAX_SCAN requests, so a count
+    never reveals requests the caller could not open (EC-SEC-05)."""
+    if status is not None and status not in APPROVAL_REQUEST_STATUSES:
+        raise bad_request("Unknown approval status.", "INVALID_APPROVAL_STATUS")
+    counts = {module: 0 for module in ENGINE_MODULES}
+    if mine and status not in (None, PENDING):
+        return {"mine": mine, "status": status, "counts": counts, "total": 0, "truncated": False}
+    query = (
+        db.query(ApprovalRequest)
+        .options(selectinload(ApprovalRequest.steps))
+        .filter(ApprovalRequest.company_id == principal.company_id, ApprovalRequest.module.in_(ENGINE_MODULES))
+    )
+    if mine:
+        query = query.filter(ApprovalRequest.status == PENDING)
+    elif status is not None:
+        query = query.filter(ApprovalRequest.status == status)
+    rows = query.order_by(ApprovalRequest.created_at.desc(), ApprovalRequest.id.desc()).limit(MAX_SCAN).all()
+    ctx = _Context(db, principal.company_id)
+    ctx.seed(principal)
+    for request in rows:
+        visible, acting = _access(ctx, request, principal)
+        if (acting is not None) if mine else visible:
+            counts[request.module] += 1
+    return {"mine": mine, "status": PENDING if mine else status, "counts": counts, "total": sum(counts.values()),
+            "truncated": len(rows) >= MAX_SCAN}
+
+
+# ---------------------------------------------------------------------------
+# Approval chains (read-only list for settings pickers, F-25)
+# ---------------------------------------------------------------------------
+CHAIN_READ_PERMISSIONS = ("payroll:configuration:read", "payroll:configuration:write", "settings:approve_changes")
+
+
+def _chain_step_json(ctx: _Context, step: ApprovalChainStep) -> dict:
+    return {
+        "id": step.id, "step_order": step.step_order, "approver_type": step.approver_type,
+        "approver_label": APPROVER_LABELS.get(step.approver_type, step.approver_type),
+        "role_id": step.role_id, "role_name": ctx.role_name(step.role_id),
+        "specific_user_id": step.specific_user_id, "specific_user_name": ctx.user_name(step.specific_user_id),
+        "min_days": step.min_days,
+        "min_amount": None if step.min_amount is None else {
+            "amount": amount_str(step.min_amount, step.min_amount_currency), "currency": step.min_amount_currency},
+        "condition": step.condition,
+    }
+
+
+def list_chains(db: Session, principal: Principal, *, module: Optional[str] = None) -> List[dict]:
+    """The approval chain of every engine module (approval_chain_steps grouped by module). A chain is
+    identified by its module; `id` is the id of its first step (null for a module without configured
+    steps, which routes to holders of the module's approve permission)."""
+    if not any(principal.has(code) for code in CHAIN_READ_PERMISSIONS):
+        raise forbidden()
+    if module is not None:
+        _check_module(module)
+    modules = [module] if module is not None else list(ENGINE_MODULES)
+    rows = (db.query(ApprovalChainStep)
+            .filter(ApprovalChainStep.company_id == principal.company_id, ApprovalChainStep.module.in_(modules))
+            .order_by(ApprovalChainStep.module, ApprovalChainStep.step_order).all())
+    grouped: Dict[str, List[ApprovalChainStep]] = {}
+    for row in rows:
+        grouped.setdefault(row.module, []).append(row)
+    ctx = _Context(db, principal.company_id)
+    result = []
+    for name in modules:
+        steps = grouped.get(name, [])
+        permission = MODULE_PERMISSIONS[name]
+        definition = PERMISSIONS_BY_CODE.get(permission)
+        result.append({
+            "id": steps[0].id if steps else None, "module": name, "label": MODULE_LABELS.get(name, name),
+            "permission": permission, "configured": bool(steps),
+            "steps": [_chain_step_json(ctx, s) for s in steps],
+            "default_step": None if steps else {
+                "step_order": 1, "approver_type": PERMISSION_HOLDERS,
+                "approver_label": APPROVER_LABELS[PERMISSION_HOLDERS],
+                "approver": definition.label if definition else permission},
+        })
+    return result

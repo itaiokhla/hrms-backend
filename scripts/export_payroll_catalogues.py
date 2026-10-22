@@ -12,6 +12,12 @@ Sources of truth:
   ``employee_label`` for every status, submission channel and evidence status so the browser can
   never say "Paid" where the backend would not.
 
+* Derived vocabularies without a state machine (jobs, approval requests, overtime entries, wage-input
+  imports, loan actions) list their states here (DERIVED). Their states must equal the model constants
+  (app.models.approvals.APPROVAL_REQUEST_STATUSES, work_items.OVERTIME_STATUSES,
+  variable_inputs.IMPORT_STATUSES and LOAN_ACTION_STATUSES); tests/payroll_unit/test_catalogues_generated.py
+  checks that and that the committed frontend file equals ``render()`` (F-22).
+
 Display labels, tones and glossary text live here, beside the vocabularies they describe. The
 script fails if a state has no label or a label names a state that does not exist, so a new
 backend state can never reach the UI unlabelled.
@@ -253,6 +259,39 @@ JOB: dict[str, L] = {
 }
 
 
+# Derived vocabularies (no state machine): key -> (initial, side, terminal, labels). The inputs pages
+# defined these locally until F-22/F-44; labels and tones are unchanged from those pages.
+Derived = tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], dict[str, L]]
+DERIVED: dict[str, Derived] = {
+    "approval_request": (("PENDING",), (), ("APPROVED", "CANCELLED", "REJECTED"), {
+        "PENDING": ("Pending", "warning", "Waiting for an approver's decision. Nothing takes effect until it is approved."),
+        "APPROVED": ("Approved", "success", "Every step of the approval chain approved it."),
+        "REJECTED": ("Rejected", "danger", "An approver rejected it. It has no effect."),
+        "CANCELLED": ("Cancelled", "neutral", "The requester withdrew it. It has no effect."),
+    }),
+    "overtime_entry": (("PENDING_APPROVAL",), (), ("CANCELLED", "REJECTED", "SUPERSEDED"), {
+        "PENDING_APPROVAL": ("Awaiting approval", "warning", "Waiting for a manager's decision. Not paid yet."),
+        "APPROVED": ("Approved", "success", "Approved. Paid by the next pay run that includes this date."),
+        "REJECTED": ("Rejected", "danger", "Not paid."),
+        "CANCELLED": ("Cancelled", "neutral", "Withdrawn. Not paid."),
+        "SUPERSEDED": ("Replaced", "neutral", "A newer version of this entry replaced it."),
+    }),
+    "wage_input_import": (("INVALID", "VALIDATED"), (), ("COMMITTED", "FAILED", "INVALID"), {
+        "VALIDATED": ("Ready to import", "info", "Every row passed the checks. Nothing is created until you import it."),
+        "INVALID": ("Has errors", "danger", "Fix the rows with errors and upload the file again."),
+        "COMMITTING": ("Importing", "primary", "The rows are being created."),
+        "COMMITTED": ("Imported", "success", "The rows were created as wage inputs."),
+        "FAILED": ("Failed", "danger", "The import stopped and created nothing. Upload the file again."),
+    }),
+    "loan_action": (("PENDING_APPROVAL",), (), ("APPLIED", "CANCELLED", "REJECTED"), {
+        "PENDING_APPROVAL": ("Awaiting approval", "warning", "The change to the loan waits for an approver. The schedule is unchanged."),
+        "APPLIED": ("Applied", "success", "The change was approved and applied to the loan schedule."),
+        "REJECTED": ("Rejected", "danger", "An approver rejected the change. The schedule is unchanged."),
+        "CANCELLED": ("Cancelled", "neutral", "The request was withdrawn. The schedule is unchanged."),
+    }),
+}
+
+
 def _check() -> None:
     errors: list[str] = []
     if set(VOCABULARY_KEYS) != set(sm.MACHINES):
@@ -265,9 +304,16 @@ def _check() -> None:
             errors.append(f"{name}: states without a label {missing}")
         if extra:
             errors.append(f"{name}: labels for unknown states {extra}")
+    clashes = set(DERIVED) & ({*VOCABULARY_KEYS.values(), "employee_payment", "job"})
+    if clashes:
+        errors.append(f"derived vocabularies {sorted(clashes)} clash with other vocabularies")
+    for key, (initial, side, terminal, labels) in DERIVED.items():
+        unknown = sorted({*initial, *side, *terminal} - labels.keys())
+        if unknown:
+            errors.append(f"{key}: initial/side/terminal states without a label {unknown}")
     if set(EMPLOYEE_PAYMENT) != set(sm.EMPLOYEE_LABEL_TEXT):
         errors.append(f"employee payment labels {sorted(set(EMPLOYEE_PAYMENT) ^ set(sm.EMPLOYEE_LABEL_TEXT))} differ")
-    for group in (*LABELS.values(), EMPLOYEE_PAYMENT, JOB):
+    for group in (*LABELS.values(), EMPLOYEE_PAYMENT, JOB, *(d[3] for d in DERIVED.values())):
         for state, (label, tone, glossary) in group.items():
             if tone not in TONES or not label or not glossary:
                 errors.append(f"{state}: bad label entry {(label, tone, glossary)}")
@@ -345,6 +391,14 @@ def _vocabularies() -> dict[str, Any]:
         "terminal": ["CANCELLED", "DEAD", "FAILED", "SUCCEEDED"],
         "states": {key: _entry(JOB[key]) for key in sorted(JOB)},
     }
+    for key, (initial, side, terminal, labels) in DERIVED.items():
+        out[key] = {
+            "machine": None,
+            "initial": sorted(initial),
+            "side": sorted(side),
+            "terminal": sorted(terminal),
+            "states": {state: _entry(labels[state]) for state in sorted(labels)},
+        }
     return dict(sorted(out.items()))
 
 
@@ -371,7 +425,7 @@ def _employee_payment_table() -> dict[str, Any]:
 
 def render() -> str:
     _check()
-    vocab_keys = sorted([*VOCABULARY_KEYS.values(), "employee_payment", "job"])
+    vocab_keys = sorted([*VOCABULARY_KEYS.values(), "employee_payment", "job", *DERIVED])
     stage_labels = {str(k): v for k, v in sorted(sm.UI_STAGE_LABELS.items())}
     lines = [
         "// AUTO-GENERATED by hrms-backend/scripts/export_payroll_catalogues.py - do not edit by hand.",
@@ -412,7 +466,8 @@ def render() -> str:
         "}",
         "",
         "export interface Vocabulary {",
-        "  /** Backend state machine name, or null for derived vocabularies (employee payment, job). */",
+        "  /** Backend state machine name, or null for derived vocabularies (employee payment, job, approval",
+        "   * request, overtime entry, wage-input import, loan action). */",
         "  machine: string | null;",
         "  initial: string[];",
         "  /** Side states are shown as banners, not as a stage (e.g. CANCELLED runs). */",

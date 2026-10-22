@@ -380,6 +380,38 @@ def test_ec_sec_02_get_job_is_limited_to_the_creator_permission_holders_and_the_
     assert founder.get(f"/api/v1/jobs/{platform_job}").status_code == 404  # platform jobs are never tenant-readable
 
 
+def test_f21_get_job_sends_an_etag_and_answers_304_until_the_job_changes(three_companies, frozen):
+    founder, other_company = three_companies["A"], three_companies["B"]
+    founder_id = founder.me()["user"]["id"]
+    job_id = _enqueue(founder.company_id, created_by_user_id=founder_id, run_at=frozen["now"] + FUTURE)
+    url = f"/api/v1/jobs/{job_id}"
+    first = founder.get(url)
+    assert first.status_code == 200 and first.json()["status"] == "QUEUED"
+    etag = first.headers["etag"]
+    assert etag.startswith('"') and etag.endswith('"') and len(etag) > 10
+    assert first.headers["cache-control"] == "private, no-cache"
+    # Unchanged: 304 with no body and the same tag, for the plain, weak, listed and wildcard forms.
+    for header in (etag, f"W/{etag}", f'"stale", {etag}', "*"):
+        r = founder.get(url, headers={"If-None-Match": header})
+        assert r.status_code == 304, header
+        assert r.content == b"" and r.headers["etag"] == etag
+    # A different tag gets the full body again.
+    r = founder.get(url, headers={"If-None-Match": '"something-else"'})
+    assert r.status_code == 200 and r.json()["id"] == job_id and r.headers["etag"] == etag
+    # A 304 never leaks a job to another tenant: access is checked first.
+    r = other_company.get(url, headers={"If-None-Match": etag})
+    assert r.status_code == 404
+    r = other_company.get(url, headers={"If-None-Match": "*"})
+    assert r.status_code == 404
+    # Once the job runs, the representation changes, so the old tag no longer matches.
+    frozen["now"] += FUTURE * 2
+    assert jobs.run_pending(ids=[job_id]) == 1
+    changed = founder.get(url, headers={"If-None-Match": etag})
+    assert changed.status_code == 200 and changed.json()["status"] == "SUCCEEDED"
+    assert changed.headers["etag"] != etag
+    assert founder.get(url, headers={"If-None-Match": changed.headers["etag"]}).status_code == 304
+
+
 def test_get_job_requires_a_session(three_companies, app):
     from tests.helpers import new_client
 

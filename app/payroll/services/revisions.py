@@ -194,19 +194,22 @@ def get_cycle(db: Session, principal: Principal, cycle_id: int) -> dict[str, Any
 
 
 def create_cycle(db: Session, principal: Principal, *, name: str, population: Mapping[str, Any] | None,
-                 method: Mapping[str, Any], effective_from: dt.date) -> dict[str, Any]:
+                 method: Mapping[str, Any] | None, effective_from: dt.date) -> dict[str, Any]:
+    """A DRAFT cycle. The method may be given in full now or later with `update_cycle` (F-43: the wizard
+    picks the population first); a cycle without a method cannot be previewed."""
     if not principal.has(EDIT):
         raise forbidden()
     name = (name or "").strip()
     if not 1 <= len(name) <= 150:
         raise comp.invalid("The cycle name must be 1-150 characters.", "INVALID_NAME", "name")
     cycle = RevisionCycle(company_id=principal.company_id, name=name, population=_population(population),
-                          method=_method(db, principal.company_id, method), effective_from=effective_from,
-                          status="DRAFT", row_version=1, created_by_user_id=principal.user_id)
+                          method=_method(db, principal.company_id, method) if method is not None else {},
+                          effective_from=effective_from, status="DRAFT", row_version=1,
+                          created_by_user_id=principal.user_id)
     db.add(cycle)
     db.flush()
     _audit(db, principal, REVISION_CYCLE_CREATED, f"Created the revision cycle {name}", cycle,
-           method=cycle.method["type"], effective_from=effective_from.isoformat())
+           method=cycle.method.get("type"), effective_from=effective_from.isoformat())
     return cycle_json(db, cycle, items=True)
 
 
@@ -303,6 +306,8 @@ def preview_cycle(db: Session, principal: Principal, cycle_id: int) -> dict[str,
     cycle = _load(db, principal, cycle_id, lock=True)
     if cycle.status not in ("DRAFT", "PREVIEWED"):
         raise conflict(f"A {cycle.status.lower()} cycle cannot be previewed again.", "CYCLE_LOCKED")
+    if not (cycle.method or {}).get("type"):
+        raise comp.invalid("Choose the increment method before previewing the cycle.", "METHOD_REQUIRED", "method")
     cid = principal.company_id
     db.query(RevisionCycleItem).filter(RevisionCycleItem.company_id == cid,
                                        RevisionCycleItem.cycle_id == cycle.id).delete(synchronize_session=False)

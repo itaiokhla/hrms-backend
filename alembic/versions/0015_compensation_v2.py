@@ -399,9 +399,9 @@ def upgrade() -> None:
         sa.Column('approved_at', sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(['company_id', 'employee_id'], ['employees.company_id', 'employees.id'],
                                 name='fk_compensation_assignments_employee'),
-        # employee_assignments has no UNIQUE (company_id, id): a plain key, and the guard trigger checks
-        # that the placement belongs to the same company and employee.
-        sa.ForeignKeyConstraint(['assignment_id'], ['employee_assignments.id'],
+        # The guard trigger also checks that the placement belongs to the same employee.
+        sa.ForeignKeyConstraint(['company_id', 'assignment_id'],
+                                ['employee_assignments.company_id', 'employee_assignments.id'],
                                 name='fk_compensation_assignments_placement'),
         sa.ForeignKeyConstraint(['company_id', 'template_version_id'],
                                 ['salary_template_versions.company_id', 'salary_template_versions.id'],

@@ -186,14 +186,16 @@ def create_employee(db: Session, principal: Principal, data: EmployeeCreate) -> 
     if data.base_salary is not None and not principal.has("compensation:manage"):
         raise forbidden("Setting salary requires the Manage compensation permission.")
 
-    values = data.model_dump(exclude={"manager_id", "legal_entity_id", "branch_id"})
+    values = data.model_dump(exclude={"manager_id", "legal_entity_id", "branch_id", "pay_group_id"})
     values["email"] = data.email.lower()
     employee = Employee(company_id=cid, **values)
     db.add(employee)
     db.flush()
     from app.services import org_structure_service
 
-    org_structure_service.record_hire(db, employee, principal.user_id, data.legal_entity_id, data.branch_id)
+    dimensions = {"pay_group_id": data.pay_group_id} if data.pay_group_id is not None else None
+    org_structure_service.record_hire(db, employee, principal.user_id, data.legal_entity_id, data.branch_id,
+                                      dimensions)
 
     if data.manager_id is not None:
         from app.services import org_service
@@ -302,6 +304,10 @@ def deactivate_employee(db: Session, principal: Principal, employee_id: int,
     employee.is_active = False
     employee.termination_date = end
     placements = org_structure_service.close_on_termination(db, employee, end)
+    from app.payroll.services import approvals
+
+    # The leaver's own approval steps move on (F-29, EC-RUN-21).
+    approvals.reroute_after_access_change(db, principal.company_id)
     AuditLogService.log(
         db, principal, "Employees", "DEACTIVATE",
         f"Ended employment of {employee.employee_code}; last working day {end.isoformat()}", "employee", employee.id,

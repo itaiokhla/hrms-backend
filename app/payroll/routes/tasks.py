@@ -163,11 +163,15 @@ def list_tasks(
     awaiting: bool = Query(False, description="Only tasks awaiting the caller's approval"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=service.MAX_LIST),
+    date_from: Optional[dt.date] = Query(None, alias="from", description="Period start (inclusive) of date_field"),
+    date_to: Optional[dt.date] = Query(None, alias="to", description="Period end (inclusive) of date_field"),
+    date_field: Literal[service.DATE_FIELDS] = Query("completed_on"),  # type: ignore[valid-type]
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ):
     total, items = service.list_tasks(db, principal, status=status, employee_id=employee_id, task_type=task_type,
-                                      awaiting=awaiting, skip=skip, limit=limit)
+                                      awaiting=awaiting, skip=skip, limit=limit, date_from=date_from,
+                                      date_to=date_to, date_field=date_field)
     return {"total": total, "items": items}
 
 

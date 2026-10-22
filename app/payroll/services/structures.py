@@ -44,6 +44,7 @@ from app.models.compensation import (
     SalaryTemplateLine,
     SalaryTemplateVersion,
 )
+from app.models.employee import Employee
 from app.models.org import LegalEntity
 from app.models.pay_org import EmploymentType, Grade, PayGroup
 from app.payroll import audit as payroll_audit
@@ -992,13 +993,40 @@ def breakdown(db: Session, evaluation: Evaluation, lines: Sequence[Mapping[str, 
     }
 
 
+def _unsaved_lines(db: Session, company_id: int, template: SalaryTemplate, version: SalaryTemplateVersion,
+                   items: Sequence[LineInput]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Editor lines validated like a save (shape, then formulas and dependencies) without touching the
+    database: (lines in display order, warnings). Problems are a 400 with every error (F-43)."""
+    on = comp.today(db, company_id)
+    try:
+        normalized = _normalize_lines(db, company_id, items, on, template.type)
+    except fm.FormulaError as error:
+        raise comp.formula_error(error, field_name="lines")
+    entries = comp.catalogue(db, company_id, on)
+    lines = sorted(({**line, "id": None, "category": entries[line["component"]].component.category,
+                     "value": None if line["value"] is None else Decimal(line["value"])} for line in normalized),
+                   key=lambda line: line["display_order"])
+    report = validate_lines(db, company_id, template, version, lines, on=on, deep=False)
+    if not report["ok"]:
+        raise AppError(400, {"message": "The unsaved lines have problems; fix them to preview.",
+                             "errors": report["errors"], "warnings": report["warnings"]}, report["errors"][0]["code"])
+    return lines, report["warnings"]
+
+
 def preview(db: Session, principal: Principal, template_id: int, *, pay_basis_amount: Decimal,
             number: int | None = None, overrides: Mapping[str, Mapping[str, Any]] | None = None,
-            currency: str | None = None) -> dict[str, Any]:
+            currency: str | None = None, lines: Sequence[LineInput] | None = None) -> dict[str, Any]:
+    """Monthly/annual breakdown of a version, or of unsaved editor `lines` evaluated with the version's
+    structure type and eligibility (validated, never persisted)."""
     template = _load_template(db, principal, template_id)
     version = _version(db, template, number)
     cid = principal.company_id
-    lines = _resolved_lines(db, version)
+    warnings: list[dict[str, Any]] = []
+    unsaved = lines is not None
+    if lines is None:
+        lines = _resolved_lines(db, version)
+    else:
+        lines, warnings = _unsaved_lines(db, cid, template, version, lines)
     structure_cur, _ = structure_currency(db, cid, template, version.eligibility or {})
     if currency is not None and currency != structure_cur:
         raise bad_request(f"This structure pays in {structure_cur}; there is no implicit FX (EC-CMP-07).",
@@ -1009,7 +1037,8 @@ def preview(db: Session, principal: Principal, template_id: int, *, pay_basis_am
                           len(countries) == 1 else None, statutory=len(countries) == 1)
     result = breakdown(db, evaluation, lines)
     result.update(structure={"id": template.id, "code": template.code, "name": template.name, "type": template.type},
-                  version=version.version, pay_basis_amount=_money(pay_basis_amount, structure_cur))
+                  version=version.version, pay_basis_amount=_money(pay_basis_amount, structure_cur),
+                  unsaved=unsaved, warnings=warnings)
     return result
 
 
@@ -1078,8 +1107,12 @@ def move_assignments(db: Session, principal: Principal, template_id: int, *, to_
     for row in rows:
         if not comp_service.can_edit_employee(db, principal, row.employee_id, effective_from):
             continue
-        items.append(comp_service.compare(db, principal, row, template_version_id=target.id,
-                                          pay_basis_amount=row.pay_basis_amount, on=effective_from))
+        item = comp_service.compare(db, principal, row, template_version_id=target.id,
+                                    pay_basis_amount=row.pay_basis_amount, on=effective_from)
+        # Name and code of an employee inside the caller's compensation scope (F-43).
+        ref = comp_service._employee_ref(db.get(Employee, row.employee_id))
+        item.update(employee=ref, employee_name=ref["name"], employee_code=ref["employee_code"])
+        items.append(item)
     if assignment_ids and len(items) != len(set(assignment_ids)):
         raise not_found("One or more compensation assignments")
     if dry_run:

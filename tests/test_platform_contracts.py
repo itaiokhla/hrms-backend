@@ -33,6 +33,12 @@ PUBLIC_ROUTES = {
     ("POST", "/api/v1/partner/auth/login"),
     ("POST", "/api/v1/partner/auth/refresh"),
     ("POST", "/api/v1/partner/auth/logout"),
+    # Payroll v2. Payout-provider callbacks carry no session: HMAC signature, timestamp window and replay
+    # protection authenticate them (tests/payroll/test_payment_webhooks.py).
+    ("POST", "/api/v1/webhooks/payments/{adapter}"),
+    # Anyone holding a document may check it: issuer, type, date, number and masked name only, never
+    # amounts; rate limited per IP and limited to the host's tenant (tests/payroll/test_document_isolation.py).
+    ("GET", "/api/v1/documents/verify/{public_id}"),
 }
 
 # Tables with a company_id column that are deliberately not tenant (RLS) tables.

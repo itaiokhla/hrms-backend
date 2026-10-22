@@ -14,6 +14,9 @@
   (EC-TSK-01). A submitted task cannot be withdrawn (the machine has no such transition).
 * Rate cards: task_type x criteria (grade code, skill, branch code as location) x effective dates ->
   rate per unit + currency; rows with the same type and criteria never overlap.
+* Pay figures (the per-unit rate) are shown only to viewers holding payroll:configuration:read/write, or
+  payroll:inputs:read covering every assignee; managers approve quantities, not pay (contract §25, F-42).
+  The same rule guards setting a rate on create/edit (PAY_FIELDS_NOT_PERMITTED).
 * approved_tasks() and rate_card_rows() return plain dicts for the run snapshot; mark_tasks_paid() is
   called by run finalization. Approvals and reversals append to source_change_log (record type "task",
   one row per assignee, 3.4 §16) so draft runs see them.
@@ -32,7 +35,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import exists, or_
+from sqlalchemy import exists, func, or_
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, selectinload
 
@@ -66,11 +69,15 @@ VISIBLE_PERMISSIONS = (READ, MANAGE, APPROVE)
 CONFIG_READ, CONFIG_WRITE = "payroll:configuration:read", "payroll:configuration:write"
 INPUTS_READ = "payroll:inputs:read"
 RATE_CARD_READ_PERMISSIONS = (CONFIG_READ, CONFIG_WRITE, INPUTS_READ, MANAGE)
+# Viewers who may see per-unit rates at any scope (configuration holders read the rate cards anyway).
+PAY_CONFIG_PERMISSIONS = (CONFIG_READ, CONFIG_WRITE)
+PAY_FIELDS_NOT_PERMITTED = "PAY_FIELDS_NOT_PERMITTED"
 SWITCH = "tasks.enabled"
 EVIDENCE_CATEGORY = "task-evidence"
 MAX_ASSIGNEES = 20
 MAX_EVIDENCE = 20
 MAX_LIST = 200
+DATE_FIELDS = ("completed_on", "approved_on", "due_date", "created_at")
 HUNDRED = Decimal(100)
 QUANTITY_STEP = Decimal("0.0001")
 ATTRIBUTIONS = tpt.ATTRIBUTIONS
@@ -305,6 +312,51 @@ def _flush(db: Session) -> None:
         raise
 
 
+# --------------------------------------------------------------------------- pay visibility (F-42)
+
+
+class PayVisibility:
+    """Who sees task rates: payroll configuration holders, or payroll:inputs:read covering every assignee.
+
+    Built once per request; ``covers(ids)`` answers with at most one query per call.
+    """
+
+    def __init__(self, db: Session, principal: Principal):
+        self.db = db
+        self.principal = principal
+        self.all = any(principal.has(code) for code in PAY_CONFIG_PERMISSIONS)
+        self.scope = None
+        if not self.all and principal.has(INPUTS_READ):
+            scope = authz.employee_scope(db, principal, INPUTS_READ)
+            self.all = scope.all_company
+            self.scope = None if scope.is_empty or scope.all_company else scope
+        self._known: dict[int, bool] = {}
+
+    def preload(self, employee_ids: Iterable[int]) -> None:
+        missing = {e for e in employee_ids if e not in self._known}
+        if self.all or self.scope is None or not missing:
+            return
+        found = {e for (e,) in self.db.query(Employee.id).filter(
+            Employee.company_id == self.principal.company_id, Employee.id.in_(missing),
+            self.scope.clause(Employee.id))}
+        self._known.update({e: e in found for e in missing})
+
+    def covers(self, employee_ids: Iterable[int]) -> bool:
+        ids = set(employee_ids)
+        if self.all:
+            return True
+        if self.scope is None or not ids:
+            return False
+        self.preload(ids)
+        return all(self._known.get(e, False) for e in ids)
+
+
+def _require_pay_write(db: Session, principal: Principal, employee_ids: Iterable[int]) -> None:
+    if not PayVisibility(db, principal).covers(employee_ids):
+        raise AppError(403, "Setting a task rate needs payroll:inputs:read or payroll:configuration:read for every "
+                            "assignee; managers record quantities, payroll sets pay.", PAY_FIELDS_NOT_PERMITTED)
+
+
 # --------------------------------------------------------------------------- serialization
 
 
@@ -327,7 +379,8 @@ def _rate_warnings(db: Session, task: Task) -> list[dict[str, Any]]:
 
 
 def serialize(db: Session, task: Task, *, request: ApprovalRequest | None = None,
-              names: Mapping[int, str] | None = None) -> dict[str, Any]:
+              names: Mapping[int, str] | None = None, show_pay: bool = True) -> dict[str, Any]:
+    """The task as JSON; ``show_pay=False`` strips the rate and its currency warnings (F-42)."""
     names = names or {}
     data = {
         "id": task.id,
@@ -358,9 +411,12 @@ def serialize(db: Session, task: Task, *, request: ApprovalRequest | None = None
                       for a in task.assignees],
         "evidence": [{"id": e.id, "file_name": e.file_name, "mime": e.mime, "bytes": e.bytes, "sha256": e.sha256,
                       "uploaded_at": _iso(e.created_at)} for e in task.evidence],
-        "warnings": _rate_warnings(db, task),
+        "warnings": _rate_warnings(db, task) if show_pay else [],
         "created_at": _iso(task.created_at),
     }
+    if not show_pay:
+        data["rate"] = None
+        data["pay_hidden"] = True
     if request is not None:
         data["approval"] = {"status": request.status, "current_step": request.current_step,
                             "pending_reason": (request.context or {}).get("pending_reason")}
@@ -378,6 +434,29 @@ def _names(db: Session, company_id: int, ids: Iterable[int]) -> dict[int, str]:
                                                                   Employee.id.in_(set(ids) or {0}))}
 
 
+def _assignee_refs(db: Session, principal: Principal, ids: Iterable[int]) -> dict[int, dict[str, Any]]:
+    """Name and code of the assignees the caller may see: themselves, or inside the scope of a task
+    permission they hold. A co-assignee outside that scope stays an id only (F-44: no name leaks)."""
+    wanted = set(ids)
+    clauses = [authz.employee_scope(db, principal, code).clause(Employee.id)
+               for code in VISIBLE_PERMISSIONS if principal.has(code)]
+    if principal.employee_id is not None:
+        clauses.append(Employee.id == principal.employee_id)
+    if not wanted or not clauses:
+        return {}
+    rows = db.query(Employee).filter(Employee.company_id == principal.company_id, Employee.id.in_(wanted),
+                                     or_(*clauses))
+    return {e.id: {"employee_name": e.full_name, "employee_code": e.employee_code} for e in rows}
+
+
+def _with_refs(item: dict[str, Any], refs: Mapping[int, Mapping[str, Any]]) -> dict[str, Any]:
+    for assignee in item["assignees"]:
+        ref = refs.get(assignee["employee_id"]) or {}
+        assignee["employee_name"] = ref.get("employee_name")
+        assignee["employee_code"] = ref.get("employee_code")
+    return item
+
+
 # --------------------------------------------------------------------------- queries
 
 
@@ -391,12 +470,28 @@ def list_tasks(
     awaiting: bool = False,
     skip: int = 0,
     limit: int = 50,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    date_field: str = "completed_on",
 ) -> tuple[int, list[dict[str, Any]]]:
     require_enabled(db, principal.company_id)
     clause = _visible_clause(db, principal)
     if clause is None:
         raise forbidden()
     query = db.query(Task).filter(Task.company_id == principal.company_id, clause)
+    if date_from is not None or date_to is not None:
+        # Period filter (F-44): tasks whose date_field lies in [date_from, date_to]; no date, no match.
+        if date_field not in DATE_FIELDS:
+            raise bad_request(f"date_field is one of {', '.join(DATE_FIELDS)}.", "INVALID_DATE_FIELD")
+        if date_from is not None and date_to is not None and date_to < date_from:
+            raise bad_request("The period ends before it starts.", "INVALID_PERIOD")
+        column = getattr(Task, date_field)
+        if date_field == "created_at":
+            column = func.date(column)
+        if date_from is not None:
+            query = query.filter(column >= date_from)
+        if date_to is not None:
+            query = query.filter(column <= date_to)
     if status is not None:
         query = query.filter(Task.status == status)
     if task_type is not None:
@@ -410,19 +505,23 @@ def list_tasks(
     total = query.count()
     rows = (query.options(selectinload(Task.assignees), selectinload(Task.evidence))
             .order_by(Task.created_at.desc(), Task.id.desc()).offset(skip).limit(min(limit, MAX_LIST)).all())
-    names = _names(db, principal.company_id, (a.employee_id for t in rows for a in t.assignees))
+    refs = _assignee_refs(db, principal, (a.employee_id for t in rows for a in t.assignees))
     requests = {r.id: r for r in db.query(ApprovalRequest).filter(
         ApprovalRequest.company_id == principal.company_id,
         ApprovalRequest.id.in_({t.approval_request_id for t in rows if t.approval_request_id} or {0}))}
-    return total, [serialize(db, t, request=requests.get(t.approval_request_id), names=names) for t in rows]
+    pay = PayVisibility(db, principal)
+    pay.preload(a.employee_id for t in rows for a in t.assignees)
+    return total, [_with_refs(serialize(db, t, request=requests.get(t.approval_request_id),
+                                        show_pay=pay.covers(a.employee_id for a in t.assignees)), refs) for t in rows]
 
 
 def get_task(db: Session, principal: Principal, task_id: int) -> dict[str, Any]:
     require_enabled(db, principal.company_id)
     task = _load(db, principal, task_id)
     request = db.get(ApprovalRequest, task.approval_request_id) if task.approval_request_id else None
-    return serialize(db, task, request=request,
-                     names=_names(db, task.company_id, (a.employee_id for a in task.assignees)))
+    return _with_refs(serialize(db, task, request=request,
+                                show_pay=PayVisibility(db, principal).covers(a.employee_id for a in task.assignees)),
+                      _assignee_refs(db, principal, (a.employee_id for a in task.assignees)))
 
 
 # --------------------------------------------------------------------------- commands
@@ -473,6 +572,8 @@ def create_task(db: Session, principal: Principal, data: Mapping[str, Any]) -> T
     require_enabled(db, principal.company_id)
     assignees = _assignee_input(data.get("assignees") or [])
     _ensure_manage(db, principal, [e for e, _ in assignees])
+    if data.get("rate") is not None:
+        _require_pay_write(db, principal, [e for e, _ in assignees])
     task = Task(company_id=principal.company_id, status=DRAFT, created_by_user_id=principal.user_id, row_version=1)
     _apply(db, principal, task, data)
     _set_assignees(db, principal, task, assignees)
@@ -496,6 +597,11 @@ def update_task(db: Session, principal: Principal, task_id: int, changes: Mappin
     if unknown or not changes:
         raise bad_request("Nothing to change." if not changes else f"Unknown fields: {', '.join(sorted(unknown))}.",
                           "INVALID_FIELDS")
+    if "rate" in changes:
+        ids = {a.employee_id for a in task.assignees}
+        if "assignees" in changes:
+            ids |= {e for e, _ in _assignee_input(changes["assignees"] or [])}
+        _require_pay_write(db, principal, ids)
     before = serialize(db, task)
     _apply(db, principal, task, changes)
     if "assignees" in changes:

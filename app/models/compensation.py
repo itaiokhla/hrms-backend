@@ -333,8 +333,9 @@ class CompensationAssignment(TenantMixin, BaseModel):
             ["company_id", "employee_id"], ["employees.company_id", "employees.id"],
             name="fk_compensation_assignments_employee",
         ),
-        # employee_assignments has no UNIQUE (company_id, id); the guard trigger checks company and employee.
-        ForeignKeyConstraint(["assignment_id"], ["employee_assignments.id"], name="fk_compensation_assignments_placement"),
+        # The guard trigger also checks that the placement belongs to the same employee.
+        ForeignKeyConstraint(["company_id", "assignment_id"], ["employee_assignments.company_id", "employee_assignments.id"],
+                             name="fk_compensation_assignments_placement"),
         ForeignKeyConstraint(
             ["company_id", "template_version_id"], ["salary_template_versions.company_id", "salary_template_versions.id"],
             name="fk_compensation_assignments_template_version",

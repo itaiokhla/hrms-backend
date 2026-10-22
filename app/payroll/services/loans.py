@@ -62,6 +62,7 @@ from app.payroll.services.wage_inputs import (
     scope_clause,
     scoped_placement,
     transition,
+    with_employee_refs,
 )
 from app.payroll.time_pay_common import BLOCKING, WARNING, Issue, TimePayError
 
@@ -374,7 +375,8 @@ def _load(db: Session, principal: Principal, loan_id: int, permission: str, *, l
 
 
 def get_loan(db: Session, principal: Principal, loan_id: int, *, own: bool = False) -> dict:
-    return serialize(db, _load(db, principal, loan_id, READ, own=own))
+    [item] = with_employee_refs(db, principal.company_id, [serialize(db, _load(db, principal, loan_id, READ, own=own))])
+    return item
 
 
 def list_loans(db: Session, principal: Principal, *, own: bool = False, status: Optional[str] = None,
@@ -397,7 +399,7 @@ def list_loans(db: Session, principal: Principal, *, own: bool = False, status: 
         query = query.filter(Loan.employee_id == employee_id)
     total = query.count()
     rows = query.order_by(Loan.id.desc()).offset(skip).limit(limit).all()
-    return total, [serialize(db, r, detail=False) for r in rows]
+    return total, with_employee_refs(db, principal.company_id, [serialize(db, r, detail=False) for r in rows])
 
 
 @approvals.on_decided(MODULE, SUBJECT)

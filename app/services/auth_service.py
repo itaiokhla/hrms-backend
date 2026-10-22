@@ -195,6 +195,7 @@ def login_mfa(mfa_token: str, code: str, ip, user_agent, context: HostContext = 
             raise unauthorized("Verification expired. Sign in again.", "MFA_EXPIRED")
         company = db.get(Company, user.company_id)
         _check_login_state(user, company)
+        bind_tenant(db, user.company_id)  # the TOTP secret is decrypted with the tenant's data key (F-28)
         if not accept_totp(db, user, code):
             _register_failure(db, user)
             raise unauthorized("Invalid verification code.", "MFA_INVALID")
@@ -358,8 +359,13 @@ def accept_totp(db: Session, account: Union[User, PlatformAdmin], code: str) -> 
     """
     if not account.mfa_secret or not code:
         return False
+    from app.services import mfa_secrets
+
+    secret = mfa_secrets.read(db, account)  # decrypts; a legacy plaintext secret is re-stored encrypted (F-28)
+    if not secret:
+        return False
     model = type(account)
-    totp = pyotp.TOTP(account.mfa_secret)
+    totp = pyotp.TOTP(secret)
     current = int(time.time()) // totp.interval
     for step in (current - 1, current, current + 1):
         if pyotp.utils.strings_equal(code.strip(), totp.generate_otp(step)):
@@ -372,14 +378,14 @@ def accept_totp(db: Session, account: Union[User, PlatformAdmin], code: str) -> 
     return False
 
 
-def mfa_setup(user: User, company_name: str) -> dict:
+def mfa_setup(db: Session, user: User, company_name: str) -> dict:
     if user.mfa_enabled:
         raise conflict("Two-factor authentication is already enabled.")
-    from app.services import brand_service
+    from app.services import brand_service, mfa_secrets
 
     brand = brand_service.effective_for_company(user.company_id).values
     secret = pyotp.random_base32()
-    user.mfa_secret = secret
+    mfa_secrets.store(db, user, secret)  # encrypted at rest (F-28); only this response shows it
     user.mfa_last_step = None
     # Authenticator label: "{product name} ({company})" (01 §5.9). Existing enrolments keep their label.
     issuer = f"{brand['product_name']} ({brand['display_name'] or company_name})".replace(":", " ")

@@ -65,6 +65,27 @@ def list_approvals(
     return {"total": total, "items": items}
 
 
+@router.get("/approvals/counts")
+def approval_counts(
+    mine: bool = Query(True, description="Only requests awaiting the caller's decision"),
+    status: Optional[StatusName] = Query(None),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    """Per-module counts with the visibility rules of the inbox list (F-44)."""
+    return approvals.request_counts(db, principal, mine=mine, status=status)
+
+
+@router.get("/approval-chains")
+def list_approval_chains(
+    module: Optional[ModuleName] = Query(None),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    """Approval chains per module for settings pickers (F-25); read-only (chains are edited elsewhere)."""
+    return approvals.list_chains(db, principal, module=module)
+
+
 @router.get("/approvals/{request_id}")
 def get_approval(request_id: int, principal: Principal = Depends(get_principal), db: Session = Depends(get_db)):
     return approvals.get_request(db, principal, request_id)

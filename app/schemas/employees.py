@@ -32,6 +32,9 @@ class EmployeeCreate(StrictModel):
     # Placement; defaults to the branch named like `location`, else the default legal entity.
     legal_entity_id: Optional[int] = None
     branch_id: Optional[int] = None
+    # Pay group of the hire placement (an active group of the placement's legal entity); defaults to the
+    # entity's first active pay group. A later placement change cannot start on the hire date itself.
+    pay_group_id: Optional[int] = None
 
 
 class EmployeeUpdate(StrictModel):

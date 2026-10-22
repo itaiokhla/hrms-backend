@@ -129,6 +129,37 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip)
 
 
+def _empty_written_tables(conn, names) -> None:
+    """Delete the rows of every table a test wrote to and restart the sequences those tables own.
+
+    Same end state as TRUNCATE ... RESTART IDENTITY CASCADE over all tables, but an untouched table costs
+    one probe instead of new files for the table and each index (about 3 s per test on Windows).
+    Triggers (foreign keys, append-only guards) are off for this cleanup transaction only; that needs a
+    superuser, which the embedded test server provides.
+    """
+    from sqlalchemy import text
+
+    conn.execute(text("SET LOCAL session_replication_role = replica"))
+    probe = " UNION ALL ".join(f"SELECT '{n}' FROM (SELECT 1 FROM \"{n}\" LIMIT 1) AS x" for n in names)
+    written = [row[0] for row in conn.execute(text(probe))]
+    for name in written:
+        conn.execute(text(f'DELETE FROM "{name}"'))
+    # Every used sequence of these tables, also of a table whose rows the test already deleted itself.
+    conn.execute(
+        text(
+            "SELECT setval(s.oid::regclass, q.seqstart, false) FROM pg_class s "
+            "JOIN pg_sequence q ON q.seqrelid = s.oid "
+            "JOIN pg_sequences ps ON ps.schemaname = s.relnamespace::regnamespace::text AND ps.sequencename = s.relname "
+            "JOIN pg_depend d ON d.objid = s.oid AND d.classid = 'pg_class'::regclass "
+            "AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i') "
+            "JOIN pg_class t ON t.oid = d.refobjid "
+            "WHERE s.relkind = 'S' AND t.relname = ANY(:names) AND ps.last_value IS NOT NULL"
+        ),
+        {"names": list(names)},
+    )
+    conn.execute(text("SET LOCAL session_replication_role = DEFAULT"))
+
+
 @pytest.fixture(autouse=True)
 def clean_database():
     if NO_DB:
@@ -146,9 +177,14 @@ def clean_database():
     invalidate_host_cache()
     invalidate_cache()
     yield
-    tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
+    names = [t.name for t in Base.metadata.sorted_tables]
     with system_engine.begin() as conn:
-        conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+        try:
+            with conn.begin_nested():
+                _empty_written_tables(conn, names)
+        except Exception:
+            # Not a superuser (e.g. TEST_DATABASE_ADMIN_URL on a managed server): truncate everything.
+            conn.execute(text(f"TRUNCATE {', '.join(names)} RESTART IDENTITY CASCADE"))
         # Restore the platform brand that migration 0006 installs.
         conn.execute(text(
             "INSERT INTO commercial_brand_profiles (owner_type, version, status, display_name, product_name, short_name, "

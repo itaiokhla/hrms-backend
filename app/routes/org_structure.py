@@ -398,5 +398,8 @@ def set_targets(user_id: int, data: TargetsWrite, principal: Principal = Depends
                      "after": {scope: sorted(ids) for scope, ids in wanted.items()}},
         )
     user.permission_version += 1
+    from app.services import rbac_service
+
+    rbac_service.reroute_approvals(db, principal.company_id)  # a narrower reach can remove an approver (F-29)
     db.commit()
     return _targets_view(db, principal, user.id)

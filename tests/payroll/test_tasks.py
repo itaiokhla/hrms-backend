@@ -413,6 +413,65 @@ def test_ec_sec_05_scope_decides_who_sees_creates_and_approves_tasks(world):
     assert new_task(u["beta"], [emp["walt"]]).status_code == 404
 
 
+def test_f42_task_rates_are_shown_only_to_payroll_viewers_never_to_managers(app, world):
+    """Contract §25: managers approve quantities, not pay. Rates need payroll:inputs:read or configuration:read."""
+    u, emp = world["u"], world["emp"]
+    rate = {"amount": "800.00", "currency": "INR"}
+    created = submitted_task(u["admin"], [emp["walt"]], rate=rate)
+    # The payroll user (founding admin holds payroll_manager) sees the rate in the list and the detail.
+    assert task(u["admin"], created["id"])["rate"] == rate
+    item = next(t for t in u["admin"].get(BASE).json()["items"] if t["id"] == created["id"])
+    assert item["rate"] == rate and "pay_hidden" not in item
+    # The manager (task:approve over the team) sees the task and its quantity, never the rate.
+    for listing in (u["mona"].get(BASE).json(), u["mona"].get(BASE, params={"awaiting": True}).json()):
+        item = next(t for t in listing["items"] if t["id"] == created["id"])
+        assert item["rate"] is None and item["pay_hidden"] is True and item["quantity"] == "12"
+        assert item["warnings"] == []
+    detail = task(u["mona"], created["id"])
+    assert detail["rate"] is None and detail["pay_hidden"] is True
+    assert "800" not in u["mona"].get(f"{BASE}/{created['id']}").text
+    # The assignee without payroll:inputs:read does not see it either (the UI never showed it).
+    assert task(u["walt"], created["id"])["rate"] is None
+    # The approval inbox carries no amount for tasks.
+    inbox = u["mona"].get("/api/v1/payroll/approvals", params={"module": "task"})
+    assert inbox.status_code == 200, inbox.text
+    assert [i["subject_id"] for i in inbox.json()["items"]] == [created["id"]]
+    assert inbox.json()["items"][0]["amount"] is None and "800" not in inbox.text
+    r = approve(u["mona"], created["id"])
+    assert r.status_code == 200 and "rate" not in r.json(), r.text
+    assert task(u["admin"], created["id"])["rate"] == rate
+
+    # A task coordinator (task:manage, no payroll permission) records quantities but cannot set or read pay.
+    role = u["admin"].post("/api/v1/roles", json={"name": "Task coordinator", "grants": [
+        {"permission": "task:manage", "scope": "COMPANY"}]})
+    assert role.status_code == 200, role.text
+    coordinator = invite_and_activate(app, u["admin"], create_employee(u["admin"], "Coord"), [])
+    assigned = u["admin"].put(f"/api/v1/users/{coordinator.user_id}/roles", json={"role_ids": [role.json()["id"]]})
+    assert assigned.status_code == 200, assigned.text
+    r = new_task(coordinator, [emp["lou"]], rate=rate)
+    assert r.status_code == 403 and r.json()["code"] == task_service.PAY_FIELDS_NOT_PERMITTED
+    plain = created_task(coordinator, [emp["lou"]])
+    r = coordinator.patch(f"{BASE}/{plain['id']}", json={"rate": rate})
+    assert r.status_code == 403 and r.json()["code"] == task_service.PAY_FIELDS_NOT_PERMITTED
+    r = coordinator.patch(f"{BASE}/{plain['id']}", json={"title": "Install more routers"})
+    assert r.status_code == 200, r.text
+    priced = created_task(u["admin"], [emp["lou"]], rate=rate)
+    assert task(coordinator, priced["id"])["rate"] is None
+    assert all(t["rate"] is None for t in coordinator.get(BASE).json()["items"])
+
+    # Granting payroll:inputs:read (company-wide) reveals the rates and allows setting them.
+    pay_role = u["admin"].post("/api/v1/roles", json={"name": "Inputs reader", "grants": [
+        {"permission": "payroll:inputs:read", "scope": "COMPANY"}]})
+    assert pay_role.status_code == 200, pay_role.text
+    r = u["admin"].put(f"/api/v1/users/{coordinator.user_id}/roles",
+                       json={"role_ids": [role.json()["id"], pay_role.json()["id"]]})
+    assert r.status_code == 200, r.text
+    assert task(coordinator, priced["id"])["rate"] == rate
+    r = coordinator.patch(f"{BASE}/{plain['id']}", json={"rate": rate})
+    assert r.status_code == 200, r.text
+    assert task(coordinator, plain["id"])["rate"] == rate
+
+
 # ---------------------------------------------------------------------------
 # Rate cards
 # ---------------------------------------------------------------------------

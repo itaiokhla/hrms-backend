@@ -41,7 +41,7 @@ from app.core.security import utcnow
 from app.models.company import Company
 from app.models.employee import Employee
 from app.models.org import Branch, EmployeeAssignment, LegalEntity
-from app.models.pay_org import PayGroup
+from app.models.pay_org import HolidayCalendar, PayGroup
 from app.models.payroll_config import (
     PlatformSettingValue,
     Policy,
@@ -102,8 +102,9 @@ def finalized_period_overlaps(db: Session, company_id: int, key: str, level: Lev
                               effective_from: date) -> bool:
     """Whether ``effective_from`` falls in a finalized pay period of the scope (EC-CFG-03).
 
-    Always False until pay runs exist; then a True result requires a reason (already required for
-    any past date) and the retro impact preview.
+    False until pay runs exist: app/payroll/services/runs.install_hooks() replaces this hook with the
+    run-backed answer. A True result requires a reason (already required for any past date) and the
+    retro impact preview (POST /api/v1/payroll/arrears-proposals/detect with trigger SETTING and preview).
     """
     return False
 
@@ -221,10 +222,22 @@ def build_context(
         elif parent.legal_entity_id != legal_entity_id:
             raise bad_request("The branch or pay group belongs to another legal entity.", "SCOPE_MISMATCH")
     entity = _get(db, LegalEntity, company_id, legal_entity_id, "Legal entity") if legal_entity_id is not None else None
-    facts: dict[str, Any] = {"tenant_locale": company.default_locale, "tenant_currency": company.currency}
+    # Payslip languages default to the tenant's locale, else the entity's, else English.
+    locale = company.default_locale or (entity.default_locale if entity is not None else None) or "en"
+    facts: dict[str, Any] = {"tenant_locale": locale, "tenant_currency": company.currency}
     currency = pay_group.currency if pay_group is not None else (entity.base_currency if entity is not None else None)
     if entity is not None:
         facts["entity_base_currency"] = entity.base_currency
+        # Same rule as calendars.banking_calendar_id: the entity country's national holiday calendar.
+        national = (db.query(HolidayCalendar.id)
+                    .filter(HolidayCalendar.company_id == company_id,
+                            HolidayCalendar.country_code == entity.country_code,
+                            HolidayCalendar.subdivision_code.is_(None),
+                            HolidayCalendar.parent_calendar_id.is_(None),
+                            HolidayCalendar.status == "ACTIVE")
+                    .order_by(HolidayCalendar.id).first())
+        if national is not None:
+            facts["country_banking_calendar_id"] = national[0]
     if currency:
         info = currencies.find(currency)
         facts["currency_minor_unit"] = getattr(info, "minor_unit", None)

@@ -25,7 +25,8 @@ class User(TenantMixin, BaseModel):
     full_name = Column(String(150), nullable=False)
     password_hash = Column(String(255), nullable=True)
     status = Column(String(20), nullable=False, default="active", index=True)
-    mfa_secret = Column(String(64), nullable=True)
+    # Envelope ciphertext sealed by app.services.mfa_secrets (F-28); legacy rows may still hold plaintext.
+    mfa_secret = Column(String(512), nullable=True)
     mfa_enabled = Column(Boolean, nullable=False, default=False)
     # Last TOTP time step accepted; a code is never accepted twice (RFC 6238 section 5.2).
     mfa_last_step = Column(Integer, nullable=True)

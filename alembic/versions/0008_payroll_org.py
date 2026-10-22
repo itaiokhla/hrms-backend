@@ -387,6 +387,8 @@ def upgrade() -> None:
     for column, constraint, table in ASSIGNMENT_REFERENCES:
         op.create_foreign_key(constraint, 'employee_assignments', table, ['company_id', column], ['company_id', 'id'])
     op.create_index('ix_employee_assignments_pay_group_id', 'employee_assignments', ['pay_group_id'])
+    # Payroll tables reference a placement together with its company (composite foreign keys).
+    op.create_unique_constraint('uq_employee_assignments_company_id_id', 'employee_assignments', ['company_id', 'id'])
 
     op.add_column('holidays', sa.Column('calendar_id', sa.Integer(), nullable=True))
     op.add_column('holidays', sa.Column('holiday_type', sa.String(10), nullable=False, server_default='COMPANY'))
@@ -631,6 +633,7 @@ def downgrade() -> None:
     op.drop_column('holidays', 'holiday_type')
     op.drop_column('holidays', 'calendar_id')
 
+    op.drop_constraint('uq_employee_assignments_company_id_id', 'employee_assignments', type_='unique')
     op.drop_index('ix_employee_assignments_pay_group_id', table_name='employee_assignments')
     op.drop_constraint('fk_employee_assignments_pay_group', 'employee_assignments', type_='foreignkey')
     for _column, constraint, _table in ASSIGNMENT_REFERENCES:

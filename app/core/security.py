@@ -12,7 +12,11 @@ from passlib.context import CryptContext
 
 from app.config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Only the automated test suite (ENVIRONMENT=test) uses bcrypt's minimum cost, so its thousands of
+# sign-ups and sign-ins stay fast; every other environment keeps passlib's default cost of 12.
+pwd_context = CryptContext(
+    schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=4 if settings.environment == "test" else 12
+)
 
 ACCESS_COOKIE = "hrms_access"
 REFRESH_COOKIE = "hrms_refresh"

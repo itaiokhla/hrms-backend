@@ -27,14 +27,14 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Iterable, List, Optional, Sequence, Tuple
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.config import settings as app_settings
 from app.core import clock, storage
-from app.core.errors import bad_request, conflict, forbidden, not_found
+from app.core.errors import AppError, bad_request, conflict, forbidden, not_found
 from app.core.principal import Principal
 from app.models.catalogue import FxConversion
 from app.models.variable_inputs import ReimbursementClaim, ReimbursementReceipt
@@ -59,6 +59,7 @@ from app.payroll.services.wage_inputs import (
     scope_clause,
     scoped_placement,
     transition,
+    with_employee_refs,
 )
 from app.payroll.time_pay_common import TimePayError
 
@@ -342,7 +343,8 @@ def _load(db: Session, principal: Principal, claim_id: int, permission: str, *, 
 
 
 def get_claim(db: Session, principal: Principal, claim_id: int, *, own: bool = False) -> dict:
-    return serialize(db, _load(db, principal, claim_id, READ, own=own), for_self=own)
+    item = serialize(db, _load(db, principal, claim_id, READ, own=own), for_self=own)
+    return with_employee_refs(db, principal.company_id, [item])[0]
 
 
 def list_claims(db: Session, principal: Principal, *, own: bool = False, status: Optional[str] = None,
@@ -367,7 +369,63 @@ def list_claims(db: Session, principal: Principal, *, own: bool = False, status:
     total = query.count()
     rows = query.order_by(ReimbursementClaim.expense_date.desc(), ReimbursementClaim.id.desc()) \
         .offset(skip).limit(limit).all()
-    return total, [serialize(db, r, for_self=own) for r in rows]
+    return total, with_employee_refs(db, principal.company_id, [serialize(db, r, for_self=own) for r in rows])
+
+
+def _policy_money(value: Any) -> Any:
+    """A money limit of the policy as a response decimal string with the currency's minor units (the stored
+    policy keeps the normalized amount, e.g. "1000"); anything that is not a well-formed money is echoed."""
+    if not isinstance(value, dict) or not value.get("currency") or value.get("amount") is None:
+        return value
+    try:
+        return money_json(Decimal(str(value["amount"])), str(value["currency"]))
+    except (ArithmeticError, ValueError, TypeError, MoneyError):
+        return value
+
+
+def _claim_type_json(item: dict) -> dict:
+    keys = ("limit_per_claim", "limit_per_month", "limit_per_year", "receipt_required_above")
+    return {"code": item.get("code"), "name": item.get("name") or item.get("code"),
+            "taxability": item.get("taxability") or "UNCLASSIFIED",
+            **{k: _policy_money(item.get(k)) for k in keys}}
+
+
+def claim_types(db: Session, principal: Principal, employee_id: Optional[int] = None, on: Optional[date] = None
+                ) -> dict:
+    """The claim types of the REIMBURSEMENT_POLICY that applies on `on` (default today) to the caller
+    (no employee_id, or their own) or to an employee inside the caller's reimbursements scope (F-44).
+    An employee outside the scope is 404; a missing or ambiguous policy returns no types with its status."""
+    company_id = principal.company_id
+    on = on or company_today(db, company_id)
+    if employee_id is None or employee_id == principal.employee_id:
+        place = _own_placement(db, principal, on)
+    else:
+        codes = [code for code in (MANAGE, READ) if principal.has(code)]
+        if not codes:
+            raise forbidden()
+        place, missing = None, None
+        for code in codes:
+            try:
+                place = scoped_placement(db, principal, code, employee_id, on)
+                break
+            except AppError as exc:
+                if exc.status_code != 404:
+                    raise
+                missing = exc
+        if place is None:
+            raise missing or not_found("Employee")
+    found = policies.resolve_for_employee(db, company_id, POLICY_TYPE, place.employee.id, on)
+    enabled = bool(resolve_setting(db, company_id, "payroll.reimbursements.enabled", on=on,
+                                   pay_group_id=place.pay_group_id))
+    body = {"employee_id": place.employee.id, "date": on.isoformat(), "enabled": enabled,
+            "currency": place.currency, "status": found.get("status"), "policy": found.get("policy"),
+            "claim_types": []}
+    if found.get("status") != "RESOLVED":
+        return body | {"reason": found.get("reason")}
+    fields = dict(found["version"].get("fields") or {})
+    return body | {"policy_version": found["version"].get("version"),
+                   "submission_window_days": fields.get("submission_window_days"),
+                   "claim_types": [_claim_type_json(item) for item in fields.get("claim_types") or []]}
 
 
 def _sniff(data: bytes) -> Tuple[str, str]:

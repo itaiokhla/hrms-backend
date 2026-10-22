@@ -485,16 +485,114 @@ def test_ec_run_21_reroute_skips_a_step_whose_approver_was_suspended(world):
     rid = _submit(cid, u["admin"].user_id, module="compensation", subject_type="salary", subject_id=8,
                   subject_employee_id=world["emp"]["walt"]["id"])
     assert u["admin"].get(f"{BASE}/{rid}").json()["current_step"] == 1
+    # Suspending the approver re-routes at once (F-29): no separate call is needed.
     assert u["admin"].put(f"/api/v1/users/{u['ada'].user_id}/status", json={"status": "suspended"}).status_code == 200
-    with _session(cid) as (db, _):
-        assert approvals.reroute_pending(db, cid) == 1
-        db.commit()
     detail = u["admin"].get(f"{BASE}/{rid}").json()
     assert [s["status"] for s in detail["steps"]] == ["skipped", "pending"] and detail["current_step"] == 2
     assert _audit_rows(cid, rid)[-1][1:3] == ("APPROVAL_REROUTED", "system")
+    with _session(cid) as (db, _):
+        assert approvals.reroute_pending(db, cid) == 0  # idempotent: nothing left to move
     assert _approve(u["ben"], rid).json()["status"] == "APPROVED"
     with _session(cid) as (db, _):
         assert approvals.reroute_pending(db, cid) == 0
+
+
+def _steps(client, rid):
+    detail = client.get(f"{BASE}/{rid}").json()
+    return [(s["approver_type"], s["status"]) for s in detail["steps"]], detail["current_step"]
+
+
+def _reroutes(company_id, rid):
+    return [row[1] for row in _audit_rows(company_id, rid)].count("APPROVAL_REROUTED")
+
+
+def test_f29_unrelated_changes_never_move_a_request_and_repeated_changes_move_it_once(world):
+    cid, u = world["cid"], world["u"]
+    _chain(cid, "compensation", {"type": "specific_user", "user_id": u["ada"].user_id},
+           {"type": "specific_user", "user_id": u["ben"].user_id})
+    rid = _submit(cid, u["admin"].user_id, module="compensation", subject_type="salary", subject_id=21,
+                  subject_employee_id=world["emp"]["walt"]["id"])
+    # Fay is not on the chain: suspending her leaves the request where it is.
+    assert u["admin"].put(f"/api/v1/users/{u['fay'].user_id}/status", json={"status": "suspended"}).status_code == 200
+    assert _steps(u["admin"], rid) == ([("specific_user", "pending"), ("specific_user", "waiting")], 1)
+    assert _reroutes(cid, rid) == 0
+    # Ada is: her step is skipped once; deactivating her afterwards changes nothing more.
+    assert u["admin"].put(f"/api/v1/users/{u['ada'].user_id}/status", json={"status": "suspended"}).status_code == 200
+    assert u["admin"].put(f"/api/v1/users/{u['ada'].user_id}/status", json={"status": "deactivated"}).status_code == 200
+    assert _steps(u["admin"], rid) == ([("specific_user", "skipped"), ("specific_user", "pending")], 2)
+    assert _reroutes(cid, rid) == 1
+    assert _approve(u["ben"], rid).json()["status"] == "APPROVED"
+
+
+def test_f29_losing_the_approver_role_reroutes_to_the_next_valid_approver(world):
+    cid, u = world["cid"], world["u"]
+    _chain(cid, "compensation", {"type": "specific_user", "user_id": u["ada"].user_id},
+           {"type": "specific_user", "user_id": u["ben"].user_id})
+    rid = _submit(cid, u["admin"].user_id, module="compensation", subject_type="salary", subject_id=22,
+                  subject_employee_id=world["emp"]["walt"]["id"])
+    assert _inbox(u["ada"])["total"] == 1
+    r = u["admin"].put(f"/api/v1/users/{u['ada'].user_id}/roles", json={"role_ids": [role_id(u["admin"], "employee")]})
+    assert r.status_code == 200, r.text
+    assert _steps(u["admin"], rid) == ([("specific_user", "skipped"), ("specific_user", "pending")], 2)
+    assert _audit_rows(cid, rid)[-1][1:3] == ("APPROVAL_REROUTED", "system")
+    assert _inbox(u["ben"])["total"] == 1
+    assert _approve(u["ada"], rid).status_code in (403, 404)
+    assert _approve(u["ben"], rid).json()["status"] == "APPROVED"
+
+
+def test_f29_role_grant_removal_reroutes_its_members_pending_steps(world, app):
+    cid, u, admin = world["cid"], world["u"], world["u"]["admin"]
+    role = admin.post("/api/v1/roles", json={"name": "Pay approver", "grants": [
+        {"permission": "payroll:compensation:approve", "scope": "COMPANY"}]})
+    assert role.status_code == 200, role.text
+    carl = invite_and_activate(app, admin, create_employee(admin, "Carl"), ["employee"])
+    r = admin.put(f"/api/v1/users/{carl.user_id}/roles",
+                  json={"role_ids": [role_id(admin, "employee"), role.json()["id"]]})
+    assert r.status_code == 200, r.text
+    _chain(cid, "compensation", {"type": "specific_user", "user_id": carl.user_id},
+           {"type": "specific_user", "user_id": u["ben"].user_id})
+    rid = _submit(cid, u["admin"].user_id, module="compensation", subject_type="salary", subject_id=23,
+                  subject_employee_id=world["emp"]["walt"]["id"])
+    assert _steps(admin, rid)[1] == 1
+    # Renaming the role keeps its grants: nothing moves.
+    r = admin.patch(f"/api/v1/roles/{role.json()['id']}", json={"name": "Pay approvers"})
+    assert r.status_code == 200, r.text
+    assert _steps(admin, rid)[1] == 1 and _reroutes(cid, rid) == 0
+    r = admin.patch(f"/api/v1/roles/{role.json()['id']}", json={"grants": [
+        {"permission": "payroll:compensation:read", "scope": "COMPANY"}]})
+    assert r.status_code == 200, r.text
+    assert _steps(admin, rid) == ([("specific_user", "skipped"), ("specific_user", "pending")], 2)
+    assert _approve(u["ben"], rid).json()["status"] == "APPROVED"
+
+
+def test_f29_manager_change_reroutes_to_a_valid_approver(world):
+    cid, u, emp = world["cid"], world["u"], world["emp"]
+    _chain(cid, "overtime", {"type": "primary_manager"})
+    rid = _submit(cid, u["fay"].user_id, module="overtime", subject_type="entry", subject_id=24,
+                  subject_employee_id=emp["walt"]["id"])
+    assert _steps(u["admin"], rid) == ([("primary_manager", "pending")], 1)
+    assert _inbox(u["mona"])["total"] == 1
+    # Walt now reports to Lou, who cannot approve overtime: the step falls back to the administrators.
+    r = u["admin"].put(f"/api/v1/org/employees/{emp['walt']['id']}/manager", json={"manager_id": emp["lou"]["id"]})
+    assert r.status_code == 200, r.text
+    steps, current = _steps(u["admin"], rid)
+    assert steps == [("primary_manager", "skipped"), ("role", "pending")] and current == 2
+    assert _audit_rows(cid, rid)[-1][1:3] == ("APPROVAL_REROUTED", "system")
+    assert _inbox(u["mona"])["total"] == 0
+    assert _approve(u["mona"], rid).status_code in (403, 404)
+    assert _approve(u["admin"], rid).json()["status"] == "APPROVED"
+
+
+def test_f29_ending_employment_reroutes_the_leavers_steps(world):
+    cid, u, emp = world["cid"], world["u"], world["emp"]
+    _chain(cid, "compensation", {"type": "specific_user", "user_id": u["ada"].user_id},
+           {"type": "specific_user", "user_id": u["ben"].user_id})
+    rid = _submit(cid, u["admin"].user_id, module="compensation", subject_type="salary", subject_id=25,
+                  subject_employee_id=emp["walt"]["id"])
+    r = u["admin"].post(f"/api/v1/employees/{emp['ada']['id']}/deactivate")
+    assert r.status_code == 200, r.text
+    assert _steps(u["admin"], rid) == ([("specific_user", "skipped"), ("specific_user", "pending")], 2)
+    assert _approve(u["ben"], rid).json()["status"] == "APPROVED"
 
 
 # ---------------------------------------------------------------------------

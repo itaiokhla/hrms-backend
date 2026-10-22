@@ -233,7 +233,32 @@ def list_policies(db: Session, principal: Principal, *, type_code: str | None = 
     ids = [p.id for p in policies]
     versions, rules = _versions(db, principal.company_id, ids), _rules(db, principal.company_id, ids)
     today = _today(db, principal.company_id)
-    return [policy_json(p, versions.get(p.id, []), rules.get(p.id, []), today) for p in policies]
+    counts = head_counts(db, principal, {p.type for p in policies}, today)
+    scope = "COMPANY" if principal.has(READ, "COMPANY") else "SCOPED"
+    return [policy_json(p, versions.get(p.id, []), rules.get(p.id, []), today)
+            | {"head_count": counts.get(p.id, 0), "head_count_scope": scope} for p in policies]
+
+
+def head_counts(db: Session, principal: Principal, type_codes: Iterable[str], on: date) -> dict[int, int]:
+    """{policy_id: active employees placed on ``on`` whom the policy's rules resolve to}, counting only
+    employees whose entity or pay group the caller's configuration access covers (F-25: a scoped
+    administrator never learns head counts outside their scope)."""
+    cid = principal.company_id
+    active = {i for (i,) in db.query(Employee.id).filter(
+        Employee.company_id == cid, Employee.is_active.is_(True),
+        or_(Employee.termination_date.is_(None), Employee.termination_date >= on))}
+    people = [p for p in employee_attributes(db, cid, on) if p.employee_id in active
+              and engine.covers(principal, READ, legal_entity_id=p.legal_entity_id, pay_group_id=p.pay_group_id)]
+    counts: dict[int, int] = {}
+    for code in sorted(set(type_codes)):
+        rules = _type_rules(db, cid, code)
+        if not rules:
+            continue
+        for person in people:
+            result = pt.resolve_assignment(rules, person, on=on)
+            if result.status == "RESOLVED":
+                counts[int(result.rule.policy_id)] = counts.get(int(result.rule.policy_id), 0) + 1
+    return counts
 
 
 def get_policy(db: Session, principal: Principal, policy_id: int) -> dict[str, Any]:

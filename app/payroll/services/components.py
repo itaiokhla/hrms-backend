@@ -628,12 +628,25 @@ def component_in_runs(db: Session, company_id: int, component_id: int) -> bool:
     return False
 
 
+def in_use_ids(db: Session, company_id: int) -> set[int]:
+    """Ids of the company's components used by a structure line or an assignment line (one query per table;
+    the list's `in_use`, the same rule as `in_use`)."""
+    used: set[int] = set()
+    for model in (SalaryTemplateLine, CompensationAssignmentLine):
+        used |= {cid for (cid,) in db.query(model.component_id).filter(model.company_id == company_id).distinct()}
+    return used
+
+
 def list_components(db: Session, principal: Principal, *, kind: str | None = None,
                     include_archived: bool = False) -> list[dict[str, Any]]:
     require_read(principal)
-    on = today(db, principal.company_id)
-    entries = catalogue(db, principal.company_id, on, include_archived=include_archived)
-    items = [component_json(e.component, e.version) for e in entries.values() if kind is None or e.component.kind == kind]
+    cid = principal.company_id
+    on = today(db, cid)
+    entries = catalogue(db, cid, on, include_archived=include_archived)
+    used = in_use_ids(db, cid)
+    items = [component_json(e.component, e.version, in_use=e.component.id in used
+                            or component_in_runs(db, cid, e.component.id))
+             for e in entries.values() if kind is None or e.component.kind == kind]
     return sorted(items, key=lambda c: ((c["current_version"] or {}).get("payslip", {}).get("order") or 0, c["code"]))
 
 

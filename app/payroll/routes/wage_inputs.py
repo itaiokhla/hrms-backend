@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.principal import Principal, get_principal, require
 from app.database.db import get_db
-from app.models.variable_inputs import WAGE_INPUT_STATUSES
+from app.models.variable_inputs import IMPORT_STATUSES, WAGE_INPUT_STATUSES
 from app.payroll.api_types import DecimalStr, PayMoneyIn, StrictModel
 from app.payroll.routes.approvals import ApproveBody, RejectBody
 from app.payroll.services import idempotency
@@ -24,6 +24,7 @@ from app.payroll.services import wage_inputs as service
 router = APIRouter(prefix="/api/v1/payroll", tags=["Payroll wage inputs"])
 
 StatusName = Literal[WAGE_INPUT_STATUSES]  # type: ignore[valid-type]
+ImportStatusName = Literal[IMPORT_STATUSES]  # type: ignore[valid-type]
 CSV_HEADERS = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
 
 
@@ -116,12 +117,14 @@ def list_inputs(
     component_code: Optional[str] = Query(None, max_length=40),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
+    legal_entity_id: Optional[int] = Query(None, ge=1),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ):
     total, items = service.list_inputs(db, principal, status=status, employee_id=employee_id,
                                        pay_group_id=pay_group_id, period_start=period_start,
-                                       component_code=component_code, skip=skip, limit=limit)
+                                       component_code=component_code, skip=skip, limit=limit,
+                                       legal_entity_id=legal_entity_id)
     return {"total": total, "items": items}
 
 
@@ -205,6 +208,19 @@ async def import_inputs(request: Request, file: UploadFile = File(...), principa
         return 201, service.serialize_import(row)
 
     return idempotency.execute(db, principal, request, handler, body=body)
+
+
+@router.get("/wage-input-imports")
+def list_imports(
+    status: Optional[ImportStatusName] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    """Imports the caller may open: all of them with company-wide import access, otherwise their own (F-44)."""
+    total, items = service.list_imports(db, principal, status=status, skip=skip, limit=limit)
+    return {"total": total, "items": items}
 
 
 @router.get("/wage-input-imports/template")
