@@ -161,6 +161,128 @@ def test_e5_registry_and_platform_default_changes_leave_an_existing_tenant_uncha
 # ---------------------------------------------------------------------------
 # LEGACY_V1 by migration 0011 (existing tenants)
 # ---------------------------------------------------------------------------
+# Migration 0011 is a frozen copy of registry 2026.10.3 and is history: it is never edited. Changes made to the
+# starter policies since then are listed here, each with the data migration that brings stored rows up to date;
+# any other difference between 0011 and the current starter policies fails the test.
+OLD_OT_RATE_FORMULA = 'SUM_TAG_RATE("OT_BASE") / period.basis_days / emp.standard_hours_per_day'
+STARTER_CHANGES_SINCE_2026_10_3 = {
+    # F-61 (23 Oct): the default overtime rate converts each OT_BASE rate by its unit; migration 0029 (F-64).
+    ("OVERTIME_POLICY", "rate_formula"): (OLD_OT_RATE_FORMULA, 'SUM_TAG_HOURLY("OT_BASE")'),
+}
+
+
+def _migration_0029():
+    spec = importlib.util.spec_from_file_location(
+        "m0029", ROOT / "alembic" / "versions" / "0029_ot_rate_formula_default.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _frozen_2026_10_3(starters):
+    """The current starter policies with the listed later changes undone (what registry 2026.10.3 produced)."""
+    frozen = []
+    for p in starters:
+        fields = json.loads(json.dumps(dict(p.fields)))
+        for (ptype, field), (before, after) in STARTER_CHANGES_SINCE_2026_10_3.items():
+            if p.type == ptype:
+                assert fields[field] == after, (ptype, field)          # the change is still the current value
+                assert p.status == "DRAFT" and p.policy_hash is None  # no activated (hashed) policy changed
+                fields[field] = before
+        frozen.append(replace(p, fields=fields))
+    return frozen
+
+
+def test_starter_changes_since_2026_10_3_match_migration_0029():
+    m29 = _migration_0029()
+    before, after = STARTER_CHANGES_SINCE_2026_10_3[("OVERTIME_POLICY", "rate_formula")]
+    assert (m29.OLD_FORMULA, m29.NEW_FORMULA) == (before, after) and after == pt.DEFAULT_OT_RATE_FORMULA
+    assert m29.down_revision == "0028_task_assignee_paid"
+    for profile in ("STARTER_V1", "LEGACY_V1"):
+        ot = next(p for p in pt.starter_policies(profile) if p.type == "OVERTIME_POLICY")
+        assert ot.fields["rate_formula"] == after and ot.status == "DRAFT", profile
+
+
+def test_f64_migration_0029_updates_only_draft_overtime_policies_with_the_exact_old_default(app):
+    """Drafts holding exactly the old default text get the new default; a customised formula, an activated version
+    and another policy type are never touched. Idempotent, audited, and reversible."""
+    from app.database.db import system_engine
+
+    m29 = _migration_0029()
+    old, new = m29.OLD_FORMULA, m29.NEW_FORMULA
+    starter = signup_company(app, "Pre F-61 Starter Co")
+    legacy = signup_company(app, "Pre F-61 Legacy Co")
+    custom = signup_company(app, "Custom OT Co")
+    untouched = signup_company(app, "Post F-61 Co")
+
+    def ot_version(cid):
+        return _sql("SELECT v.id, v.status, v.fields FROM policy_versions v JOIN policies p ON p.id = v.policy_id "
+                    "WHERE p.company_id = :c AND p.type = 'OVERTIME_POLICY' ORDER BY v.id", c=cid)
+
+    def set_formula(version_id, formula):
+        _sql("UPDATE policy_versions SET fields = jsonb_set(fields, '{rate_formula}', to_jsonb(CAST(:f AS text))) "
+             "WHERE id = :v", f=formula, v=version_id)
+
+    # A STARTER_V1 tenant signed up before F-61 stored the old default in its draft.
+    (_v, status, fields), = ot_version(starter.company_id)
+    assert status == "DRAFT" and fields["rate_formula"] == new                # signup today stores the new default
+    set_formula(ot_version(starter.company_id)[0][0], old)
+    # A LEGACY_V1 tenant materialized by migration 0011 (its frozen literals hold the old default).
+    _make_legacy(legacy.company_id, {"overtime": "1.5"})
+    with system_engine.begin() as conn:
+        _migration().apply(conn)
+    (legacy_draft, status, fields), = ot_version(legacy.company_id)
+    assert status == "DRAFT" and fields["rate_formula"] == old and fields["buckets"][0]["multiplier"] == "1.5"
+    # Customised drafts (another formula; the old text with different spacing) and an ACTIVE version holding the
+    # exact old text (immutable: frozen into run snapshots by its hash).
+    custom_draft = ot_version(custom.company_id)[0][0]
+    set_formula(custom_draft, old.replace(" / ", "/"))
+    pid = _sql("INSERT INTO policies (company_id, type, name, status, created_at, updated_at) VALUES "
+               "(:c, 'OVERTIME_POLICY', 'Activated overtime', 'ACTIVE', now(), now()) RETURNING id",
+               c=custom.company_id)[0][0]
+    active = _sql("INSERT INTO policy_versions (company_id, policy_id, version, fields, effective_from, status, "
+                  "policy_hash, activated_at, created_at, updated_at) VALUES (:c, :p, 1, CAST(:f AS jsonb), "
+                  "'2026-01-01', 'ACTIVE', :h, now(), now(), now()) RETURNING id",
+                  c=custom.company_id, p=pid, f=json.dumps(dict(fields, rate_formula=old)), h="a" * 64)[0][0]
+    other_type = _sql("SELECT v.id, v.fields FROM policy_versions v JOIN policies p ON p.id = v.policy_id "
+                      "WHERE p.company_id = :c AND p.type = 'LATE_PENALTY_POLICY'", c=untouched.company_id)[0]
+    before_untouched = ot_version(untouched.company_id)
+    before_custom = ot_version(custom.company_id)
+
+    with system_engine.begin() as conn:
+        stats = m29.apply(conn)
+    starter_draft = ot_version(starter.company_id)[0][0]
+    assert stats == {
+        starter.company_id: {"policy_versions": [starter_draft], "from": old, "to": new},
+        legacy.company_id: {"policy_versions": [legacy_draft], "from": old, "to": new},
+    }
+    assert ot_version(starter.company_id)[0][2]["rate_formula"] == new
+    (_id, status, fields_after), = ot_version(legacy.company_id)
+    assert status == "DRAFT" and fields_after == dict(fields, rate_formula=new)  # only the formula changed
+    assert ot_version(custom.company_id) == before_custom                      # customised and ACTIVE unchanged
+    assert [r for r in before_custom if r[0] == active][0][2]["rate_formula"] == old
+    assert ot_version(untouched.company_id) == before_untouched
+    assert _sql("SELECT fields FROM policy_versions WHERE id = :v", v=other_type[0])[0][0] == other_type[1]
+    audit = _sql("SELECT action, actor_type, details FROM audit_logs WHERE company_id = :c "
+                 "AND details->>'migration' = :m", c=starter.company_id, m=m29.MARKER)
+    assert [(a, t, d["policy_versions"]) for a, t, d in audit] == [("POLICY_DEFAULT_UPDATED", "system", [starter_draft])]
+
+    with system_engine.begin() as conn:
+        assert m29.apply(conn) == {}                                           # idempotent
+
+    with system_engine.begin() as conn:
+        reverted = m29.revert(conn)
+    assert reverted == {starter.company_id: {"policy_versions": [starter_draft]},
+                        legacy.company_id: {"policy_versions": [legacy_draft]}}
+    assert ot_version(starter.company_id)[0][2]["rate_formula"] == old
+    assert ot_version(legacy.company_id)[0][2] == fields
+    assert ot_version(custom.company_id) == before_custom
+    with system_engine.begin() as conn:
+        assert m29.revert(conn) == {}                                          # nothing applied since the revert
+        again = m29.apply(conn)
+    assert set(again) == {starter.company_id, legacy.company_id}
+
+
 def test_migration_literals_match_registry_2026_10_3():
     m = _migration()
     assert reg.REGISTRY_VERSION == "2026.10.3"
@@ -168,7 +290,7 @@ def test_migration_literals_match_registry_2026_10_3():
     assert not any(r.locked for r in reg.profile_rows("LEGACY_V1", leave_types=()))
     starters = pt.starter_policies("LEGACY_V1")
     assert [(p["type"], p["name"], p["status"], p["fields"], p["policy_hash"], p["note"]) for p in m.LEGACY_POLICIES] \
-        == [(p.type, p.name, p.status, dict(p.fields), p.policy_hash, p.note) for p in starters]
+        == [(p.type, p.name, p.status, p.fields, p.policy_hash, p.note) for p in _frozen_2026_10_3(starters)]
     assert m.LEGACY_VALUES["payroll.migration.legacy_review_acknowledged"] is None
     for legacy in ("1.5", "2", "1.25", "3.0"):
         valid, multiplier = m._legacy_multiplier(json.dumps(float(legacy)))

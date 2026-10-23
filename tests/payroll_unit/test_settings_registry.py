@@ -94,9 +94,15 @@ def zz_pack():
             help="Read-only rate from the ZZ pack.", statutory_scheme="ZZ.fund",
         ),
     ]
-    register_pack_settings(defs)
-    yield defs
+    # ZZ keys registered earlier in the process (the real test-only ZZ pack) are set aside and restored after.
+    before = [REGISTRY[key] for key in sr.pack_setting_keys() if key.startswith("payroll.statutory.ZZ.")]
     unregister_pack_settings("ZZ")
+    register_pack_settings(defs)
+    try:
+        yield defs
+    finally:
+        unregister_pack_settings("ZZ")
+        register_pack_settings(before)
 
 
 # --------------------------------------------------------------------------- catalogue (3.1 §4, §5)

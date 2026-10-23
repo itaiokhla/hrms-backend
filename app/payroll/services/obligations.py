@@ -45,6 +45,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core import clock
 from app.core.errors import AppError, bad_request, conflict, not_found
 from app.core.principal import Principal
 from app.models.pay_runs import PayrollRun, PayrollRunEmployee
@@ -761,7 +762,7 @@ def request_reissue(db: Session, principal: Principal, instruction_id: int, reas
     if _usable_account(db, row) is None:
         raise conflict("Fix the payee's bank details first: no usable bank account is on file.",
                        "BANK_ACCOUNT_NOT_USABLE")
-    if reissue_requires_approval(db, row.company_id, row.legal_entity_id, events.now().date()):
+    if reissue_requires_approval(db, row.company_id, row.legal_entity_id, clock.company_today(db, row.company_id)):
         if row.reissue_request:
             raise conflict("A reissue of this payment is already waiting for approval.", "REISSUE_PENDING")
         row.reissue_request = {"requested_by_user_id": principal.user_id, "at": events.now().isoformat(),

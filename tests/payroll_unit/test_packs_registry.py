@@ -25,6 +25,8 @@ from app.payroll.settings_registry import (
     Level,
     SettingValidationError,
     cross_validate,
+    pack_setting_keys,
+    register_pack_settings,
     unregister_pack_settings,
     validate_write,
 )
@@ -127,10 +129,22 @@ def test_country_capability():
 
 @pytest.fixture
 def pack_settings():
-    added = packs.register_settings(environment="test")
-    yield added
-    for code in ("ZZ", "IN", "AE", "US"):
+    """The keys registered by ``packs.register_settings`` on a registry without pack settings.
+
+    The registry is process-global: the API start-up hook (app.main) and DB tests that run earlier in the same
+    process (e.g. the settings inheritance test registers ZZ) may already hold pack keys, so they are set aside
+    first and restored afterwards, leaving the registry exactly as it was found."""
+    before = [REGISTRY[key] for key in pack_setting_keys()]
+    for code in {key.split(".")[2] for key in pack_setting_keys()}:
         unregister_pack_settings(code)
+    assert pack_setting_keys() == ()
+    try:
+        yield packs.register_settings(environment="test")
+    finally:
+        for code in {key.split(".")[2] for key in pack_setting_keys()}:
+            unregister_pack_settings(code)
+        register_pack_settings(before)
+        assert pack_setting_keys() == tuple(sorted(d.key for d in before))
 
 
 def test_register_settings_is_idempotent(pack_settings):

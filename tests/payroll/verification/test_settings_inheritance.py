@@ -291,33 +291,39 @@ def test_platform_and_partner_defaults_apply_until_a_tenant_scope_overrides_them
 def test_statutory_locks_and_legal_limits_of_a_verified_pack_cannot_be_overridden(settings_world):
     from app.payroll import packs
     from app.payroll.packs.zz_test import PENSION
+    from app.payroll.settings_registry import unregister_pack_settings
 
     # The fictional ZZ pack exists only in tests: register its employer choices (idempotent), as the product's
-    # pack tests do; the application registers the real packs at start-up.
-    packs.register_settings(["ZZ"], environment="test")
-    w = settings_world["alpha"]
-    admin = w["admin"]
-    # ZZ is a test-only country code: the entity is created through the API and its country set by the operator
-    # path, exactly as the product's own pack tests do (tests/payroll/test_reports.py make_entity).
-    entity = make_entity(admin, "VZ", country="DE", currency="EUR", tz="Europe/Berlin")
-    make_branch(admin, entity, "ZED")
-    sql("UPDATE legal_entities SET country_code = 'ZZ' WHERE id = :e", e=entity)
-    pension = PENSION.switch_key
-    found = resolve(admin, pension, legal_entity_id=entity)
-    assert found["value"] is True and found["legal_limit"], found      # locked ON by the verified pack
-    for key, value, code in ((pension, False, "STATUTORY_LOCK"),              # V-10: mandatory scheme OFF
-                             ("payroll.late_penalty.enabled", True, "STATUTORY_LOCK"),   # pack forbids penalties
-                             ("payroll.deductions.min_net_pay_percent", "40", "LEGAL_MINIMUM")):  # V-16 floor 50
-        r = admin.put(f"{PAY}/settings/values", json={"changes": [{
-            "key": key, "value": value, "scope_type": "LEGAL_ENTITY", "scope_id": entity,
-            "row_version": row_version(admin, key, "LEGAL_ENTITY", entity)}]})
-        assert r.status_code == 400 and code_of(r) == code, (key, r.text)
-    put_setting(admin, "payroll.deductions.min_net_pay_percent", "60", "LEGAL_ENTITY", entity)
-    late = resolve(admin, "payroll.late_penalty.enabled", legal_entity_id=entity)
-    assert late["value"] is False and late["legal_limit"]
-    # The GB entity has no pack: the same key is freely settable there and carries no legal limit.
-    gb = resolve(admin, "payroll.late_penalty.enabled", legal_entity_id=w["entities"]["VA1"])
-    assert gb["legal_limit"] == []
+    # pack tests do; the application registers the real packs at start-up. The settings registry is
+    # process-global, so the keys this test added are removed again (they leaked into later unit tests, F-64).
+    added = packs.register_settings(["ZZ"], environment="test")
+    try:
+        w = settings_world["alpha"]
+        admin = w["admin"]
+        # ZZ is a test-only country code: the entity is created through the API and its country set by the operator
+        # path, exactly as the product's own pack tests do (tests/payroll/test_reports.py make_entity).
+        entity = make_entity(admin, "VZ", country="DE", currency="EUR", tz="Europe/Berlin")
+        make_branch(admin, entity, "ZED")
+        sql("UPDATE legal_entities SET country_code = 'ZZ' WHERE id = :e", e=entity)
+        pension = PENSION.switch_key
+        found = resolve(admin, pension, legal_entity_id=entity)
+        assert found["value"] is True and found["legal_limit"], found      # locked ON by the verified pack
+        for key, value, code in ((pension, False, "STATUTORY_LOCK"),              # V-10: mandatory scheme OFF
+                                 ("payroll.late_penalty.enabled", True, "STATUTORY_LOCK"),   # pack forbids penalties
+                                 ("payroll.deductions.min_net_pay_percent", "40", "LEGAL_MINIMUM")):  # V-16 floor 50
+            r = admin.put(f"{PAY}/settings/values", json={"changes": [{
+                "key": key, "value": value, "scope_type": "LEGAL_ENTITY", "scope_id": entity,
+                "row_version": row_version(admin, key, "LEGAL_ENTITY", entity)}]})
+            assert r.status_code == 400 and code_of(r) == code, (key, r.text)
+        put_setting(admin, "payroll.deductions.min_net_pay_percent", "60", "LEGAL_ENTITY", entity)
+        late = resolve(admin, "payroll.late_penalty.enabled", legal_entity_id=entity)
+        assert late["value"] is False and late["legal_limit"]
+        # The GB entity has no pack: the same key is freely settable there and carries no legal limit.
+        gb = resolve(admin, "payroll.late_penalty.enabled", legal_entity_id=w["entities"]["VA1"])
+        assert gb["legal_limit"] == []
+    finally:
+        if added:
+            unregister_pack_settings("ZZ")
 
 
 # ---------------------------------------------------------------------------

@@ -288,3 +288,40 @@ def test_batch_balances_per_batch(pay):
     assert item["batch_id"] == batch["id"]
     assert item["intended"]["amount"] == "300.00" and item["submitted"]["amount"] == "300.00"
     assert item["settled"]["amount"] == "0.00" and item["outstanding"]["amount"] == "300.00"
+
+
+def test_f64_payment_settings_effective_from_the_company_date_apply_while_the_utc_date_is_still_yesterday(
+        pay, monkeypatch):
+    """Settings are written effective from the company's local date (the settings API's "today"). The batch
+    proposal, dual control and separation of duties must read them on that same date: at 01:30 in Kolkata the UTC
+    date is still the day before, and a value written effective today used to be ignored until 05:30 (F-64:
+    batch_max_items was read as the 1000 default and the dual control as ON)."""
+    import json
+    from datetime import datetime, time, timedelta, timezone
+
+    import pytz
+
+    from app.core import clock
+
+    cid, le = pay["cid"], pay["le"]
+    run_id = finalized_run(pay, {"Emma": "100.00", "Ivan": "200.00", "Zara": "300.00"})
+    kolkata = pytz.timezone("Asia/Kolkata")
+    sql("UPDATE companies SET timezone = 'Asia/Kolkata' WHERE id = :c", c=cid)
+    local_day = datetime.now(kolkata).date() + timedelta(days=1)
+    instant = kolkata.localize(datetime.combine(local_day, time(1, 30))).astimezone(timezone.utc)
+    assert instant.date() == local_day - timedelta(days=1)
+    monkeypatch.setattr(clock, "utcnow", lambda: instant)
+    # batch_max_items is an entity setting; the dual control is locked at TENANT by the starter profile, so its
+    # tenant row is replaced by one effective from the local day (the registry default ON applies before it).
+    for key, value, scope, scope_id in (("payroll.payments.batch_max_items", 1, "LEGAL_ENTITY", le),
+                                        ("payroll.approval.payment_dual_control", False, "TENANT", None)):
+        sql("DELETE FROM setting_values WHERE company_id = :c AND key = :k AND scope_type = :s", c=cid, k=key, s=scope)
+        sql("INSERT INTO setting_values (company_id, key, scope_type, scope_id, value, locked, effective_from, status, "
+            "row_version, source, created_at, updated_at) VALUES (:c, :k, :s, :sid, CAST(:v AS jsonb), "
+            "false, :d, 'ACTIVE', 1, 'ADMIN', now(), now())", c=cid, k=key, s=scope, sid=scope_id,
+            v=json.dumps(value), d=local_day)
+
+    proposal = ok(pay["pete"].post(f"{BATCHES}/proposal", json={"run_id": run_id}))
+    assert [b["item_count"] for b in proposal["batches"]] == [1, 1, 1]
+    first, _second, _third = ok(pay["pete"].post(BATCHES, json={"run_id": run_id}), 201)["batches"]
+    assert ok(pay["pete"].post(f"{BATCHES}/{first['id']}/approve"))["status"] == "APPROVED"  # dual control OFF today

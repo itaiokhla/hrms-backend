@@ -206,6 +206,12 @@ def transition(db: Session, principal: Optional[Principal], batch: PaymentBatch 
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
+def _today(db: Session, company_id: int) -> date:
+    """The company's local date: settings are written effective from it (``settings.company_today``), so a value
+    set today must apply today here too, also in the hours where the UTC date is still yesterday (F-64)."""
+    return clock.company_today(db, company_id)
+
+
 def _resolve(db: Session, company_id: int, key: str, legal_entity_id: int, on: date, *, strict: bool = True) -> Any:
     try:
         return settings_engine.resolve(db, company_id, key, on=on, legal_entity_id=legal_entity_id).value
@@ -216,7 +222,8 @@ def _resolve(db: Session, company_id: int, key: str, legal_entity_id: int, on: d
 
 
 def dual_control_on(db: Session, company_id: int, legal_entity_id: int) -> bool:
-    return bool(_resolve(db, company_id, "payroll.approval.payment_dual_control", legal_entity_id, events.now().date()))
+    return bool(_resolve(db, company_id, "payroll.approval.payment_dual_control", legal_entity_id,
+                         _today(db, company_id)))
 
 
 def _dual_control_ok(db: Session, principal: Principal, batch: PaymentBatch) -> bool:
@@ -227,7 +234,7 @@ def _dual_control_ok(db: Session, principal: Principal, batch: PaymentBatch) -> 
 
 def separation_of_duties_on(db: Session, company_id: int, legal_entity_id: int) -> bool:
     """``payroll.approval.separation_of_duties`` today; ON when unreadable (fails closed, like run approvals)."""
-    return _resolve(db, company_id, SOD_KEY, legal_entity_id, events.now().date(), strict=False) is not False
+    return _resolve(db, company_id, SOD_KEY, legal_entity_id, _today(db, company_id), strict=False) is not False
 
 
 def _require_separate_releaser(db: Session, principal: Principal, batch: PaymentBatch) -> None:
@@ -284,7 +291,7 @@ def _chosen_funding(db: Session, principal: Principal, run: PayrollRun, funding_
     another entity's account is unknown (404)."""
     if funding_account_id is None:
         configured = _resolve(db, run.company_id, "payroll.payments.funding_account_id", run.legal_entity_id,
-                              events.now().date(), strict=False)
+                              _today(db, run.company_id), strict=False)
         if not isinstance(configured, int) or isinstance(configured, bool):
             return None
         funding_account_id = configured
@@ -320,7 +327,7 @@ def _exclusion(row: PaymentInstruction, reason: str) -> dict:
 
 def _plan(db: Session, principal: Principal, run: PayrollRun, *, funding_account_id: Optional[int],
           method: Optional[str]) -> Tuple[List[Group], List[dict], List[PaymentInstruction]]:
-    on = events.now().date()
+    on = _today(db, run.company_id)
     method = method or _resolve(db, run.company_id, "payroll.payments.default_method", run.legal_entity_id, on)
     if method not in OFFERED_METHODS:
         raise conflict("Manual payment batches are not offered; record a payment made outside the system with "
