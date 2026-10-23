@@ -146,6 +146,26 @@ def test_an_updated_session_is_reported_as_updated_and_relocking_clears_the_diff
     assert {"source": f"attendance:{session_id}", "type": "attendance", "change": "UPDATED"} in found[ivan(w)]
 
 
+def test_ec_att_05_a_holiday_declared_after_lock_reaches_every_locked_employee(locked_world):
+    w = locked_world
+    day = w["start"] + timedelta(days=6)
+    r = w["acme"].post("/api/v1/holidays", json={"name": "Founders Day", "date": day.isoformat()})
+    assert r.status_code in (200, 201), r.text
+    holiday_id = r.json()["id"]
+    found = detect(w["cid"], w["run"]["id"])                         # an employee-less log row reaches everyone
+    assert set(found) == {emma(w), ivan(w)}
+    for items in found.values():
+        assert {"source": f"holiday:{holiday_id}", "type": "holiday", "change": "ADDED"} in items
+    outcome = match(w["cid"])
+    assert outcome["marked"] == [{"run_id": w["run"]["id"], "employees": sorted([emma(w), ivan(w)])}]
+    stale, reasons = stale_of(w["run"]["id"])
+    assert stale and "holiday" in reasons[-1]["reason"] and reasons[-1]["employees"] == 2
+    # The holiday itself and the day ledgers it changed; nothing else (compensation, policies) is reported.
+    assert {c["type"] for c in reasons[-1]["changes"]} == {"holiday", "day_ledger"}
+    assert {(c["employee_id"], c["source"]) for c in reasons[-1]["changes"] if c["type"] == "holiday"} == {
+        (emma(w), f"holiday:{holiday_id}"), (ivan(w), f"holiday:{holiday_id}")}
+
+
 def test_ec_cmp_13_revision_approved_after_lock_marks_the_run_stale(locked_world):
     w = locked_world
     middle = w["start"] + timedelta(days=15)

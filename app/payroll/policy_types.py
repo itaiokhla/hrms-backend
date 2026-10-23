@@ -545,7 +545,11 @@ class HolidayPayPolicy(PolicyFields):
 # --------------------------------------------------------------------------- 3.1 §5.5 overtime
 
 OT_DAY_TYPES: Final = ("WORKDAY", "WEEKLY_OFF", "HOLIDAY")
-DEFAULT_OT_RATE_FORMULA: Final = 'SUM_TAG_RATE("OT_BASE") / period.basis_days / emp.standard_hours_per_day'
+# SUM_TAG_HOURLY converts each OT_BASE rate by its unit: period amounts ÷ period.basis_days ÷
+# emp.standard_hours_per_day (for a salaried employee exactly the 3.1 §5.5 formula
+# SUM_TAG_RATE("OT_BASE") / period.basis_days / emp.standard_hours_per_day), per-day rates ÷ standard hours and
+# per-hour (RATE_X_UNITS per hour) rates as they are, so an hourly worker's 48.00/h is not divided again.
+DEFAULT_OT_RATE_FORMULA: Final = 'SUM_TAG_HOURLY("OT_BASE")'
 _SIXTY = Decimal(60)
 
 
@@ -593,7 +597,9 @@ class OvertimePolicy(PolicyFields):
         help_="Multiplier tiers per day type, for example the first 2 hours at 1.5x, then 2x. Each day type needs a "
         "tier starting after 0 hours.", factory=_blank_buckets)
     rate_formula: Formula = _f(
-        DEFAULT_OT_RATE_FORMULA, "Hourly base rate from full-period rates, so LOP does not lower it.")
+        DEFAULT_OT_RATE_FORMULA, "Hourly base rate from full-period rates, so LOP does not lower it. "
+        "SUM_TAG_HOURLY divides period amounts by the basis days and standard hours, per-day rates by standard "
+        "hours, and uses per-hour rates as they are.")
     caps: OvertimeCaps = _f(help_="Caps per day, week, month and quarter, in hours.", factory=OvertimeCaps)
     cap_action: Literal["EXCEPTION", "TRUNCATE"] = _f("EXCEPTION", "What happens above a cap.")
     cross_midnight: Literal["SHIFT_START_DATE", "SPLIT_AT_MIDNIGHT"] = _f(

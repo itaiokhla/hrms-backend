@@ -1,5 +1,6 @@
 """Payment batches: proposal, dual control, bank files, release and the run's payment states (3.7 §7.1-§7.2,
-§8.2-§8.5; 3.5 §5.9; decision I-17; EC-PAY-01, EC-PAY-03, EC-PAY-05, EC-PAY-13, EC-PAY-18, EC-BNK-03).
+§8.2-§8.5; 3.5 §5.9; decision I-17; EC-PAY-01, EC-PAY-03, EC-PAY-05, EC-PAY-10, EC-PAY-13, EC-PAY-18,
+EC-PAY-20, EC-BNK-03).
 
 * ``transition(db, principal, batch, action, ...)`` is the ONLY writer of ``payment_batches.status``: row
   lock, optimistic ``row_version`` (409 ROW_VERSION_CONFLICT), the ``state_machines.PAYMENT_BATCH`` table
@@ -8,9 +9,16 @@
 * Proposal (3.7 §8.3): the READY instructions of a finalized run, grouped by funding account, method and
   payout currency and split at ``payroll.payments.batch_max_items``, with an exclusions report naming
   why every other instruction is left out (missing or unverified account, hold, cooling-off, no funding
-  account ...). Payroll calculation is never affected.
+  account ...). Payroll calculation is never affected. The value date (default: the pay date, today for a
+  late run) rolls off weekends and bank holidays of the run's banking calendar, with the warnings
+  VALUE_DATE_SHIFTED / VALUE_DATE_AFTER_PAY_DATE on the batch (EC-PAY-10).
+* EC-PAY-20: a batched payment whose FX quote expired blocks file generation and release (409
+  FX_QUOTE_EXPIRED); cancelling the batch re-quotes it on the next proposal, under a new approval.
 * Dual control (3.7 §8.4): with ``payroll.approval.payment_dual_control`` the preparer can neither
-  approve nor release; releasing needs a fresh step-up and a signatory of the funding account.
+  approve nor release; releasing needs a fresh step-up and a signatory of the funding account. With
+  ``payroll.approval.separation_of_duties`` ON (the default, 3.1 "preparer ≠ approver ≠ payment releaser")
+  the batch's approver cannot release it either, nor can its preparer when dual control is OFF (403
+  SEPARATION_OF_DUTIES).
 * Bank files (3.7 §7.1): only OFFERED formats (GENERIC_CSV). The bytes are deterministic and never
   stored (they hold full account numbers): the SHA-256 is stored and every download regenerates the
   file from the sealed beneficiary snapshots and must reproduce the hash exactly, otherwise it fails
@@ -23,6 +31,11 @@
   labelled SANDBOX everywhere.
 * Run states: the first approved batch moves a FINALIZED run to PAYMENT_READY, the first release to
   SUBMITTED (``runs.transition``); settlement states follow from evidence (``payment_events.sync_run``).
+  Every release re-checks the run's payslip publication at once (ON_PAYMENT_SUBMITTED, 3.6 §7).
+* Holds placed after batching (EC-RUN-13 payment hold on the run employee, a risk hold on the snapshot
+  account, a run reversal holding the instruction) block file generation, the download of a file not yet
+  submitted and the release (409 PAYMENTS_HELD); cancelling the batch frees every payment of it, the held
+  ones stay held and the next proposal excludes them with their reason.
 * EC-BNK-03: bank details changed after the snapshot are reported on the batch; finance either proceeds
   with the snapshot (recorded) or cancels the batch and recreates the instructions (new approval).
 
@@ -32,7 +45,7 @@ Services take (db, principal, ...) and never commit.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -42,13 +55,15 @@ from sqlalchemy.orm import Session
 from app.core import clock
 from app.core.errors import AppError, bad_request, conflict, forbidden, not_found
 from app.core.principal import Principal
+from app.models.org import LegalEntity
+from app.models.pay_org import PayGroup
 from app.models.pay_runs import PayrollRun
-from app.models.payment_flows import PaymentBatch, PaymentFile, PaymentInstruction
+from app.models.payment_flows import PaymentBatch, PaymentEvent, PaymentFile, PaymentInstruction
 from app.models.payments import FundingAccount
 from app.payroll import state_machines as sm
+from app.payroll.banking import business_days
 from app.payroll.banking import files as bank_files
-from app.payroll.services import step_up
-from app.payroll.services import obligations
+from app.payroll.services import funding_accounts, obligations, step_up
 from app.payroll.services import payment_adapters as adapters
 from app.payroll.services import payment_events as events
 from app.payroll.services import settings as settings_engine
@@ -58,6 +73,7 @@ FILE_DOWNLOADED = "PAYMENT_FILE_DOWNLOADED"
 BANK_CHANGE_PROCEEDED = "BANK_CHANGE_PROCEEDED"
 BANK_CHANGE_RECREATED = "BANK_CHANGE_RECREATED"
 SANDBOX_SUBMITTED = "SANDBOX_BATCH_SUBMITTED"
+SOD_KEY = "payroll.approval.separation_of_duties"
 BATCHABLE_RUN_STATES = ("FINALIZED", "PAYMENT_READY", "SUBMITTED", "PARTIALLY_PAID", "PAID", "RECONCILED")
 OFFERED_METHODS = ("BANK_FILE", "API")
 EXCLUSION_MESSAGES = {
@@ -207,6 +223,27 @@ def _dual_control_ok(db: Session, principal: Principal, batch: PaymentBatch) -> 
     """DUAL_CONTROL: the preparer neither approves nor releases (when the setting is ON)."""
     return principal.user_id != batch.prepared_by_user_id or not dual_control_on(
         db, batch.company_id, batch.legal_entity_id)
+
+
+def separation_of_duties_on(db: Session, company_id: int, legal_entity_id: int) -> bool:
+    """``payroll.approval.separation_of_duties`` today; ON when unreadable (fails closed, like run approvals)."""
+    return _resolve(db, company_id, SOD_KEY, legal_entity_id, events.now().date(), strict=False) is not False
+
+
+def _require_separate_releaser(db: Session, principal: Principal, batch: PaymentBatch) -> None:
+    """Separation of duties (3.1 §5.14: preparer ≠ approver ≠ payment releaser): when ON, whoever approved
+    the batch cannot release it (403 SEPARATION_OF_DUTIES). The preparer is kept out by DUAL_CONTROL while
+    payment dual control is ON (403 DUAL_CONTROL); with it OFF, separation of duties still keeps the preparer
+    from releasing (403 SEPARATION_OF_DUTIES)."""
+    uid = principal.user_id
+    approver = batch.approved_by_user_id is not None and uid == batch.approved_by_user_id
+    preparer = uid == batch.prepared_by_user_id and not dual_control_on(db, batch.company_id, batch.legal_entity_id)
+    if not (approver or preparer):
+        return
+    if separation_of_duties_on(db, batch.company_id, batch.legal_entity_id):
+        role = "approved" if approver else "prepared"
+        raise AppError(403, f"You {role} this payment batch, so someone else must release it (separation of "
+                            "duties).", "SEPARATION_OF_DUTIES")
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +396,34 @@ def propose(db: Session, principal: Principal, run_id: int, *, funding_account_i
     obligations.refresh_readiness(db, principal, run.id)
     groups, exclusions, candidates = _plan(db, principal, run, funding_account_id=funding_account_id, method=method)
     return {"run_id": run.id, "batches": [_group_json(g) for g in groups], "exclusions": exclusions,
-            "bank_changes": obligations.bank_changes(db, candidates)}
+            "bank_changes": obligations.bank_changes(db, candidates),
+            "value_date": _value_date_json(value_date_for(db, run))}
+
+
+def value_date_for(db: Session, run: PayrollRun, requested: Optional[date] = None) -> business_days.ValueDate:
+    """The batch value date (EC-PAY-10): the requested date (default: the period's pay date, or today for a
+    late run) rolled off weekends and bank holidays of the run's banking calendar to the next business
+    day, with the warnings VALUE_DATE_SHIFTED and VALUE_DATE_AFTER_PAY_DATE (the money arrives after the
+    pay date)."""
+    from app.payroll.services import calendars, runs
+
+    period = runs.period_of(db, run)
+    wanted = requested or max(period.pay_date, clock.company_today(db, run.company_id))
+    group = db.query(PayGroup).filter(PayGroup.company_id == run.company_id, PayGroup.id == run.pay_group_id).first()
+    entity = db.query(LegalEntity).filter(LegalEntity.company_id == run.company_id,
+                                          LegalEntity.id == run.legal_entity_id).first()
+    weekend, holidays = business_days.DEFAULT_WEEKEND, frozenset()
+    if group is not None and entity is not None:
+        start = min(wanted, period.pay_date)
+        banking = calendars.banking_calendar(db, group, entity, start, max(wanted, period.pay_date) + timedelta(days=40))
+        weekend, holidays = banking.weekend, banking.holidays
+    return business_days.payment_value_date(wanted, period.pay_date,
+                                            business_days.BusinessCalendar(weekend, holidays))
+
+
+def _value_date_json(value: business_days.ValueDate) -> dict:
+    return {"requested": value.requested.isoformat(), "value_date": value.value_date.isoformat(),
+            "shifted": value.shifted, "warnings": list(value.warnings)}
 
 
 def _reference(db: Session) -> Tuple[int, str]:
@@ -370,16 +434,16 @@ def _reference(db: Session) -> Tuple[int, str]:
 def create_batches(db: Session, principal: Principal, run_id: int, *, funding_account_id: Optional[int] = None,
                    method: Optional[str] = None, value_date: Optional[date] = None) -> dict:
     """Create the proposed batches and submit them for approval (instructions READY -> APPROVAL_PENDING)."""
-    from app.payroll.services import runs
-
     run = _run_for(db, principal, run_id, lock=True)
+    if value_date is not None and value_date < clock.company_today(db, run.company_id):
+        raise bad_request("The value date is in the past.", "VALUE_DATE_IN_PAST")
     obligations.refresh_readiness(db, principal, run.id)
     groups, exclusions, candidates = _plan(db, principal, run, funding_account_id=funding_account_id, method=method)
     if not groups:
         raise AppError(409, "No payment of the run is ready to batch; see the exclusions report.",
                        "NOTHING_TO_BATCH", headers=None)
-    period = runs.period_of(db, run)
-    when = value_date or period.pay_date
+    value = value_date_for(db, run, value_date)
+    when = value.value_date
     created = []
     for group in groups:
         batch_id, reference = _reference(db)
@@ -389,7 +453,8 @@ def create_batches(db: Session, principal: Principal, run_id: int, *, funding_ac
             file_format=group.file_format, adapter=group.adapter, currency=group.currency, status="DRAFT",
             item_count=len(group.rows), total_amount=group.total,
             totals={group.currency: str(group.total)}, value_date=when, prepared_by_user_id=principal.user_id,
-            details={"exclusions": exclusions, "sandbox": group.adapter == adapters.SANDBOX}, row_version=1,
+            details={"exclusions": exclusions, "sandbox": group.adapter == adapters.SANDBOX,
+                     "value_date": _value_date_json(value)}, row_version=1,
         )
         db.add(batch)
         db.flush()
@@ -409,14 +474,75 @@ def create_batches(db: Session, principal: Principal, run_id: int, *, funding_ac
 # Approval, rejection, cancellation
 # ---------------------------------------------------------------------------
 def _release_instructions(db: Session, batch: PaymentBatch, reason: str) -> List[PaymentInstruction]:
-    """Unsent instructions leave a rejected or cancelled batch and are READY again for another one."""
+    """Unsent instructions leave a rejected or cancelled batch and are READY again for another one. A payment
+    held while it was batched (a run reversal) leaves the batch too, still held, so it never stays attached
+    to a cancelled batch (its status is unchanged: only the batch link is cleared, with a history event)."""
     released = []
     for row in batch_instructions(db, batch):
         if row.status in ("APPROVAL_PENDING", "APPROVED", "QUEUED"):
             released.append(events.transition(db, None, row, "RELEASE_FROM_BATCH", system=True, reason=reason,
                                               updates={"batch_id": None, "funding_account_id": None},
                                               details={"batch_id": batch.id}))
+        elif row.status == "ON_HOLD":
+            held = events.load_instruction(db, row.company_id, row.id, lock=True)
+            held.batch_id, held.funding_account_id = None, None
+            held.row_version += 1
+            db.add(PaymentEvent(company_id=held.company_id, instruction_id=held.id, event_status="RELEASED_FROM_BATCH",
+                                outcome="RECORDED", from_status=held.status, to_status=held.status, source="SYSTEM",
+                                details={"batch_id": batch.id, "reason": reason}, at=events.now()))
+            db.flush()
     return released
+
+
+# ---------------------------------------------------------------------------
+# Holds placed after batching (EC-RUN-13, EC-BNK risk holds, run reversals)
+# ---------------------------------------------------------------------------
+UNSENT_IN_BATCH = ("APPROVAL_PENDING", "APPROVED", "QUEUED")
+
+
+def held_payments(db: Session, batch: PaymentBatch) -> List[dict]:
+    """Payments of an unsent batch that must not leave through it: an instruction held after it was batched
+    (a run reversal), a payment hold placed on the run employee after batching (EC-RUN-13, allowed while the
+    run is FINALIZED or PAYMENT_READY) or a risk hold placed on the snapshot account (duplicate fingerprint,
+    security review). The file and the release would otherwise pay them."""
+    from app.models.pay_runs import PayrollRunEmployee
+    from app.models.payment_flows import PaymentObligation
+    from app.models.payments import BankAccount
+
+    rows = batch_instructions(db, batch)
+    blocked: List[dict] = []
+    for row in rows:
+        if row.status == "ON_HOLD":
+            blocked.append({"instruction_id": row.id, "reference": row.reference,
+                            "reason": row.status_reason or "ON_HOLD"})
+    live = [r for r in rows if r.status in UNSENT_IN_BATCH]
+    if live:
+        held_rows = {o for (o,) in db.query(PaymentObligation.id).join(
+            PayrollRunEmployee, (PayrollRunEmployee.company_id == PaymentObligation.company_id)
+            & (PayrollRunEmployee.id == PaymentObligation.run_employee_id)).filter(
+            PaymentObligation.company_id == batch.company_id,
+            PaymentObligation.id.in_(sorted({r.obligation_id for r in live})),
+            PayrollRunEmployee.hold_type == "PAYMENT")}
+        account_ids = sorted({r.bank_account_id for r in live if r.bank_account_id is not None})
+        risky = {a for (a,) in db.query(BankAccount.id).filter(
+            BankAccount.company_id == batch.company_id, BankAccount.id.in_(account_ids),
+            BankAccount.payment_hold.is_(True))} if account_ids else set()
+        for row in live:
+            if row.obligation_id in held_rows:
+                blocked.append({"instruction_id": row.id, "reference": row.reference, "reason": "EMPLOYEE_HOLD"})
+            elif row.bank_account_id in risky:
+                blocked.append({"instruction_id": row.id, "reference": row.reference, "reason": "ACCOUNT_REVIEW"})
+    return blocked
+
+
+def require_nothing_held(db: Session, batch: PaymentBatch) -> None:
+    """409 PAYMENTS_HELD when a payment of the batch was held after batching: cancel the batch (the payments
+    leave it), then batch again; the held payments are excluded with their reason."""
+    blocked = held_payments(db, batch)
+    if blocked:
+        names = ", ".join(f"{b['reference'] or b['instruction_id']} ({b['reason']})" for b in blocked[:5])
+        raise conflict(f"Payments of this batch were held after it was prepared: {names}. Cancel the batch and "
+                       "batch the payments again.", "PAYMENTS_HELD")
 
 
 def approve(db: Session, principal: Principal, batch_id: int, *, expected_version: Optional[int] = None) -> dict:
@@ -491,6 +617,16 @@ def render_file(db: Session, batch: PaymentBatch, *, expected_sha256: Optional[s
         raise conflict(exc.message, exc.code)
 
 
+def require_fresh_quotes(db: Session, batch: PaymentBatch) -> None:
+    """EC-PAY-20: an approved payment whose FX quote expired is never paid at the stale rate; the batch is
+    cancelled, the payments are re-quoted on the next proposal and approved again (409 FX_QUOTE_EXPIRED)."""
+    stale = [r.reference or str(r.id) for r in batch_instructions(db, batch)
+             if r.status in ("APPROVAL_PENDING", "APPROVED", "QUEUED") and obligations.fx_quote_expired(db, r)]
+    if stale:
+        raise conflict(f"The exchange-rate quote of {', '.join(stale[:5])} expired: cancel the batch so the payments "
+                       "are re-quoted and approved again.", "FX_QUOTE_EXPIRED")
+
+
 def generate_file(db: Session, principal: Principal, batch_id: int, *, expected_version: Optional[int] = None) -> dict:
     """Generate the approved batch's file: SHA-256 stored, instructions QUEUED (never further, EC-PAY-01)."""
     batch = get_batch_for(db, principal, batch_id, PREPARE, lock=True)
@@ -498,6 +634,8 @@ def generate_file(db: Session, principal: Principal, batch_id: int, *, expected_
         raise conflict("Only bank-file batches have a file.", "NOT_A_FILE_BATCH")
     if batch.status != "APPROVED":
         transition(db, principal, batch, "GENERATE_FILE", expected_version=expected_version)  # refuses: 409
+    require_nothing_held(db, batch)
+    require_fresh_quotes(db, batch)
     file = render_file(db, batch)
     batch = transition(db, principal, batch, "GENERATE_FILE", expected_version=expected_version,
                        details={"sha256": file.sha256, "record_count": file.record_count})
@@ -521,6 +659,10 @@ def download_file(db: Session, principal: Principal, batch_id: int) -> Tuple[str
     file = _file_of(db, batch)
     if file is None:
         raise not_found("Payment file")
+    if batch.status == "CANCELLED":
+        raise conflict("The batch was cancelled; its file is no longer available.", "BATCH_CANCELLED")
+    if batch.status == "FILE_GENERATED":  # not uploaded yet: a payment held since must not be handed out
+        require_nothing_held(db, batch)
     regenerated = render_file(db, batch, expected_sha256=file.sha256)
     file.download_count += 1
     file.last_downloaded_at = events.now()
@@ -535,15 +677,15 @@ def download_file(db: Session, principal: Principal, batch_id: int) -> Tuple[str
 # Release (3.7 §8.4): mark as submitted, or submit to the SANDBOX payout adapter
 # ---------------------------------------------------------------------------
 def _release_guards(db: Session, principal: Principal, batch: PaymentBatch) -> Dict[str, bool]:
+    """Step-up (403 STEP_UP_REQUIRED), a signatory of the batch's ACTIVE funding account (403
+    FUNDING_SIGNATORY via the funding-accounts service), not the batch's approver under separation of duties
+    (403 SEPARATION_OF_DUTIES) and the dual-control verdict for the transition."""
     if not principal.has(SUBMIT):
         raise forbidden()
-    step_up.ensure_step_up(db, principal)  # 403 STEP_UP_REQUIRED
-    account = db.query(FundingAccount).filter(FundingAccount.company_id == batch.company_id,
-                                              FundingAccount.id == batch.funding_account_id).first()
-    signatory = account is not None and account.status == "ACTIVE" and principal.user_id in (
-        account.signatory_user_ids or [])
-    return {"DUAL_CONTROL": _dual_control_ok(db, principal, batch), "STEP_UP_MFA": True,
-            "FUNDING_SIGNATORY": signatory}
+    step_up.ensure_step_up(db, principal)
+    funding_accounts.require_signatory(db, batch.company_id, batch.funding_account_id, principal.user_id)
+    _require_separate_releaser(db, principal, batch)
+    return {"DUAL_CONTROL": _dual_control_ok(db, principal, batch), "STEP_UP_MFA": True, "FUNDING_SIGNATORY": True}
 
 
 def _run_submitted(db: Session, principal: Principal, batch: PaymentBatch, dual_ok: bool) -> None:
@@ -563,6 +705,9 @@ def release(db: Session, principal: Principal, batch_id: int, *, expected_versio
     submitted batch is never submitted again (EC-PAY-13)."""
     batch = get_batch_for(db, principal, batch_id, SUBMIT, lock=True)
     guards = _release_guards(db, principal, batch)
+    if batch.status in ("APPROVED", "FILE_GENERATED"):
+        require_nothing_held(db, batch)
+    require_fresh_quotes(db, batch)
     if batch.method == "API":
         return _release_api(db, principal, batch, guards, expected_version)
     file = _file_of(db, batch)
@@ -588,6 +733,8 @@ def release(db: Session, principal: Principal, batch_id: int, *, expected_versio
                                        "submitted_at": now, "expected_settlement_date": expected},
                               details={"batch_id": batch.id})
     _run_submitted(db, principal, batch, guards["DUAL_CONTROL"])
+    if batch.run_id is not None:
+        events.publication_progress(db, batch.company_id, batch.run_id)
     return batch_json(db, batch)
 
 
@@ -633,6 +780,8 @@ def _release_api(db: Session, principal: Principal, batch: PaymentBatch, guards:
         batch = transition(db, None, batch, "RECORD_SUBMITTED", system=True, PROVIDER_ACCEPTED=True,
                            details={"adapter": adapter, "sandbox": True, "accepted": accepted})
         _run_submitted(db, principal, batch, guards["DUAL_CONTROL"])
+    if accepted and batch.run_id is not None:
+        events.publication_progress(db, batch.company_id, batch.run_id)
     events.audit(db, principal, SANDBOX_SUBMITTED, f"Batch {batch.reference} submitted to the SANDBOX payout "
                  "adapter (no money moved)", "payment_batch", batch.id, batch.company_id, accepted=accepted,
                  total=len(queued), sandbox=True)
@@ -713,6 +862,7 @@ def batch_json(db: Session, batch: PaymentBatch, *, with_instructions: bool = Tr
         "badge": "SANDBOX" if batch.adapter == adapters.SANDBOX else None, "currency": batch.currency,
         "status": batch.status, "item_count": batch.item_count,
         "total": events.money_json(batch.total_amount, batch.currency), "value_date": batch.value_date,
+        "value_date_warnings": list(((batch.details or {}).get("value_date") or {}).get("warnings") or []),
         "prepared_by_user_id": batch.prepared_by_user_id, "approved_by_user_id": batch.approved_by_user_id,
         "approved_at": batch.approved_at, "released_by_user_id": batch.released_by_user_id,
         "released_at": batch.released_at, "submission_channel": batch.submission_channel,

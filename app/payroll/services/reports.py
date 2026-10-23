@@ -33,7 +33,7 @@ import hashlib
 import io
 import re
 from collections import defaultdict
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
@@ -42,7 +42,7 @@ from sqlalchemy import and_, false, func, or_
 from sqlalchemy.orm import Session
 
 from app.core import clock, storage
-from app.core.errors import bad_request, conflict, forbidden, not_found
+from app.core.errors import AppError, bad_request, conflict, forbidden, not_found
 from app.core.principal import Principal
 from app.models.audit_log import AuditLog
 from app.models.compensation import CompensationAssignment, SalaryTemplate, SalaryTemplateVersion
@@ -165,6 +165,7 @@ class Ctx:
     report: "ReportDef"
     names: Dict[str, Dict[int, str]] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
+    default_group: str = "legal_entity"  # salary analytics without a group_by filter
 
     @property
     def cid(self) -> int:
@@ -315,6 +316,10 @@ def gen_payroll_register(ctx: Ctx) -> List[dict]:
     query = run_employee_query(ctx, statuses=("CALCULATED", "ON_HOLD"))
     for rem, run, period, employee, assignment in query.order_by(PayPeriod.period_end, PayrollRun.number,
                                                                   Employee.employee_code):
+        if rem.status == "ON_HOLD" and run.status in FINAL_STATUSES:
+            # A FULL hold keeps the employee out of finalization: a final register (and its totals) holds
+            # finalized pay only; the held employee is listed by the exclusions report.
+            continue
         row = _base_row(ctx, rem, run, period, employee, assignment)
         row.update(status=rem.status, hold=rem.hold_type, gross=_d(rem.gross), deductions=_d(rem.deductions),
                    reimbursements=_d(rem.reimbursements), net=_d(rem.net), employer_cost=_d(rem.employer_cost))
@@ -476,7 +481,10 @@ def gen_corrected_view(ctx: Ctx) -> List[dict]:
             "employee_code": employee.employee_code,
             "employee_name": _employee_name(employee.first_name, employee.last_name),
             "component_code": line.component_code,
-            "original_period": f"{ref.get('start', '')} – {ref.get('end', '')}" if ref else None,
+            # A REVERSAL run reverses its own period (its lines reference the reversed lines, not a period).
+            "original_period": f"{ref['start']} – {ref.get('end', '')}" if ref.get("start") else (
+                f"{period.period_start.isoformat()} – {period.period_end.isoformat()}"
+                if run.run_type == "REVERSAL" else None),
             "original_run": numbers.get(original_run) if visible else None,
             "original_amount": original, "delta": delta,
             "corrected_amount": (original + delta) if original is not None else None, "currency": line.currency,
@@ -488,7 +496,7 @@ def gen_corrected_view(ctx: Ctx) -> List[dict]:
 
 
 def _group_key(ctx: Ctx, run: PayrollRun, assignment: Optional[EmployeeAssignment]) -> Tuple[str, Optional[int]]:
-    group_by = ctx.filters.group_by or ctx.report_default_group  # type: ignore[attr-defined]
+    group_by = ctx.filters.group_by or ctx.default_group
     if group_by == "legal_entity":
         return group_by, run.legal_entity_id
     if group_by == "department":
@@ -499,7 +507,7 @@ def _group_key(ctx: Ctx, run: PayrollRun, assignment: Optional[EmployeeAssignmen
 
 
 def gen_employer_cost(ctx: Ctx) -> List[dict]:
-    ctx.report_default_group = "legal_entity"  # type: ignore[attr-defined]
+    ctx.default_group = "legal_entity"
     contributions: Dict[int, Decimal] = defaultdict(lambda: _ZERO)
     for rem, run, period, employee, assignment, line in _line_query(ctx, kinds=("EMPLOYER_CONTRIBUTION",)):
         contributions[rem.id] += _d(line.amount)
@@ -519,7 +527,7 @@ def gen_employer_cost(ctx: Ctx) -> List[dict]:
 
 
 def gen_ctc_vs_actual(ctx: Ctx) -> List[dict]:
-    ctx.report_default_group = "grade"  # type: ignore[attr-defined]
+    ctx.default_group = "grade"
     items = list(run_employee_query(ctx, PayGroup.pay_frequency, statuses=("CALCULATED",))
                  .join(PayGroup, and_(PayGroup.company_id == PayrollRun.company_id, PayGroup.id == PayrollRun.pay_group_id))
                  .filter(PayrollRun.run_type == "REGULAR"))
@@ -604,14 +612,20 @@ def gen_leave_encashments(ctx: Ctx) -> List[dict]:
 
 
 def gen_arrears(ctx: Ctx) -> List[dict]:
+    """Arrears and recoveries in the employee's perspective: an arrears earning is positive, a recovery (a
+    recovery deduction, or a negative earning) negative. A REVERSAL run's lines reference the reversed lines,
+    not an earlier period's arrears: they belong to the corrected view, never to this report."""
     rows = []
-    query = _line_query(ctx).filter(or_(PayrollLine.category == "RETRO_ADJUSTMENT", PayrollLine.period_ref.isnot(None)))
+    query = (_line_query(ctx)
+             .filter(or_(PayrollLine.category == "RETRO_ADJUSTMENT", PayrollLine.period_ref.isnot(None)),
+                     PayrollRun.run_type != "REVERSAL"))
     for rem, run, period, employee, assignment, line in query.order_by(PayPeriod.period_end, Employee.employee_code):
         ref = line.period_ref or {}
+        signed = -_d(line.amount) if line.kind == "DEDUCTION" else _d(line.amount)
         row = _base_row(ctx, rem, run, period, employee, assignment)
         row.update(component_code=line.component_code, original_period_start=ref.get("start"),
-                   original_period_end=ref.get("end"), amount=_d(line.amount), currency=line.currency,
-                   direction="ARREARS" if _d(line.amount) >= 0 else "RECOVERY")
+                   original_period_end=ref.get("end"), amount=signed, currency=line.currency,
+                   direction="ARREARS" if signed >= 0 else "RECOVERY")
         rows.append(row)
     return rows
 
@@ -1588,7 +1602,70 @@ def _build_export(ctx: jobs.JobContext) -> dict:
                                  "sha256": digest, "masked": mask})
     return {"report_code": result.report.code, "format": fmt, "file_name": file_name, "media_type": media,
             "file_ref": path, "sha256": digest, "bytes": len(data), "rows": len(result.rows), "masked": mask,
-            "expires_at": (at + EXPORT_TTL).isoformat(), "fixture": result.fixture}
+            "expires_at": (at + EXPORT_TTL).isoformat(), "fixture": result.fixture,
+            "scope": _scope_snapshot(principal, result.report)}
+
+
+# The permissions whose run-level scope decides which rows a report export holds (rows are filtered by
+# payroll:reports:read, compensation rows by payroll:compensation:read, plus the report's own extras).
+SCOPED_PERMISSIONS = (READ, COMPENSATION_READ)
+
+
+def _scope_snapshot(principal: Principal, report: ReportDef) -> Dict[str, dict]:
+    """The requester's run-level scope when the file was built, so a download can be re-checked against it."""
+    snapshot: Dict[str, dict] = {}
+    for permission in dict.fromkeys((*SCOPED_PERMISSIONS, *report.extra_permissions)):
+        target = access.target_scope(principal, permission)
+        snapshot[permission] = {"all": target.all_company, "legal_entity_ids": sorted(target.legal_entity_ids),
+                                "pay_group_ids": sorted(target.pay_group_ids)}
+    return snapshot
+
+
+def _still_covers(principal: Principal, snapshot: Mapping[str, Any]) -> bool:
+    """The caller's scope today still reaches everything the export was built from (it may have grown)."""
+    for permission, was in snapshot.items():
+        now = access.target_scope(principal, permission)
+        if now.all_company:
+            continue
+        if was.get("all"):
+            return False
+        if not set(was.get("legal_entity_ids") or ()) <= now.legal_entity_ids:
+            return False
+        if not set(was.get("pay_group_ids") or ()) <= now.pay_group_ids:
+            return False
+    return True
+
+
+def _recheck_export_access(principal: Principal, job: Job) -> None:
+    """EC-DOC-06 for a READY report export, at every link and download: the report's permissions are still
+    held (403 otherwise), and the scope the rows were drawn from, and the company-wide export right an
+    unmasked file needed, are still covered (404 otherwise, as for any object outside the caller's scope).
+    A file without a recorded scope is served to company-wide readers only."""
+    report = BY_CODE.get((job.payload or {}).get("report_code") or "")
+    if report is None:
+        raise not_found("Export")
+    if not _can_run(principal, report):
+        raise forbidden()
+    result = job.result or {}
+    if result.get("masked") is False and not full_access(principal):
+        raise not_found("Export")
+    snapshot = result.get("scope")
+    if snapshot is None:
+        if not principal.has_company_scope(READ):
+            raise not_found("Export")
+    elif not isinstance(snapshot, Mapping) or not _still_covers(principal, snapshot):
+        raise not_found("Export")
+
+
+def can_download(principal: Principal, job: Job) -> bool:
+    """Whether a READY export may still be downloaded by the caller (the download center's link)."""
+    if not principal.has(EXPORT):
+        return False
+    try:
+        _recheck_export_access(principal, job)
+    except AppError:
+        return False
+    return True
 
 
 def _export_status(job: Job, now: datetime) -> str:
@@ -1621,14 +1698,21 @@ def _my_export(db: Session, principal: Principal, job_id: int) -> Job:
     return job
 
 
-def list_exports(db: Session, principal: Principal, *, limit: int = 50) -> List[dict]:
+def _my_exports_query(db: Session, principal: Principal):
     if not principal.has(READ):
         raise forbidden()
-    rows = (db.query(Job).filter(Job.company_id == principal.company_id, Job.type == EXPORT_JOB,
-                                 Job.created_by_user_id == principal.user_id)
-            .order_by(Job.id.desc()).limit(limit).all())
+    return db.query(Job).filter(Job.company_id == principal.company_id, Job.type == EXPORT_JOB,
+                                Job.created_by_user_id == principal.user_id)
+
+
+def list_exports(db: Session, principal: Principal, *, skip: int = 0, limit: int = 50) -> List[dict]:
+    rows = _my_exports_query(db, principal).order_by(Job.id.desc()).offset(skip).limit(limit).all()
     now = clock.utcnow()
     return [export_json(j, now) for j in rows]
+
+
+def count_exports(db: Session, principal: Principal) -> int:
+    return _my_exports_query(db, principal).count()
 
 
 def get_export(db: Session, principal: Principal, job_id: int) -> dict:
@@ -1637,8 +1721,7 @@ def get_export(db: Session, principal: Principal, job_id: int) -> dict:
     return export_json(_my_export(db, principal, job_id))
 
 
-def export_file(db: Session, principal: Principal, job_id: int) -> Tuple[bytes, str, str]:
-    """(bytes, file name, media type) of the caller's own READY export; audited."""
+def _ready_export(db: Session, principal: Principal, job_id: int) -> Job:
     if not principal.has(EXPORT):
         raise forbidden()
     job = _my_export(db, principal, job_id)
@@ -1647,6 +1730,22 @@ def export_file(db: Session, principal: Principal, job_id: int) -> Tuple[bytes, 
         raise conflict("This export has expired; export the report again.", "EXPORT_EXPIRED")
     if status != "READY":
         raise conflict("This export is not ready.", "EXPORT_NOT_READY")
+    _recheck_export_access(principal, job)
+    return job
+
+
+def export_link(db: Session, principal: Principal, job_id: int) -> dict:
+    """A signed, user- and session-bound, five-minute link to the caller's own READY export (EC-DOC-06),
+    redeemed through ``GET /payroll/downloads/{token}`` (which re-checks access and audits the download)."""
+    from app.payroll.services import downloads
+
+    job = _ready_export(db, principal, job_id)
+    return downloads.download_link(principal, downloads.REPORT_KIND, job.id)
+
+
+def export_file(db: Session, principal: Principal, job_id: int) -> Tuple[bytes, str, str]:
+    """(bytes, file name, media type) of the caller's own READY export; audited."""
+    job = _ready_export(db, principal, job_id)
     result = job.result or {}
     data = storage.resolve(principal.company_id, result.get("file_ref")).read_bytes()
     if hashlib.sha256(data).hexdigest() != result.get("sha256"):
@@ -1722,15 +1821,27 @@ def _overview_runs(db: Session, principal: Principal, f: OverviewFilters) -> Lis
     return list(latest.values())
 
 
-def overview_population(db: Session, principal: Principal, f: OverviewFilters) -> List[dict]:
-    """THE population query of the overview: one row per eligible assignment with its KPI flags."""
-    cid = principal.company_id
+@dataclass
+class OverviewData:
+    """One scoped query family behind every overview figure (EC-UX-03).
+
+    ``rows`` is the population (one row per eligible assignment with its KPI flags); ``runs`` the latest
+    regular run of each in-scope pay group period; ``members`` the run employees of exactly those runs AND
+    those population assignments. Counts, drill-downs, money and statutory totals all read these three,
+    so a filter or a scope narrows every figure the same way."""
+
+    rows: List[dict]
+    runs: List[Tuple[PayrollRun, PayPeriod, PayGroup]]
+    members: List[PayrollRunEmployee]
+
+
+def _population_query(db: Session, principal: Principal, f: OverviewFilters):
     query = (db.query(EmployeeAssignment, Employee, PayGroup)
              .join(Employee, and_(Employee.company_id == EmployeeAssignment.company_id,
                                   Employee.id == EmployeeAssignment.employee_id))
              .join(PayGroup, and_(PayGroup.company_id == EmployeeAssignment.company_id,
                                   PayGroup.id == EmployeeAssignment.pay_group_id))
-             .filter(EmployeeAssignment.company_id == cid, EmployeeAssignment.pay_group_id.isnot(None),
+             .filter(EmployeeAssignment.company_id == principal.company_id, EmployeeAssignment.pay_group_id.isnot(None),
                      EmployeeAssignment.effective_from <= f.period_to,
                      or_(EmployeeAssignment.effective_to.is_(None), EmployeeAssignment.effective_to >= f.period_from),
                      Employee.hire_date <= f.period_to,
@@ -1744,28 +1855,37 @@ def overview_population(db: Session, principal: Principal, f: OverviewFilters) -
         query = query.filter(EmployeeAssignment.branch_id == f.branch_id)
     if f.currency is not None:
         query = query.filter(PayGroup.currency == f.currency)
-    population = query.order_by(Employee.employee_code, EmployeeAssignment.id).all()
+    return query.order_by(Employee.employee_code, EmployeeAssignment.id)
+
+
+def overview_data(db: Session, principal: Principal, f: OverviewFilters) -> OverviewData:
+    """THE overview query family (see ``OverviewData``)."""
+    cid = principal.company_id
+    population = _population_query(db, principal, f).all()
+    runs = _overview_runs(db, principal, f)
     if not population:
-        return []
+        return OverviewData([], runs, [])
     assignment_ids = [a.id for a, _, _ in population]
     with_salary = {aid for (aid,) in db.query(CompensationAssignment.assignment_id).filter(
         CompensationAssignment.company_id == cid, CompensationAssignment.assignment_id.in_(assignment_ids),
         CompensationAssignment.status.in_(("ACTIVE", "SCHEDULED", "SUPERSEDED")),
         CompensationAssignment.effective_from <= f.period_to,
         or_(CompensationAssignment.effective_to.is_(None), CompensationAssignment.effective_to >= f.period_from))}
-    runs = _overview_runs(db, principal, f)
     run_ids = [run.id for run, _, _ in runs]
     final_runs = {run.id for run, _, _ in runs if run.status in FINAL_STATUSES}
-    members: Dict[int, List[PayrollRunEmployee]] = defaultdict(list)
+    members: List[PayrollRunEmployee] = []
     if run_ids:
-        for rem in db.query(PayrollRunEmployee).filter(PayrollRunEmployee.company_id == cid,
-                                                       PayrollRunEmployee.run_id.in_(run_ids),
-                                                       PayrollRunEmployee.employee_assignment_id.in_(assignment_ids)):
-            members[rem.employee_assignment_id].append(rem)
-    paid_members, held_by_instruction = _payment_flags(db, cid, [r.id for rems in members.values() for r in rems])
+        members = (db.query(PayrollRunEmployee)
+                   .filter(PayrollRunEmployee.company_id == cid, PayrollRunEmployee.run_id.in_(run_ids),
+                           PayrollRunEmployee.employee_assignment_id.in_(assignment_ids))
+                   .order_by(PayrollRunEmployee.id).all())
+    by_assignment: Dict[int, List[PayrollRunEmployee]] = defaultdict(list)
+    for rem in members:
+        by_assignment[rem.employee_assignment_id].append(rem)
+    paid_members, held_by_instruction = _payment_flags(db, cid, [r.id for r in members])
     rows = []
     for assignment, employee, group in population:
-        rems = members.get(assignment.id, [])
+        rems = by_assignment.get(assignment.id, [])
         processed = [r for r in rems if r.run_id in final_runs and r.status == "CALCULATED"]
         rows.append({
             "assignment_id": assignment.id, "employee_id": employee.id, "employee_code": employee.employee_code,
@@ -1778,7 +1898,12 @@ def overview_population(db: Session, principal: Principal, f: OverviewFilters) -
             "on_hold": any(r.hold_type is not None or r.id in held_by_instruction for r in rems),
             "run_ids": sorted({r.run_id for r in rems}),
         })
-    return rows
+    return OverviewData(rows, runs, members)
+
+
+def overview_population(db: Session, principal: Principal, f: OverviewFilters) -> List[dict]:
+    """One row per eligible assignment with its KPI flags (the population of ``overview_data``)."""
+    return overview_data(db, principal, f).rows
 
 
 def _payment_flags(db: Session, company_id: int, run_employee_ids: Sequence[int]) -> Tuple[Set[int], Set[int]]:
@@ -1819,29 +1944,25 @@ def overview_list(db: Session, principal: Principal, kpi: str, f: OverviewFilter
                   limit: int = 100) -> dict:
     if kpi not in OVERVIEW_LISTS:
         raise not_found("KPI")
-    rows = [r for r in overview_population(db, principal, f) if _kpi_filter(kpi)(r)]
+    rows = [r for r in overview_data(db, principal, f).rows if _kpi_filter(kpi)(r)]
     return {"kpi": kpi, "total": len(rows), "items": rows[skip:skip + limit]}
 
 
-def _money_rows(db: Session, principal: Principal, f: OverviewFilters,
-                runs: Sequence[Tuple[PayrollRun, PayPeriod, PayGroup]]) -> List[dict]:
+def _selected_runs(data: OverviewData, f: OverviewFilters) -> Dict[int, PayrollRun]:
     statuses = _run_statuses(f.status) if f.status else None
+    return {run.id: run for run, _, _ in data.runs if statuses is None or run.status in statuses}
+
+
+def _money_rows(data: OverviewData, f: OverviewFilters) -> List[dict]:
+    """Gross / net / employer cost per currency and run stage of the population's calculated run employees."""
+    selected = _selected_runs(data, f)
     totals: Dict[Tuple[str, str], Dict[str, Any]] = {}
-    selected = [run for run, _, _ in runs if statuses is None or run.status in statuses]
-    if not selected:
-        return []
-    stage_of = {run.id: run_stage(run.status) for run in selected}
-    query = db.query(PayrollRunEmployee).join(
-        EmployeeAssignment, and_(EmployeeAssignment.company_id == PayrollRunEmployee.company_id,
-                                    EmployeeAssignment.id == PayrollRunEmployee.employee_assignment_id)).filter(
-        PayrollRunEmployee.company_id == principal.company_id, PayrollRunEmployee.run_id.in_([r.id for r in selected]),
-        PayrollRunEmployee.status == "CALCULATED")
-    if f.branch_id is not None:
-        query = query.filter(EmployeeAssignment.branch_id == f.branch_id)
-    for rem in query:
-        key = (rem.currency, stage_of[rem.run_id])
-        bucket = totals.setdefault(key, {"gross": _ZERO, "net": _ZERO, "employer_cost": _ZERO, "employees": 0,
-                                         "runs": set()})
+    for rem in data.members:
+        run = selected.get(rem.run_id)
+        if run is None or rem.status != "CALCULATED":
+            continue
+        bucket = totals.setdefault((rem.currency, run_stage(run.status)), {
+            "gross": _ZERO, "net": _ZERO, "employer_cost": _ZERO, "employees": 0, "runs": set()})
         bucket["gross"] += _d(rem.gross)
         bucket["net"] += _d(rem.net)
         bucket["employer_cost"] += _d(rem.employer_cost)
@@ -1853,18 +1974,18 @@ def _money_rows(db: Session, principal: Principal, f: OverviewFilters,
             for (cur, stage), b in sorted(totals.items())]
 
 
-def _statutory(db: Session, principal: Principal, f: OverviewFilters,
-               runs: Sequence[Tuple[PayrollRun, PayPeriod, PayGroup]]) -> List[dict]:
+def _statutory(db: Session, principal: Principal, f: OverviewFilters, data: OverviewData) -> List[dict]:
     """Statutory totals per entity, only where the entity's pack defines the components (EC-UX-07)."""
     from app.payroll.services import statutory_reports
 
-    statuses = _run_statuses(f.status) if f.status else None
-    by_entity: Dict[int, List[PayrollRun]] = defaultdict(list)
-    for run, _, _ in runs:
-        if statuses is None or run.status in statuses:
-            by_entity[run.legal_entity_id].append(run)
+    selected = _selected_runs(data, f)
+    by_entity: Dict[int, List[PayrollRunEmployee]] = defaultdict(list)
+    for rem in data.members:
+        run = selected.get(rem.run_id)
+        if run is not None and rem.status == "CALCULATED":
+            by_entity[run.legal_entity_id].append(rem)
     result = []
-    for entity_id, entity_runs in sorted(by_entity.items()):
+    for entity_id, members in sorted(by_entity.items()):
         entity = db.query(LegalEntity).filter(LegalEntity.company_id == principal.company_id,
                                               LegalEntity.id == entity_id).first()
         if entity is None:
@@ -1874,21 +1995,17 @@ def _statutory(db: Session, principal: Principal, f: OverviewFilters,
         if found is None or not found.usage.final:
             continue
         labels = {c.code: c.name for c in found.pack.components()}
-        stage_of = {r.id: run_stage(r.status) for r in entity_runs}
+        if not labels:
+            continue
+        stage_of = {rem.run_id: run_stage(selected[rem.run_id].status) for rem in members}
         sums: Dict[Tuple[str, str, str], Decimal] = defaultdict(lambda: _ZERO)
-        query = (db.query(PayrollLine.component_code, PayrollLine.currency, PayrollLine.run_id,
-                          func.sum(PayrollLine.amount))
-                 .join(PayrollRunEmployee, and_(PayrollRunEmployee.company_id == PayrollLine.company_id,
-                                                PayrollRunEmployee.id == PayrollLine.run_employee_id))
-                 .join(EmployeeAssignment, and_(EmployeeAssignment.company_id == PayrollRunEmployee.company_id,
-                                    EmployeeAssignment.id == PayrollRunEmployee.employee_assignment_id))
-                 .filter(PayrollLine.company_id == principal.company_id,
-                         PayrollLine.run_id.in_([r.id for r in entity_runs]),
-                         PayrollLine.component_code.in_(list(labels)), PayrollRunEmployee.status == "CALCULATED"))
-        if f.branch_id is not None:
-            query = query.filter(EmployeeAssignment.branch_id == f.branch_id)
-        for code, currency, run_id, amount in query.group_by(PayrollLine.component_code, PayrollLine.currency,
-                                                             PayrollLine.run_id):
+        for code, currency, run_id, amount in (
+                db.query(PayrollLine.component_code, PayrollLine.currency, PayrollLine.run_id,
+                         func.sum(PayrollLine.amount))
+                .filter(PayrollLine.company_id == principal.company_id,
+                        PayrollLine.run_employee_id.in_([rem.id for rem in members]),
+                        PayrollLine.component_code.in_(list(labels)))
+                .group_by(PayrollLine.component_code, PayrollLine.currency, PayrollLine.run_id)):
             sums[(code, currency, stage_of[run_id])] += _d(amount)
         if not sums:
             continue
@@ -1902,10 +2019,10 @@ def _statutory(db: Session, principal: Principal, f: OverviewFilters,
 
 
 def overview_kpis(db: Session, principal: Principal, f: OverviewFilters) -> dict:
-    population = overview_population(db, principal, f)
-    runs = _overview_runs(db, principal, f)
+    data = overview_data(db, principal, f)
+    population, runs = data.rows, data.runs
     counts = {name: sum(1 for r in population if _kpi_filter(name)(r)) for name in OVERVIEW_LISTS}
-    money = _money_rows(db, principal, f, runs)
+    money = _money_rows(data, f)
     converted = None
     if f.convert_to and money:
         totals: Dict[str, Dict[str, Decimal]] = defaultdict(dict)
@@ -1950,7 +2067,7 @@ def overview_kpis(db: Session, principal: Principal, f: OverviewFilters) -> dict
                         counts["eligible"] == counts["with_salary"] + counts["without_salary"]},
         "money": money,
         "converted": converted,
-        "statutory": _statutory(db, principal, f, runs),
+        "statutory": _statutory(db, principal, f, data),
         "exceptions": exceptions,
         "deadlines": sorted(deadlines, key=lambda d: (d["pay_date"], d["pay_group"])),
         "empty_state": empty_state,
@@ -1962,6 +2079,7 @@ def overview_kpis(db: Session, principal: Principal, f: OverviewFilters) -> dict
             "processed": "Included in a regular run that is finalized or later.",
             "paid": "Every payment instruction settled or reconciled with verified evidence.",
             "on_hold": "A payment or full hold, or a held payment instruction.",
+            "money": "Calculated employees of the selected population, per currency and run stage.",
         },
     }
 
@@ -1985,9 +2103,8 @@ def _periods_without_runs(db: Session, principal: Principal, f: OverviewFilters,
 
 
 __all__ = [
-    "BY_CODE", "CATALOGUE", "Filters", "OverviewFilters", "catalogue", "export_file", "get_export", "list_exports",
-    "overview_filters", "overview_kpis", "overview_list", "overview_population", "preview", "request_export",
-    "run_report", "run_stage", "suppress",
+    "BY_CODE", "CATALOGUE", "Filters", "OverviewData", "OverviewFilters", "catalogue", "count_exports", "export_file",
+    "export_link", "get_export", "list_exports", "overview_data", "overview_filters", "overview_kpis", "overview_list",
+    "overview_population",
+    "preview", "request_export", "run_report", "run_stage", "suppress",
 ]
-
-_ = (replace, Iterable)

@@ -294,7 +294,8 @@ def build_content(db: Session, report: StatutoryReport, pack: CountryPack) -> Tu
                              Employee.id == PayrollRunEmployee.employee_id))
         .filter(PayrollLine.company_id == cid, PayrollLine.run_id.in_(run_ids),
                 PayrollLine.component_code.in_(codes), PayrollLine.kind.in_(STATUTORY_KINDS),
-                PayrollRunEmployee.status != "EXCLUDED")
+                # Finalized pay only: a FULL hold (ON_HOLD) or an error is never finalized nor remitted.
+                PayrollRunEmployee.status == "CALCULATED")
         .all()
     )
     per_employee: Dict[Tuple[int, str], dict] = {}

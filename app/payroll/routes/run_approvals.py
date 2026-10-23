@@ -7,6 +7,7 @@ Finalize also needs a recent step-up (403 STEP_UP_REQUIRED) and the run label ty
 Responses are compact action results without amounts, so idempotency records hold no pay data.
 """
 
+from contextlib import contextmanager
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Request
@@ -16,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.principal import Principal, get_principal
 from app.database.db import get_db
 from app.payroll.api_types import StrictModel
-from app.payroll.services import finalization, idempotency, run_approvals
+from app.payroll.services import change_detection, finalization, idempotency, run_approvals
 
 router = APIRouter(prefix="/api/v1/payroll", tags=["Payroll run approval"])
 
@@ -110,6 +111,18 @@ class SelfLineIn(StrictModel):
         return _text(value)
 
 
+@contextmanager
+def _keep_stale_marker(db: Session):
+    """The full change-detection gate of submit and finalize (``change_detection.gate_full_check``) refuses with
+    409 RUN_STALE after marking the run stale: commit that marker (the refused action wrote nothing else) so
+    the stale reasons survive the error and the processor can recalculate."""
+    try:
+        yield
+    except change_detection.RunMarkedStale:
+        db.commit()
+        raise
+
+
 def _run_result(run) -> dict:
     return {"id": run.id, "number": run.number, "status": run.status, "row_version": run.row_version}
 
@@ -132,7 +145,9 @@ def submit(run_id: int, request: Request, data: Optional[SubmitIn] = None,
     data = data or SubmitIn()
 
     def handler():
-        run = run_approvals.submit_run(db, principal, run_id, comment=data.comment, expected_version=data.row_version)
+        with _keep_stale_marker(db):
+            run = run_approvals.submit_run(db, principal, run_id, comment=data.comment,
+                                           expected_version=data.row_version)
         return 200, {**_run_result(run), "approval_request_id": run.approval_request_id}
 
     return idempotency.execute(db, principal, request, handler, body=data.model_dump())
@@ -192,8 +207,9 @@ def finalize(run_id: int, data: FinalizeIn, request: Request, principal: Princip
     key = idempotency.key_from(request)
 
     def handler():
-        result = finalization.finalize_run(db, principal, run_id, confirm_label=data.confirm_label,
-                                           idempotency_key=key, expected_version=data.row_version)
+        with _keep_stale_marker(db):
+            result = finalization.finalize_run(db, principal, run_id, confirm_label=data.confirm_label,
+                                               idempotency_key=key, expected_version=data.row_version)
         run = result["run"]
         return 200, {**_run_result(run), "finalized_at": run.finalized_at.isoformat() if run.finalized_at else None,
                      "outbox_event_id": result["outbox_event_id"]}

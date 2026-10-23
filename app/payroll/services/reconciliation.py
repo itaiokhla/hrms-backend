@@ -177,6 +177,12 @@ def import_json(row: BankStatementImport) -> dict:
             "created_at": row.created_at}
 
 
+def _existing_import(db: Session, funding: FundingAccount, sha: str) -> Optional[BankStatementImport]:
+    return db.query(BankStatementImport).filter(
+        BankStatementImport.company_id == funding.company_id, BankStatementImport.funding_account_id == funding.id,
+        BankStatementImport.file_sha256 == sha).first()
+
+
 def import_statement(db: Session, principal: Principal, *, funding_account_id: int, fmt: str, file_name: str,
                      content: bytes, mapping: Optional[Mapping[str, Any]] = None) -> dict:
     """Import and reconcile a statement of a funding account; re-importing it adds nothing (F-11)."""
@@ -188,9 +194,12 @@ def import_statement(db: Session, principal: Principal, *, funding_account_id: i
     if len(content) > MAX_STATEMENT_BYTES:
         raise AppError(413, "The statement file is too large.", "FILE_TOO_LARGE")
     sha = hashlib.sha256(content).hexdigest()
-    existing = db.query(BankStatementImport).filter(
-        BankStatementImport.company_id == funding.company_id, BankStatementImport.funding_account_id == funding.id,
-        BankStatementImport.file_sha256 == sha).first()
+    # Imports of one funding account run one at a time: a concurrent import of the same file waits here and
+    # then finds the first one (duplicate) instead of failing on uq_bank_statement_imports_file, and two
+    # overlapping statements never store the same line twice.
+    db.query(FundingAccount.id).filter(FundingAccount.company_id == funding.company_id,
+                                       FundingAccount.id == funding.id).with_for_update().one()
+    existing = _existing_import(db, funding, sha)
     if existing is not None:
         return {"import": import_json(existing), "duplicate": True, "matches": []}
     parsed = _parse(fmt, content, mapping)
@@ -208,8 +217,17 @@ def import_statement(db: Session, principal: Principal, *, funding_account_id: i
         rejected=[{"source_row": r.source_row, "code": r.code, "message": r.message[:300]}
                   for r in (*parsed.rejected, *parsed.notices)],
         counts={}, imported_by_user_id=principal.user_id)
-    db.add(record)
-    db.flush()
+    try:
+        with db.begin_nested():
+            db.add(record)
+            db.flush()
+    except IntegrityError as exc:  # defence in depth behind the lock: the same file is never a 500
+        if "uq_bank_statement_imports_file" not in str(exc.orig):
+            raise
+        existing = _existing_import(db, funding, sha)
+        if existing is None:
+            raise
+        return {"import": import_json(existing), "duplicate": True, "matches": []}
     stored: List[Tuple[BankStatementLine, parser.StatementLine]] = []
     for line in fresh:
         row = BankStatementLine(

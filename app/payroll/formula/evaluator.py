@@ -51,7 +51,11 @@ from app.payroll.formula.ast import (
 from app.payroll.formula.errors import ErrorCode, FormulaError
 from app.payroll.formula.functions import (
     MAX_PLACES,
+    HOURLY_CONVERTIBLE_UNITS,
     MIN_PLACES,
+    RATE_UNIT_DAY,
+    RATE_UNIT_HOUR,
+    RATE_UNIT_PERIOD,
     REFERENCE_FUNCTIONS,
     floor_to,
     months_between,
@@ -127,6 +131,8 @@ class EvalContext:
     tables: TableSource = field(default_factory=dict)  # tables effective for the period
     proration: Proration | None = None
     minor_units: Mapping[str, int] = field(default_factory=dict)  # display only: decimals shown per currency
+    # unit of each full-period rate for SUM_TAG_HOURLY: PERIOD (default), DAY or HOUR; anything else is skipped
+    rate_units: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.env, TypeEnv):
@@ -155,6 +161,7 @@ class EvalContext:
         component: str | None = None,
         stage: int | None = None,
         minor_units: Mapping[str, int] | None = None,
+        rate_units: Mapping[str, str] | None = None,
     ) -> EvalContext:
         """A context whose TypeEnv is derived from the values (formula tester, tests).
 
@@ -194,7 +201,7 @@ class EvalContext:
             expect=expect,
         )
         return cls(env, components, rates, variables, inputs, units, prev, ytd,
-                   tables if tables is not None else {}, proration, dict(minor_units or {}))
+                   tables if tables is not None else {}, proration, dict(minor_units or {}), dict(rate_units or {}))
 
 
 def _infer_type(raw: Any) -> FType:
@@ -694,6 +701,64 @@ class _Runner:
 
     def fn_sum_tag_rate(self, node: Call) -> tuple[Value, str]:
         return self._tag(node, self.ctx.rates, "rate")
+
+    def fn_sum_tag_hourly(self, node: Call) -> tuple[Value, str]:
+        """The tagged full-period rates as one hourly rate, each converted by its unit (``ctx.rate_units``).
+
+        PERIOD rates are added first and divided by ``period.basis_days`` and then by
+        ``emp.standard_hours_per_day`` (so a salaried employee gets exactly
+        ``SUM_TAG_RATE(tag) / period.basis_days / emp.standard_hours_per_day``), DAY rates are divided by
+        ``emp.standard_hours_per_day`` and HOUR rates are used as they are. A rate in any other unit (pieces,
+        unknown) cannot be converted: it is left out and named in the step (the engine raises a warning).
+        """
+        tag = _code(node)
+        members = sorted(self.env.tags.get(tag, ()))
+        target = self.types.get(id(node))
+        currency = target.currency if target is not None and target.currency else self.env.currency
+        sums: dict[str, Decimal] = {}
+        skipped: list[str] = []
+        for code in members:
+            value = self.component(self.ctx.rates, code, self.env.components[code], node, "rate")
+            if value is None:
+                continue
+            assert isinstance(value, MoneyValue)
+            if not sums and value.currency != currency and code == members[0]:
+                currency = value.currency
+            self.same_currency(MoneyValue(Decimal(0), currency), value, node)
+            unit = self.ctx.rate_units.get(code, RATE_UNIT_PERIOD)
+            if unit not in HOURLY_CONVERTIBLE_UNITS:
+                skipped.append(code)
+                continue
+            sums[unit] = clean(self.dc.add(sums.get(unit, Decimal(0)), value.amount))
+        total = Decimal(0)
+        parts: list[str] = []
+        if RATE_UNIT_PERIOD in sums:
+            basis = self._divisor("period.basis_days", node)
+            hours = self._divisor("emp.standard_hours_per_day", node)
+            total = clean(self.dc.divide(clean(self.dc.divide(sums[RATE_UNIT_PERIOD], basis)), hours))
+            parts.append(f"{plain_decimal(sums[RATE_UNIT_PERIOD])} ÷ {plain_decimal(basis)} days ÷ "
+                         f"{plain_decimal(hours)} h")
+        if RATE_UNIT_DAY in sums:
+            hours = self._divisor("emp.standard_hours_per_day", node)
+            total = clean(self.dc.add(total, clean(self.dc.divide(sums[RATE_UNIT_DAY], hours))))
+            parts.append(f"{plain_decimal(sums[RATE_UNIT_DAY])} per day ÷ {plain_decimal(hours)} h")
+        if RATE_UNIT_HOUR in sums:
+            total = clean(self.dc.add(total, sums[RATE_UNIT_HOUR]))
+            parts.append(f"{plain_decimal(sums[RATE_UNIT_HOUR])} per hour")
+        note = f" ({' + '.join(parts)})" if parts else ""
+        if skipped:
+            note += f" (left out, unit cannot be converted to hours: {', '.join(skipped)})"
+        return MoneyValue(total, currency), note
+
+    def _divisor(self, name: str, node: Call) -> Decimal:
+        value = to_value(self.ctx.variables.get(name), DECIMAL, name)
+        if value is None:
+            raise self.error(ErrorCode.NULL_VALUE, f"{name} is NULL (unavailable); {node.name} needs it to convert "
+                             "a rate to hours", node)
+        number = self.number(value, node, node.name)
+        if number.is_zero():
+            raise self.error(ErrorCode.DIVISION_BY_ZERO, f"division by zero: {name} is 0", node)
+        return number
 
     def fn_rate(self, node: Call) -> tuple[Value, str]:
         code = _code(node)

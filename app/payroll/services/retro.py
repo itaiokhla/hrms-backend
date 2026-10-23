@@ -1113,15 +1113,20 @@ def _consume_paid_sources(db: Session, proposal: ArrearsProposal, run: PayrollRu
             OvertimeEntry.consumed_by_run_employee_id.is_(None), OvertimeEntry.status == "APPROVED")]
         done["overtime"] = overtime.consume_entries(db, run.company_id, free, run_employee_id) if free else 0
     if "TASK" in triggers:
-        from app.models.work_items import Task
+        from app.models.work_items import Task, TaskAssignee
         ids = []
         for record in (snapshot.get("tasks") or {}).get("records") or ():
             ref = str(record.get("task_id") or "")
             if ref.startswith("task:"):
                 ids.append(int(ref.split(":", 1)[1]))
-        free = [i for (i,) in db.query(Task.id).filter(Task.company_id == run.company_id, Task.id.in_(ids or [0]),
-                                                       Task.paid_in_run_id.is_(None), Task.status == "APPROVED")]
-        done["tasks"] = tasks.mark_tasks_paid(db, run.company_id, free, run.id) if free else 0
+        # Only this employee's unpaid share: other assignees of a shared task are paid by their own runs.
+        free = [i for (i,) in db.query(TaskAssignee.task_id)
+                .join(Task, (Task.company_id == TaskAssignee.company_id) & (Task.id == TaskAssignee.task_id))
+                .filter(TaskAssignee.company_id == run.company_id, TaskAssignee.task_id.in_(ids or [0]),
+                        TaskAssignee.employee_id == proposal.employee_id, TaskAssignee.paid_in_run_id.is_(None),
+                        Task.status == "APPROVED")]
+        done["tasks"] = tasks.mark_task_shares_paid(
+            db, run.company_id, [(i, proposal.employee_id) for i in free], run.id) if free else 0
     if "INPUT" in triggers:
         from app.models.variable_inputs import WageInput
         ids = [int(i["id"]) for i in snapshot.get("wage_inputs") or () if str(i.get("id", "")).isdigit()]

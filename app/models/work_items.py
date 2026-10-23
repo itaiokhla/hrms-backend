@@ -213,13 +213,19 @@ class Task(TenantMixin, BaseModel):
 
 
 class TaskAssignee(TenantMixin, BaseModel):
-    """An employee paid for a task, with the share of the task amount (100.00 for a single assignee)."""
+    """An employee paid for a task, with the share of the task amount (100.00 for a single assignee).
+
+    paid_in_run_id is the run that paid this assignee's share (EC-TSK-*, EC-VAR-01): assignees of one task may
+    be in different pay groups, so each share is paid exactly once by its own run; the task turns PAID (with
+    Task.paid_in_run_id the run that paid the last share) once every share is paid. Not a foreign key, like
+    Task.paid_in_run_id (migration 0028)."""
 
     __tablename__ = "task_assignees"
 
     task_id = Column(Integer, nullable=False, index=True)
     employee_id = Column(Integer, nullable=False, index=True)
     split_percent = Column(Numeric(5, 2), nullable=False, default=100)
+    paid_in_run_id = Column(Integer, nullable=True)
 
     task = relationship(
         "Task",
@@ -239,6 +245,7 @@ class TaskAssignee(TenantMixin, BaseModel):
             ["company_id", "employee_id"], ["employees.company_id", "employees.id"], name="fk_task_assignees_employee"
         ),
         CheckConstraint("split_percent > 0 AND split_percent <= 100", name="ck_task_assignees_split"),
+        Index("ix_task_assignees_paid_in_run_id", "company_id", "paid_in_run_id"),
     )
 
 

@@ -59,6 +59,7 @@ from app.models.user import User
 from app.payroll import audit as payroll_audit
 from app.payroll import currencies
 from app.payroll import formula as fm
+from app.payroll.calendar import NOMINAL_PERIODS_PER_YEAR, Frequency
 from app.payroll.money import amount_str, decimal_str, is_storable, quantize_amount
 from app.payroll.money_errors import MoneyError
 from app.payroll.services import access, approvals, jobs
@@ -318,6 +319,46 @@ def annual_equivalent(structure_type: str, amount: Decimal) -> Decimal | None:
     return None
 
 
+PAY_BASIS_UNITS = {"CTC_BASED": "ANNUAL", "GROSS_BASED": "MONTHLY", "NET_BASED": "PER_PAY_PERIOD",
+                   "HOURLY": "PER_HOUR", "DAILY": "PER_DAY", "TASK_BASED": "PER_PAY_PERIOD"}
+
+
+def pay_period_terms(db: Session, placement: EmployeeAssignment | None, structure_type: str, amount: Decimal,
+                     currency: str) -> dict[str, Any]:
+    """How the pay basis is paid in one pay period of the employee's pay group (decision I-20).
+
+    3.3 §6.1/§7: a CTC_BASED basis is annual and a GROSS_BASED one monthly; 3.5 §2.1: annual amounts are
+    converted with the periods of the tax year. So one period's CTC/gross (``ctc.period``, the balancing total)
+    is annual ÷ periods per year: the same as the monthly figure on a monthly calendar, 12/26 of it bi-weekly.
+    FIXED structure lines are amounts per pay period (3.4 §17.5) and are paid as entered every period. The
+    preview uses the nominal periods (26 bi-weekly); the run divides by the actual count (26 or 27).
+    """
+    group = db.get(PayGroup, placement.pay_group_id) if placement is not None and placement.pay_group_id else None
+    frequency = group.pay_frequency if group is not None else Frequency.MONTHLY.value
+    try:
+        per_year = NOMINAL_PERIODS_PER_YEAR[Frequency(frequency)]
+    except (KeyError, ValueError):
+        per_year = 12
+    result: dict[str, Any] = {"frequency": frequency, "periods_per_year": per_year,
+                              "pay_basis_unit": PAY_BASIS_UNITS.get(structure_type, "PER_PAY_PERIOD"),
+                              "per_period": None, "message": None}
+    annual = annual_equivalent(structure_type, amount)
+    if annual is None:
+        return result
+    per = quantize_amount(annual / per_year, currency)
+    result["per_period"] = _money(per, currency)
+    if frequency != Frequency.MONTHLY.value:
+        shown = amount_str(quantize_amount(amount, currency), currency)
+        what, how = (("annual CTC", f"{shown} ÷ {per_year}") if structure_type == "CTC_BASED"
+                     else ("monthly gross", f"{shown} × 12 ÷ {per_year}"))
+        result["message"] = (
+            f"This employee's pay group is paid {frequency} ({per_year} periods a year): the {what} "
+            f"{shown} {currency} is paid as {amount_str(per, currency)} {currency} per pay "
+            f"period ({how}; a run divides by the actual number of periods in its tax year). The balancing "
+            "component takes this per-period amount; FIXED structure lines are paid as entered, every pay period.")
+    return result
+
+
 def grade_range_check(db: Session, company_id: int, placement: EmployeeAssignment | None, structure_type: str,
                       amount: Decimal, currency: str) -> dict[str, Any]:
     """Position of the salary in the grade's range: {status: IN_RANGE|BELOW|ABOVE|NO_RANGE|NOT_COMPARABLE, ...}."""
@@ -415,6 +456,15 @@ def _normalize_overrides(db: Session, company_id: int, template: SalaryTemplate,
             raise comp.invalid(f"{line['component']} needs an amount: the structure leaves it to the assignment.",
                                "MISSING_AMOUNT", "overrides")
     return result
+
+
+def _attendance_unknown_in_preview(issue: Mapping[str, Any]) -> bool:
+    """A preview FORMULA_ERROR whose only NULL inputs are attendance variables (``att.*``)."""
+    details = issue.get("details") or {}
+    references = details.get("references") or {}
+    return (issue.get("code") == "FORMULA_ERROR" and (details.get("error") or {}).get("code") == "NULL_VALUE"
+            and bool(references) and all(k.startswith("att.") for k, v in references.items() if v == "NULL")
+            and any(v == "NULL" for v in references.values()))
 
 
 def _fx_rule(raw: Mapping[str, Any] | None, contract: str, pay: str) -> dict[str, Any] | None:
@@ -519,8 +569,12 @@ def _validate(db: Session, principal: Principal, employee_id: int, *, template_v
     balancing = structures._balancing_code(lines)
     if balancing and not structures._balancing_ok(evaluation, balancing):
         raise _too_low(db, cid, template, version, lines, pay_basis_amount, contract, normalized, effective_from)
-    if evaluation.blocking:
-        issues = [i.to_json() for i in evaluation.blocking]
+    issues = [i.to_json() for i in evaluation.blocking]
+    if template.type == "HOURLY":
+        # The preview month has no attendance, so att.payable_hours is NULL there: that is not a fault of the
+        # structure (the run pays rate x payable hours from attendance, and fails closed when it is OFF).
+        issues = [i for i in issues if not _attendance_unknown_in_preview(i)]
+    if issues:
         raise AppError(400, {"message": issues[0]["message"], "issues": issues}, "STRUCTURE_ERROR")
     grade = grade_range_check(db, cid, placement, template.type, pay_basis_amount, contract)
     warnings = []
@@ -530,6 +584,9 @@ def _validate(db: Session, principal: Principal, employee_id: int, *, template_v
             raise AppError(400, {"message": message + " Grade ranges are enforced.", "grade_range": grade},
                            "OUT_OF_GRADE_RANGE")
         warnings.append({"code": "OUT_OF_GRADE_RANGE", "message": message, "grade_range": grade})
+    pay_period = pay_period_terms(db, placement, template.type, pay_basis_amount, contract)
+    if pay_period["message"]:
+        warnings.append({"code": "PAY_PERIOD_AMOUNT", "message": pay_period["message"], "pay_period": pay_period})
     pending = db.query(CompensationAssignment.id).filter(
         CompensationAssignment.company_id == cid, CompensationAssignment.assignment_id == placement.id,
         CompensationAssignment.status == "PENDING_APPROVAL",
@@ -538,7 +595,7 @@ def _validate(db: Session, principal: Principal, employee_id: int, *, template_v
         raise conflict("A salary change for this employee is already waiting for approval.", "COMPENSATION_PENDING")
     return {"employee": employee, "placement": placement, "version": version, "template": template,
             "currency": contract, "pay_currency": pay, "fx_rule": rule, "overrides": normalized, "lines": lines,
-            "evaluation": evaluation, "grade_range": grade, "warnings": warnings}
+            "evaluation": evaluation, "grade_range": grade, "warnings": warnings, "pay_period": pay_period}
 
 
 # --------------------------------------------------------------------------- serialization
@@ -642,6 +699,7 @@ def propose(db: Session, principal: Principal, employee_id: int, *, template_ver
     result = assignment_json(db, row, today=_today(db, principal.company_id))
     result["warnings"] = checked["warnings"]
     result["grade_range"] = checked["grade_range"]
+    result["pay_period"] = checked["pay_period"]
     return result
 
 
@@ -1033,6 +1091,7 @@ def compare(db: Session, principal: Principal, row: CompensationAssignment | Non
                       if row is not None else None},
         "lines": diff, "before": before, "after": after,
         "grade_range": grade_range_check(db, cid, placement, template.type, Decimal(pay_basis_amount), currency),
+        "pay_period": pay_period_terms(db, placement, template.type, Decimal(pay_basis_amount), currency),
     }
 
 

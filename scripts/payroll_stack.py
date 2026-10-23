@@ -3,7 +3,8 @@
     python scripts/payroll_stack.py start            # start in the background, wait until /health answers
     python scripts/payroll_stack.py stop             # stop the API and this stack's PostgreSQL
     python scripts/payroll_stack.py status
-    python scripts/payroll_stack.py reset            # stop, delete ONLY .local-postgres-payroll, migrate a new database
+    python scripts/payroll_stack.py reset            # stop, delete ONLY .local-postgres-payroll (and the seed's
+                                                     # credential guide of that database), migrate a new database
     python scripts/payroll_stack.py reset --start    # ... and start the stack afterwards
     python scripts/payroll_stack.py serve            # foreground (Ctrl+C stops everything)
 
@@ -43,6 +44,8 @@ PORT = 8400
 FRONTEND_PORT = 3400
 SECRETS_DIR = ROOT / ".local-secrets"
 STACK_ENV = SECRETS_DIR / "payroll-stack.env"
+# The seed's credential guide describes the database: a reset removes it with the database it describes.
+CREDENTIAL_FILES = (SECRETS_DIR / "payroll-credentials.json", SECRETS_DIR / "payroll-credentials.md")
 LOG_DIR = ROOT / "logs"
 LOG_FILE = LOG_DIR / "payroll-stack-backend.log"
 PID_FILE = LOG_DIR / "payroll-stack.pid"
@@ -111,14 +114,23 @@ def _server():
 
 def _pg_stop() -> bool:
     """Stop this stack's PostgreSQL if it runs (pg_ctl on .local-postgres-payroll only)."""
-    if not (DATA_DIR / "postmaster.pid").exists():
+    pid_file = DATA_DIR / "postmaster.pid"
+    if not pid_file.exists():
         return False
+    try:
+        import psutil
+
+        if not psutil.pid_exists(int(pid_file.read_text().splitlines()[0])):
+            pid_file.unlink()  # stale: left by a killed server (no process to stop)
+            return False
+    except (OSError, ValueError, IndexError):
+        pass
     from pgserver._commands import pg_ctl
 
     try:
         pg_ctl(["-w", "-m", "fast", "stop"], pgdata=DATA_DIR)
         return True
-    except Exception as exc:  # noqa: BLE001 - already stopped or stale pid file
+    except Exception as exc:  # noqa: BLE001 - already stopped
         print(f"[payroll-stack] PostgreSQL stop: {exc.__class__.__name__}")
         return False
 
@@ -346,6 +358,10 @@ def reset(start_after: bool, tenant_hosts: bool, wait: int) -> None:
     if DATA_DIR.exists():
         shutil.rmtree(DATA_DIR)
         print(f"[payroll-stack] removed {DATA_DIR_NAME}")
+    for path in CREDENTIAL_FILES:
+        if path.exists():
+            path.unlink()
+            print(f"[payroll-stack] removed {path.name} (accounts of the old database)")
     server = _server()
     try:
         _database(server, fresh=True)

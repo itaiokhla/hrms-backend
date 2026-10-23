@@ -42,7 +42,7 @@ from app.payroll import currencies
 from app.utils import pdf_fonts
 from app.utils.pdf_fonts import SANS, SANS_BOLD
 
-RENDERER = f"PDFV2.2-RL{reportlab.Version}"
+RENDERER = f"PDFV2.4-RL{reportlab.Version}"
 RTL_LANGUAGES = frozenset({"ar", "he", "fa", "ur"})
 GRID = colors.HexColor("#D1D5DB")
 SOFT = colors.HexColor("#F3F4F6")
@@ -302,8 +302,20 @@ def _styles(rtl: bool, compact: bool = False) -> dict[str, ParagraphStyle]:
                                        textColor=MUTED),
     }
     for style in styles.values():
-        style.shaping = 1  # HarfBuzz shaping: joined Arabic, Devanagari conjuncts
+        # Latin text is never shaped: HarfBuzz would form ligatures ("fi" -> U+FB01) that break copy, search and
+        # screen readers; complex scripts get a shaped clone in _p (joined Arabic, Devanagari conjuncts).
+        style.shaping = 0
     return styles
+
+
+def _shaped(style: ParagraphStyle) -> ParagraphStyle:
+    """The HarfBuzz-shaped twin of ``style`` (cached on the style, which lives for one render)."""
+    found = style.__dict__.get("_shaped_twin")
+    if found is None:
+        found = ParagraphStyle(f"{style.name}-shaped", parent=style)
+        found.shaping = 1
+        style.__dict__["_shaped_twin"] = found
+    return found
 
 
 def _font_for(token: str, bold: bool) -> str:
@@ -336,6 +348,7 @@ class _RtlSafeParagraph(Flowable):
         if widest > limit:
             scale = max(limit / widest, 0.55)
             style = self.style.clone(f"{self.style.name}-fit", fontSize=size * scale, leading=self.style.leading * scale)
+            style.shaping = 1
             size = style.fontSize
         space = stringWidth(" ", SANS, size)
         lines: list[list[str]] = [[]]
@@ -388,11 +401,10 @@ class _ActualText(Flowable):
 def _p(text: Any, style: ParagraphStyle, bold: bool = False):
     value = "" if text is None else str(text)
     if pdf_fonts.ARABIC_RUN.search(value):
-        return _RtlSafeParagraph(value, style, bold)
-    paragraph = Paragraph(pdf_fonts.markup(value, bold), style)
+        return _RtlSafeParagraph(value, _shaped(style), bold)
     if pdf_fonts.DEVANAGARI_RUN.search(value):
-        return _ActualText(paragraph, value)
-    return paragraph
+        return _ActualText(Paragraph(pdf_fonts.markup(value, bold), _shaped(style)), value)
+    return Paragraph(pdf_fonts.markup(value, bold), style)
 
 
 def _fit_numeric(widths: list[float], numeric: Sequence[bool], texts: Sequence[Sequence[str]], size: float,
@@ -469,11 +481,15 @@ def _header(content: Mapping[str, Any], st, width: float, rtl: bool, logo_bytes:
     return [table, Spacer(1, 2.5 * mm), strip, Spacer(1, 3 * mm)]
 
 
-def _labels_block(content: Mapping[str, Any], st) -> list:
-    out = []
-    for text in content.get("labels") or []:
-        out.append(_p(f"⚠ {text}" if not str(text).startswith("⚠") else text, st["bold"], True))
-    return out + ([Spacer(1, 2 * mm)] if out else [])
+def _labels_block(content: Mapping[str, Any], st, width: float = A4[0] - 32 * mm) -> list:
+    """Compliance / fixture / sandbox labels as a boxed warning (text only: the embedded fonts have no ⚠ glyph)."""
+    texts = [str(text).lstrip("⚠ ").strip() for text in content.get("labels") or [] if str(text).strip()]
+    if not texts:
+        return []
+    box = Table([[_p(text, st["bold"], True)] for text in texts], colWidths=[width])
+    box.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#B45309")),
+                             ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FEF3C7"))]))
+    return [box, Spacer(1, 2 * mm)]
 
 
 def _key_values(pairs: Sequence[Sequence[Any]], st, width: float, rtl: bool, columns: int = 2,

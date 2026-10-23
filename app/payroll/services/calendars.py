@@ -682,7 +682,10 @@ def recheck_pay_date(db: Session, company_id: int, period_id: int) -> dict:
 
 
 def pay_date_check(db: Session, principal: Principal, period_id: int) -> dict:
-    """``recheck_pay_date`` for a caller who may read the period's pay group (404 otherwise)."""
+    """``recheck_pay_date`` for a caller who may read the period's pay group (404 otherwise). Without any read
+    right the answer is 403 before any lookup, so it never tells which period ids exist (EC-SEC-02)."""
+    if not (principal.has(RUN_READ) or principal.has(READ)):
+        raise forbidden()
     period = load_period(db, principal.company_id, period_id)
     _readable_group(db, principal, period.pay_group_id)
     return recheck_pay_date(db, principal.company_id, period.id)

@@ -15,7 +15,13 @@ import pytest
 
 from tests.helpers import create_employee, signup_company
 from tests.payroll.test_compensation import login_as
-from tests.payroll.test_runs_lifecycle import calendar_for, current_period, force_status, new_run
+from tests.payroll.test_runs_lifecycle import (  # noqa: F401  (runs_world is a fixture)
+    calendar_for,
+    current_period,
+    force_status,
+    new_run,
+    runs_world,
+)
 from tests.payroll.test_wage_inputs import audit_actions, pay_group, place, session, set_setting, sql  # noqa: F401
 
 PAY = "/api/v1/payroll"
@@ -110,8 +116,9 @@ def step_up(client):
 
 
 def payments_world(app, name="Acme Pay", employees=("Emma", "Ivan", "Zara", "Nell")):
-    """A tenant with LE01, pay group PG-1 (INR, monthly calendar), employees placed in it, two finance users
-    (Pete prepares, Fran approves and releases and is the funding signatory) and a funding account."""
+    """A tenant with LE01, pay group PG-1 (INR, monthly calendar), employees placed in it, three finance users
+    (Pete prepares, Alma approves batches, Fran releases them and is the funding signatory: separation of
+    duties keeps the approver from releasing) and a funding account."""
     admin = signup_company(app, name)
     cid = admin.company_id
     le = sql("SELECT id FROM legal_entities WHERE company_id = :c AND code = 'LE01'", c=cid)[0][0]
@@ -123,9 +130,10 @@ def payments_world(app, name="Acme Pay", employees=("Emma", "Ivan", "Zara", "Nel
     period = current_period(admin, group)
     pete = login_as(app, admin, create_employee(admin, "Pete", "Preparer"), ["finance_payments"])
     fran = login_as(app, admin, create_employee(admin, "Fran", "Finance"), ["finance_payments"])
+    alma = login_as(app, admin, create_employee(admin, "Alma", "Approver"), ["finance_payments"])
     funding = add_funding_account(cid, le, [fran.user_id])
     return {"admin": admin, "cid": cid, "le": le, "group": group, "emp": emp, "period": period, "pete": pete,
-            "fran": fran, "funding": funding, "app": app}
+            "fran": fran, "alma": alma, "funding": funding, "app": app}
 
 
 def finalized_run(world, nets, *, held=(), with_accounts=True):
@@ -164,9 +172,9 @@ def run_status(run_id):
 
 
 def submitted_batch(world, run_id, **create):
-    """Create, approve, generate and release (mark as submitted) a bank-file batch of the run."""
+    """Create, approve (Alma), generate and release (Fran: separation of duties) a bank-file batch of the run."""
     batch = ok(world["pete"].post(BATCHES, json={"run_id": run_id, **create}), 201)["batches"][0]
-    ok(world["fran"].post(f"{BATCHES}/{batch['id']}/approve"))
+    ok(world["alma"].post(f"{BATCHES}/{batch['id']}/approve"))
     ok(world["pete"].post(f"{BATCHES}/{batch['id']}/generate-file"))
     step_up(world["fran"])
     return ok(world["fran"].post(f"{BATCHES}/{batch['id']}/release"))
@@ -377,6 +385,49 @@ def test_payment_permissions_are_function_level_403(pay):
     err(pay["pete"].post(BATCHES, json={"run_id": run_id, "company_id": 1}), 422)
 
 
+def test_end_to_end_real_finalization_creates_obligations_that_settle_and_reconcile(app, runs_world, monkeypatch):
+    """One path through the real run services: engine calculation, approval and finalization emit
+    payroll.run.finalized; the payments subscriber creates one obligation per positive net equal to the finalized
+    net; the batch is approved and released (run SUBMITTED) and a bank statement settles and reconciles the run.
+    Only the payments subscriber of the event runs here (documents, journals and corrections have their own
+    tests)."""
+    from app.payroll.services import obligations, outbox
+    from tests.payroll.test_reconciliation import csv_statement, upload
+    from tests.payroll.test_run_finalize import approved_run, confirm_countries, finalize, user_id_of
+    from tests.payroll.test_run_finalize import step_up as session_step_up
+
+    monkeypatch.setitem(outbox.SUBSCRIBERS, "payroll.run.finalized", (obligations.FINALIZED_JOB,))
+    w = runs_world
+    cid, acme = w["cid"], w["acme"]
+    user_id_of(acme)
+    session_step_up(acme)
+    confirm_countries(cid)
+    for name in ("Emma", "Ivan"):
+        add_bank_account(cid, w["emp"][name]["id"], NUMBERS[name], holder=f"{name} Test")
+    run = approved_run(w)
+    finalize(acme, run["id"], key="payments-e2e")
+    assert run_status(run["id"]) == "FINALIZED"
+    nets = {e: n for e, n in sql("SELECT employee_id, net FROM payroll_run_employees WHERE run_id = :r AND "
+                                 "status = 'CALCULATED' AND net > 0", r=run["id"])}
+    assert set(nets) == {w["emp"]["Emma"]["id"], w["emp"]["Ivan"]["id"]}
+    owed = {e: a for e, a in sql("SELECT employee_id, amount FROM payment_obligations WHERE run_id = :r", r=run["id"])}
+    assert owed == nets  # EC-PAY-15/16: exactly the positive finalized nets
+    assert {v["status"] for v in instructions_of(run["id"]).values()} == {"READY"}
+
+    pete = login_as(app, acme, create_employee(acme, "Pete", "Preparer"), ["finance_payments"])
+    fran = login_as(app, acme, create_employee(acme, "Fran", "Finance"), ["finance_payments"])
+    alma = login_as(app, acme, create_employee(acme, "Alma", "Approver"), ["finance_payments"])
+    funding = add_funding_account(cid, w["le01"], [fran.user_id])
+    submitted_batch({"pete": pete, "fran": fran, "alma": alma}, run["id"])
+    assert run_status(run["id"]) == "SUBMITTED"
+    lines = [(date.today().isoformat(), f"-{Decimal(amount):.2f}", reference, "") for reference, amount in sql(
+        "SELECT reference, amount FROM payment_instructions WHERE run_id = :r ORDER BY id", r=run["id"])]
+    result = upload(fran, funding, csv_statement(*lines))
+    assert result["import"]["counts"] == {"MATCHED": 2}
+    assert run_status(run["id"]) == "RECONCILED"
+    assert {r[0] for r in sql("SELECT status FROM payment_obligations WHERE run_id = :r", r=run["id"])} == {"SETTLED"}
+
+
 # ---------------------------------------------------------------------------
 # Another account currency (EC-PAY-17) and redenomination (EC-MON-13, F-09)
 # ---------------------------------------------------------------------------
@@ -417,6 +468,60 @@ def test_ec_pay_17_account_in_another_currency_waits_for_a_rate_and_records_both
     assert detail["amount"] == {"amount": "8300.00", "currency": "INR"}
     assert detail["account_amount"] == {"amount": "99.60", "currency": "USD"}
     assert detail["fx_conversion_id"] == conversion
+
+
+def test_ec_pay_20_expired_fx_quote_is_requoted_or_held_and_never_paid_stale(pay):
+    """An unsent payment whose FX quote is older than payroll.fx.max_rate_age_hours is re-quoted with a
+    current rate before batching (both quotes recorded); without a usable rate it is held, and the hold lifts
+    once a rate is approved. A batched payment whose quote expired blocks file generation (the batch is
+    cancelled, re-quoted and approved again)."""
+    cid, emma = pay["cid"], pay["emp"]["Emma"]["id"]
+    add_bank_account(cid, emma, NUMBERS["Emma"], holder="Emma Test", currency="USD")
+    pay_date = sql("SELECT pay_date FROM pay_periods WHERE id = :p", p=pay["period"]["id"])[0][0]
+    today = date.today()
+    for day in sorted({pay_date, today}):
+        fx_rate(cid, "INR", "USD", "0.012", day)
+    add_funding_account(cid, pay["le"], [pay["fran"].user_id], number="912020055555555", name="USD payroll account",
+                        currency="USD")
+    run_id = finalized_run(pay, {"Emma": "8300.00"}, with_accounts=False)
+    iid, first_quote = sql("SELECT id, fx_conversion_id FROM payment_instructions WHERE run_id = :r", r=run_id)[0]
+    assert first_quote and instructions_of(run_id)[emma]["status"] == "READY"
+
+    def expire_quote():
+        sql("UPDATE fx_conversions SET created_at = now() - interval '48 hours' WHERE id = (SELECT fx_conversion_id "
+            "FROM payment_instructions WHERE id = :i)", i=iid)
+
+    # Expired with a current rate available: re-quoted before batching, both quotes kept in the history.
+    expire_quote()
+    proposal = ok(pay["pete"].post(f"{BATCHES}/proposal", json={"run_id": run_id}))
+    assert [b["instruction_ids"] for b in proposal["batches"]] == [[iid]]
+    second_quote = sql("SELECT fx_conversion_id FROM payment_instructions WHERE id = :i", i=iid)[0][0]
+    assert second_quote and second_quote != first_quote
+    requoted = sql("SELECT details FROM payment_events WHERE instruction_id = :i AND event_status = 'FX_REQUOTED'",
+                   i=iid)
+    assert requoted and requoted[0][0]["previous_conversion_id"] == first_quote
+
+    # Expired while the latest rate waits for approval: never the stale rate, the payment is held instead.
+    expire_quote()
+    sql("INSERT INTO fx_rates (company_id, base_currency, quote_currency, rate, rate_type, source, as_of, fetched_at, "
+        "status, created_at, updated_at) VALUES (:c, 'INR', 'USD', 0.013, 'MID', 'MANUAL', :d, now() + interval "
+        "'1 minute', 'PENDING_APPROVAL', now(), now())", c=cid, d=today)
+    proposal = ok(pay["pete"].post(f"{BATCHES}/proposal", json={"run_id": run_id}))
+    assert proposal["batches"] == [] and [e["reason"] for e in proposal["exclusions"]] == ["FX_RATE_MISSING"]
+    assert instructions_of(run_id)[emma]["status"] == "ON_HOLD"
+    # The pending rate is approved: the next readiness check re-quotes and releases the hold by itself.
+    sql("UPDATE fx_rates SET status = 'ACTIVE' WHERE company_id = :c AND status = 'PENDING_APPROVAL'", c=cid)
+    batch = ok(pay["pete"].post(BATCHES, json={"run_id": run_id}), 201)["batches"][0]
+    assert batch["total"] == {"amount": "107.90", "currency": "USD"}  # 8300 x 0.013, the current rate
+
+    # Approved, then the quote expires before the file is generated: refused, nothing queued at a stale rate.
+    ok(pay["fran"].post(f"{BATCHES}/{batch['id']}/approve"))
+    expire_quote()
+    err(pay["pete"].post(f"{BATCHES}/{batch['id']}/generate-file"), 409, "FX_QUOTE_EXPIRED")
+    assert instructions_of(run_id)[emma]["status"] == "APPROVED"
+    ok(pay["pete"].post(f"{BATCHES}/{batch['id']}/cancel", json={"reason": "Re-quote the exchange rate"}))
+    again = ok(pay["pete"].post(BATCHES, json={"run_id": run_id}), 201)["batches"][0]
+    assert again["status"] == "APPROVAL_PENDING" and again["item_count"] == 1
 
 
 def test_ec_mon_13_redenomination_never_rewrites_payment_history(pay):

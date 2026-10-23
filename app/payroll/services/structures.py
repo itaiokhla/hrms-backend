@@ -1013,6 +1013,17 @@ def _unsaved_lines(db: Session, company_id: int, template: SalaryTemplate, versi
     return lines, report["warnings"]
 
 
+# Decision I-20: what the pay basis of each structure type means on monthly and other pay calendars.
+PAY_BASIS_NOTES = {
+    "CTC_BASED": "The pay basis is the annual CTC. This preview is one month (CTC ÷ 12). On a pay group paid more "
+                 "often, each period's balancing total is CTC ÷ periods per year (ctc.period); FIXED lines are "
+                 "amounts per pay period and are paid as entered every period.",
+    "GROSS_BASED": "The pay basis is the monthly gross. This preview is one month. On a pay group paid more often, "
+                   "each period's balancing total is gross × 12 ÷ periods per year (ctc.period); FIXED lines are "
+                   "amounts per pay period and are paid as entered every period.",
+}
+
+
 def preview(db: Session, principal: Principal, template_id: int, *, pay_basis_amount: Decimal,
             number: int | None = None, overrides: Mapping[str, Mapping[str, Any]] | None = None,
             currency: str | None = None, lines: Sequence[LineInput] | None = None) -> dict[str, Any]:
@@ -1038,7 +1049,7 @@ def preview(db: Session, principal: Principal, template_id: int, *, pay_basis_am
     result = breakdown(db, evaluation, lines)
     result.update(structure={"id": template.id, "code": template.code, "name": template.name, "type": template.type},
                   version=version.version, pay_basis_amount=_money(pay_basis_amount, structure_cur),
-                  unsaved=unsaved, warnings=warnings)
+                  unsaved=unsaved, warnings=warnings, pay_basis_note=PAY_BASIS_NOTES.get(template.type))
     return result
 
 

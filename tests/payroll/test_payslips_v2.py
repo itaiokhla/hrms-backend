@@ -254,7 +254,8 @@ def test_i15_label_when_no_statutory_lines_and_fixture_badge(docs_world):
     content = content_of(payslip_of(rows[w["emp"]["Emma"]["id"]])[0])
     assert content["labels"] == ["Statutory deductions not calculated — compliance not verified"]
     data, _ = document_pdf(w["cid"], payslip_of(rows[w["emp"]["Emma"]["id"]])[0])
-    assert "compliance not verified" in pdf_text(data)
+    assert "Statutory deductions not calculated — compliance not verified" in " ".join(pdf_text(data).split())
+    assert "" not in pdf_text(data) and "■" not in pdf_text(data)  # no missing glyphs
     fixture = (("BASIC", "EARNING", "40000.00", {}), ("PF_EMPLOYEE", "DEDUCTION", "1800.00",
                                                        {"statutory": True, "fixture": True}))
     run_id, rows = emma_run(w, start=date(2026, 10, 1), lines=fixture)

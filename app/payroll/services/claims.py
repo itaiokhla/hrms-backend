@@ -560,9 +560,19 @@ def _payable(row: ReimbursementClaim) -> dict:
         "amount": amount_str(Decimal(row.approved_amount), row.payout_currency), "currency": row.payout_currency,
         "claimed": money_json(row.amount, row.currency), "fx_conversion_id": row.fx_conversion_id,
         "payout_route": row.payout_route, "pay_group_id": row.pay_group_id, "legal_entity_id": row.legal_entity_id,
-        "version_hash": hashlib.sha256(f"{row.id}|{row.status}|{row.approved_amount}|{row.row_version}".encode())
-        .hexdigest(),
+        "version_hash": _payable_hash(row),
     }
+
+
+def _payable_hash(row: ReimbursementClaim) -> str:
+    """Change-detection hash of what a run pays for the claim. Lifecycle fields (status, scheduled_ref,
+    row_version) stay out: locking a run's inputs schedules the claim (APPROVED -> SCHEDULED) right after the
+    snapshot hashed it, and that must not read as a change (409 RUN_STALE at submission). A cancelled or
+    released claim drops out of the snapshot (REMOVED); a different amount, currency or type changes the hash."""
+    content = "|".join(str(v) for v in (
+        row.id, row.employee_id, row.claim_type, row.taxability, row.expense_date, row.approved_amount,
+        row.payout_currency, row.payout_route, row.fx_conversion_id, row.pay_group_id, row.legal_entity_id))
+    return hashlib.sha256(content.encode()).hexdigest()
 
 
 def claims_for_payroll(db: Session, company_id: int, employee_id: int, period_start: date, period_end: date

@@ -145,14 +145,18 @@ def list_runs(
     pay_group_id: Optional[int] = Query(None, ge=1),
     run_type: Optional[RunType] = Query(None),
     status: Optional[RunStatus] = Query(None),
+    needs_my_action: bool = Query(False),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ):
+    """Runs in the caller's scope; ``needs_my_action=true`` keeps the runs whose next step (pre-check,
+    calculate, submit, approve as the current approver, finalize, pay, reconcile, close) the caller can take
+    now (services.runs.NEXT_STEPS), with the same paging and counts."""
     total, items = service.list_runs(db, principal, pay_period_id=pay_period_id, legal_entity_id=legal_entity_id,
-                                     pay_group_id=pay_group_id, run_type=run_type, status=status, skip=skip,
-                                     limit=limit)
+                                     pay_group_id=pay_group_id, run_type=run_type, status=status,
+                                     needs_my_action=needs_my_action, skip=skip, limit=limit)
     return {"total": total, "items": items}
 
 

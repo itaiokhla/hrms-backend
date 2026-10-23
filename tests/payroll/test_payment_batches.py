@@ -111,7 +111,7 @@ def test_ec_pay_01_generated_and_downloaded_file_stays_queued_and_is_audited(pay
 def test_regenerated_file_that_differs_fails_loudly_and_blocks_release(pay):
     run_id = finalized_run(pay, {"Emma": "100.00"})
     batch = ok(pay["pete"].post(BATCHES, json={"run_id": run_id}), 201)["batches"][0]
-    ok(pay["fran"].post(f"{BATCHES}/{batch['id']}/approve"))
+    ok(pay["alma"].post(f"{BATCHES}/{batch['id']}/approve"))
     ok(pay["pete"].post(f"{BATCHES}/{batch['id']}/generate-file"))
     sql("UPDATE payment_files SET sha256 = :s WHERE batch_id = :b", s="0" * 64, b=batch["id"])
     err(pay["fran"].get(f"{BATCHES}/{batch['id']}/file"), 409, "REGENERATION_MISMATCH")
@@ -123,7 +123,7 @@ def test_regenerated_file_that_differs_fails_loudly_and_blocks_release(pay):
 def test_release_needs_step_up_signatory_and_dual_control_then_is_manual_upload_unverified(pay):
     run_id = finalized_run(pay, {"Emma": "100.00", "Ivan": "200.00"})
     batch = ok(pay["pete"].post(BATCHES, json={"run_id": run_id}), 201)["batches"][0]
-    ok(pay["fran"].post(f"{BATCHES}/{batch['id']}/approve"))
+    ok(pay["alma"].post(f"{BATCHES}/{batch['id']}/approve"))
     generated = ok(pay["pete"].post(f"{BATCHES}/{batch['id']}/generate-file"))
     err(pay["fran"].post(f"{BATCHES}/{batch['id']}/release"), 403, "STEP_UP_REQUIRED")
     step_up(pay["pete"])
@@ -155,7 +155,7 @@ def test_release_needs_step_up_signatory_and_dual_control_then_is_manual_upload_
 def test_ec_pay_13_concurrent_or_replayed_release_is_idempotent(pay):
     run_id = finalized_run(pay, {"Emma": "100.00"})
     batch = ok(pay["pete"].post(BATCHES, json={"run_id": run_id}), 201)["batches"][0]
-    ok(pay["fran"].post(f"{BATCHES}/{batch['id']}/approve"))
+    ok(pay["alma"].post(f"{BATCHES}/{batch['id']}/approve"))
     ok(pay["pete"].post(f"{BATCHES}/{batch['id']}/generate-file"))
     step_up(pay["fran"])
     headers = {"Idempotency-Key": "release-once-1"}
@@ -198,7 +198,7 @@ def test_ec_pay_05_sandbox_api_batch_uses_the_idempotency_key_and_is_labelled_sa
     run_id = finalized_run(pay, {"Emma": "100.00", "Ivan": "250.00"})
     batch = ok(pay["pete"].post(BATCHES, json={"run_id": run_id, "method": "API"}), 201)["batches"][0]
     assert batch["sandbox"] is True and batch["method"] == "API"
-    ok(pay["fran"].post(f"{BATCHES}/{batch['id']}/approve"))
+    ok(pay["alma"].post(f"{BATCHES}/{batch['id']}/approve"))
     err(pay["pete"].post(f"{BATCHES}/{batch['id']}/generate-file"), 409, "NOT_A_FILE_BATCH")
     step_up(pay["fran"])
     released = ok(pay["fran"].post(f"{BATCHES}/{batch['id']}/release"))
@@ -247,6 +247,36 @@ def test_instruction_events_are_listed_and_unbatched_payments_can_be_cancelled(p
     err(pay["pete"].post(f"{INSTRUCTIONS}/{ivan['id']}/cancel", json={"reason": "No"}), 409, "IN_BATCH")
     listed = ok(pay["pete"].get(INSTRUCTIONS, params={"batch_id": batch["id"]}))
     assert listed["total"] == 1
+
+
+def test_ec_pay_10_value_date_on_a_weekend_or_bank_holiday_rolls_forward_with_warnings(pay):
+    """A value date that falls on the weekend (IN: Sunday) and a bank holiday after it rolls to the next
+    business day of the run's banking calendar; the batch carries VALUE_DATE_SHIFTED, and
+    VALUE_DATE_AFTER_PAY_DATE when the money arrives after the pay date. A past value date is refused."""
+    from datetime import date, timedelta
+
+    cid = pay["cid"]
+    run_id = finalized_run(pay, {"Emma": "100.00"})
+    today = date.today()
+    sunday = today + timedelta(days=(6 - today.weekday()) % 7 or 7)
+    calendar = sql("SELECT id FROM holiday_calendars WHERE company_id = :c AND country_code = 'IN' AND "
+                   "subdivision_code IS NULL AND parent_calendar_id IS NULL AND status = 'ACTIVE' ORDER BY id LIMIT 1",
+                   c=cid)
+    calendar_id = calendar[0][0] if calendar else sql(
+        "INSERT INTO holiday_calendars (company_id, code, name, country_code, status, created_at, updated_at) "
+        "VALUES (:c, 'BANK', 'Bank holidays', 'IN', 'ACTIVE', now(), now()) RETURNING id", c=cid)[0][0]
+    sql("INSERT INTO holidays (company_id, name, date, calendar_id, holiday_type, is_optional, created_at, updated_at) "
+        "VALUES (:c, 'Bank holiday', :d, :cal, 'PUBLIC', false, now(), now())", c=cid, d=sunday + timedelta(days=1),
+        cal=calendar_id)
+
+    err(pay["pete"].post(BATCHES, json={"run_id": run_id, "value_date": (today - timedelta(days=2)).isoformat()}),
+        400, "VALUE_DATE_IN_PAST")
+    (batch,) = ok(pay["pete"].post(BATCHES, json={"run_id": run_id, "value_date": sunday.isoformat()}), 201)["batches"]
+    assert batch["value_date"] == (sunday + timedelta(days=2)).isoformat()  # Sunday, then Monday's bank holiday
+    pay_date = sql("SELECT pay_date FROM pay_periods WHERE id = :p", p=pay["period"]["id"])[0][0]
+    expected = ["VALUE_DATE_SHIFTED"] + (["VALUE_DATE_AFTER_PAY_DATE"] if sunday + timedelta(days=2) > pay_date else [])
+    assert batch["value_date_warnings"] == expected
+    assert ok(pay["pete"].get(f"{BATCHES}/{batch['id']}"))["value_date_warnings"] == expected
 
 
 def test_batch_balances_per_batch(pay):

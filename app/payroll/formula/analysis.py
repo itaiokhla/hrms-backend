@@ -140,7 +140,7 @@ class Analysis:
     type: FType | None  # type of the expression; None when it does not parse
     components: frozenset[str]  # components read directly (BASIC)
     rates: frozenset[str]  # RATE("X")
-    tags: frozenset[str]  # SUM_TAG / SUM_TAG_RATE
+    tags: frozenset[str]  # SUM_TAG / SUM_TAG_RATE / SUM_TAG_HOURLY
     inputs: frozenset[str]  # INPUT / UNITS
     history: frozenset[str]  # PREV / YTD
     variables: frozenset[str]
@@ -735,6 +735,7 @@ class Typer:
 
     call_sum_tag = _tag
     call_sum_tag_rate = _tag
+    call_sum_tag_hourly = _tag
 
     def call_rate(self, node: Call) -> _Info:
         code = _code(node)

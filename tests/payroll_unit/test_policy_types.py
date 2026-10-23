@@ -148,7 +148,10 @@ def test_overtime_defaults_3_1_section_5_5_carry_no_multiplier():
         {"day_type": "WEEKLY_OFF", "after_hours": "0", "multiplier": None},
         {"day_type": "HOLIDAY", "after_hours": "0", "multiplier": None},
     ]
-    assert fields["rate_formula"] == 'SUM_TAG_RATE("OT_BASE") / period.basis_days / emp.standard_hours_per_day'
+    # 3.1 §5.5's SUM_TAG_RATE("OT_BASE") / period.basis_days / emp.standard_hours_per_day, with each OT_BASE rate
+    # converted by its unit (seed defect: an hourly OT_BASE rate was divided by days x hours again); the salaried
+    # result is identical (tests/payroll_unit/test_seed_defects.py).
+    assert fields["rate_formula"] == 'SUM_TAG_HOURLY("OT_BASE")'
     assert fields["caps"] == {"per_day": None, "per_week": None, "per_month": None, "per_quarter": None}
     assert fields["cap_action"] == "EXCEPTION" and fields["cross_midnight"] == "SHIFT_START_DATE"
     assert fields["comp_off_allowed"] is False and fields["comp_off_ratio"] == "1"

@@ -1,7 +1,8 @@
 """Loans and advances API (3.4 §15, 3.9 §4 Claims & loans).
 
 Payroll staff: /api/v1/payroll/loans with approve, reject, cancel and the approved actions pause,
-resume, restructure, prepay and waive (each action is a request decided through the approvals engine).
+resume, restructure, prepay and waive (each action is a request decided through the approvals engine);
+/api/v1/payroll/employees/{id}/loan-policy previews the limits that apply to an employee in scope.
 Self-service: /api/v1/me/payroll/loans (apply for and read one's own). Disbursement is recorded from
 payment evidence by the payments milestone (services.loans.record_disbursement), not through this API.
 """
@@ -200,8 +201,15 @@ def waive_loan(loan_id: int, data: WaiveBody, request: Request, principal: Princ
     return _action(db, principal, request, loan_id, action, data.model_dump(mode="json"))
 
 
+@router.get("/payroll/employees/{employee_id}/loan-policy")
+def employee_loan_policy(employee_id: int, principal: Principal = Depends(get_principal),
+                         db: Session = Depends(get_db)):
+    """The loan and advance limits that apply to an employee in scope (payroll:loans:read; 404 outside it)."""
+    return service.policy_preview(db, principal, employee_id)
+
+
 # ---------------------------------------------------------------------------
-# Self-service
+# Self-service (GET /me/payroll/loan-policy lives in routes/me_payroll.py)
 # ---------------------------------------------------------------------------
 @router.get("/me/payroll/loans")
 def my_loans(status: Optional[StatusName] = Query(None), skip: int = Query(0, ge=0),

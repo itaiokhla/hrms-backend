@@ -1603,7 +1603,9 @@ REVIEW_ACTIONS = ("CLEAR_REVIEW", "MARK_VERIFIED", "MARK_FAILED", "RESUBMIT")
 
 def review_account(db: Session, principal: Principal, account_id: int, action: str, reason: Optional[str], *,
                    expected_row_version: Optional[int] = None) -> BankAccount:
-    """Manual review of risk flags and verification outcomes (BANK_VERIFICATION user actions)."""
+    """Manual review of risk flags and verification outcomes (BANK_VERIFICATION user actions). CLEAR_REVIEW and
+    MARK_VERIFIED on an account under a payment hold lift that hold, so they need a fresh step-up (403
+    STEP_UP_REQUIRED), like waiving the cooling-off."""
     action = str(action).upper()
     if action not in REVIEW_ACTIONS:
         raise bad_request(f"Action must be one of {', '.join(REVIEW_ACTIONS)}.", "INVALID_ACTION")
@@ -1615,6 +1617,10 @@ def review_account(db: Session, principal: Principal, account_id: int, action: s
     reason = _reason(reason, required=action != "RESUBMIT")
     if action in ("CLEAR_REVIEW", "MARK_VERIFIED", "MARK_FAILED"):
         _ensure_not_maker(db, principal, row)
+    if action in ("CLEAR_REVIEW", "MARK_VERIFIED") and row.payment_hold:
+        # Lifting a payment hold (a duplicate-account or fraud flag) lets money flow to the account again: a
+        # payment-diversion control like waiving the cooling-off, so it needs a fresh step-up too.
+        step_up.ensure_step_up(db, principal)
     _verification_transition(db, principal, row, action, reason=reason, expected_row_version=expected_row_version,
                              method=_last_ownership_method(db, row) if action == "MARK_VERIFIED" else None)
     result = {"CLEAR_REVIEW": "CLEARED", "MARK_VERIFIED": "PASSED", "MARK_FAILED": "FAILED",

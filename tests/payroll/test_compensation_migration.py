@@ -67,13 +67,27 @@ def test_migration_creates_components_structure_and_one_assignment_per_row(acme)
     row_id = legacy_row(cid, worker["id"], date(2024, 2, 1))
     before = legacy_snapshot(cid)
     base_before = sql("SELECT base_salary FROM employees WHERE id = :e", e=worker["id"])[0][0]
+    # Signup provisioned the country-neutral catalogue: BASIC exists, the other legacy codes do not.
+    provisioned = {c["code"]: c for c in ok(acme.get(COMPONENTS))}
+    assert "BASIC" in provisioned and not {"HRA", "DA", "CONVEYANCE", "OTHER_ALLOWANCE"} & set(provisioned)
+    basic_before = provisioned["BASIC"]
     summary = backfill()
-    assert summary["assignments"] >= 1 and summary["templates"] >= 1
+    assert summary["assignments"] >= 1 and summary["templates"] >= 1 and summary["components"] >= 4
     components = {c["code"]: c for c in ok(acme.get(COMPONENTS))}
     for code in ("BASIC", "HRA", "DA", "CONVEYANCE", "OTHER_ALLOWANCE"):
         version = components[code]["current_version"]
         assert version["calc_method"] == "FIXED" and version["proration"] == "BY_PAID_DAYS", code
-        assert version["tags"] == ["LOP_APPLICABLE"] and components[code]["kind"] == "EARNING", code
+        assert "LOP_APPLICABLE" in version["tags"] and components[code]["kind"] == "EARNING", code
+    for code in ("HRA", "DA", "CONVEYANCE", "OTHER_ALLOWANCE"):  # created by the migration
+        assert components[code]["current_version"]["tags"] == ["LOP_APPLICABLE"], code
+        assert components[code]["category"] == "FIXED_ALLOWANCE", code
+    # The provisioned BASIC is reused as it is: same row, no new version, the seeded tags kept.
+    basic = ok(acme.get(f"{COMPONENTS}/BASIC"))
+    assert basic["id"] == basic_before["id"] and [v["version"] for v in basic["versions"]] == [1]
+    assert basic["current_version"] == basic_before["current_version"]
+    assert set(basic["current_version"]["tags"]) == {"LOP_APPLICABLE", "OT_BASE", "ENCASHMENT_BASE", "PART_OF_CTC",
+                                                     "PART_OF_GROSS"}
+    assert sql("SELECT count(*) FROM pay_components WHERE company_id = :c AND code = 'BASIC'", c=cid) == [(1,)]
     structures = {s["code"]: s for s in ok(acme.get(STRUCTURES))}
     legacy = structures["LEGACY_FIXED"]
     assert legacy["name"] == "Legacy fixed structure" and legacy["type"] == "GROSS_BASED" and legacy["active_version"] == 1

@@ -106,6 +106,9 @@ def main(argv: Optional[list] = None) -> None:
     from app.payroll.services import keys
 
     keys.check_master_key()
+    from app.payroll import packs
+
+    packs.register_settings(environment=packs.environment_name(settings.environment))  # as the API (app.main)
     jobs.load_handlers()
 
     worker = Worker(poll_seconds=args.poll, batch=args.batch)

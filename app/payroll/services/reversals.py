@@ -16,7 +16,9 @@
   unsubmitted instructions are cancelled (EC-COR-04); settled amounts become recovery receivables
   (approved arrears RECOVERY proposals with trigger REVERSAL, recovered per
   ``payroll.arrears.recovery_mode`` within the protected net, or manually) — never an automatic bank
-  debit (EC-COR-03); instructions still in flight are listed for finance; the outbox event
+  debit (EC-COR-03); instructions still in flight are listed for finance and, when one of them settles
+  later, ``on_instruction_settled`` (called by ``payment_events.transition``) records the recovery for what
+  settled, once (EC-COR-04); the outbox event
   ``payroll.run.reversed`` asks the documents milestone to mark the original payslips REVERSED and issue
   the reversal statement (the original documents are never changed).
 
@@ -57,6 +59,7 @@ REVERSAL_APPROVED = "REVERSAL_APPROVED"
 REVERSAL_REJECTED = "REVERSAL_REJECTED"
 REVERSAL_CANCELLED = "REVERSAL_CANCELLED"
 REVERSAL_FINALIZED = "REVERSAL_FINALIZED"
+REVERSAL_RECOVERY_ADDED = "REVERSAL_RECOVERY_ADDED"
 
 UNSENT = ("NOT_READY", "READY", "APPROVAL_PENDING", "APPROVED", "ON_HOLD")
 HOLDABLE = ("NOT_READY", "READY", "APPROVAL_PENDING", "APPROVED")
@@ -380,22 +383,25 @@ def cancel_reversal(db: Session, principal: Principal, reversal_id: int, *, reas
 # Finalization effects (outbox payroll.run.finalized of the REVERSAL run)
 # ---------------------------------------------------------------------------
 def _recovery(db: Session, row: PayrollReversal, original: PayrollRun, run_employee: PayrollRunEmployee,
-              settled: Decimal, currency: str) -> ArrearsProposal:
+              settled: Decimal, currency: str, *, instruction_id: Optional[int] = None) -> ArrearsProposal:
     """A settled payment of a reversed employee becomes a recovery receivable (EC-COR-03): an approved RECOVERY
     proposal (authorized by the reversal's two approvers), recovered per payroll.arrears.recovery_mode within
-    the protected net, or manually; never a bank debit."""
+    the protected net, or manually; never a bank debit. ``instruction_id`` names the payment that settled
+    after the reversal was finalized (``on_instruction_settled``)."""
     from app.payroll.services import retro
 
     period = calendars.load_period(db, original.company_id, original.pay_period_id)
     ref = {"period_id": period.id, "start": period.period_start.isoformat(), "end": period.period_end.isoformat(),
            "run_id": original.id, "run_number": original.number, "run_employee_id": run_employee.id,
            "reversal_id": row.id}
+    trigger_ref = {"type": "payroll_reversal", "id": row.id, "reversal_run_id": row.reversal_run_id}
+    if instruction_id is not None:
+        ref["instruction_id"] = trigger_ref["instruction_id"] = instruction_id
     proposal = ArrearsProposal(
         company_id=row.company_id, employee_id=run_employee.employee_id, legal_entity_id=original.legal_entity_id,
         pay_group_id=original.pay_group_id, original_run_id=original.id, original_run_employee_id=run_employee.id,
         original_period_id=period.id, period_start=period.period_start, period_end=period.period_end,
-        currency=currency, trigger="REVERSAL", trigger_ref={"type": "payroll_reversal", "id": row.id,
-                                                            "reversal_run_id": row.reversal_run_id},
+        currency=currency, trigger="REVERSAL", trigger_ref=trigger_ref,
         changed_sources=[], totals={"arrears": amount_str(ZERO, currency), "recovery": amount_str(-settled, currency),
                                     "net_change": amount_str(-settled, currency)},
         issues=[], status="APPROVED", payment_mode="NEXT_REGULAR_RUN", reason=f"Reversal #{row.id}: {row.reason}"[:1000],
@@ -479,6 +485,94 @@ def on_run_finalized(db: Session, run: PayrollRun) -> dict:
            instructions_cancelled=cancelled, instructions_in_flight=in_flight,
            recoveries=[r["proposal_id"] for r in recoveries], outbox_event_id=event.id)
     return {"cancelled": cancelled, "in_flight": in_flight, "recoveries": len(recoveries)}
+
+
+def _settled_for(db: Session, company_id: int, run_employee_id: int) -> tuple[Decimal, Optional[str]]:
+    """What has settled (pay currency) on every payment of one run employee, as ``on_run_finalized`` counts it."""
+    from app.models.payment_flows import PaymentInstruction, PaymentObligation
+    from app.payroll.services import payment_events
+
+    total, currency = ZERO, None
+    rows = (db.query(PaymentInstruction)
+            .join(PaymentObligation, and_(PaymentObligation.company_id == PaymentInstruction.company_id,
+                                          PaymentObligation.id == PaymentInstruction.obligation_id))
+            .filter(PaymentInstruction.company_id == company_id, PaymentObligation.run_employee_id == run_employee_id,
+                    PaymentInstruction.status.in_(SETTLED))
+            .order_by(PaymentInstruction.id).all())
+    for instruction in rows:
+        total += payment_events.settled_in_pay_currency(
+            instruction, Decimal(instruction.settled_amount) if instruction.settled_amount is not None else None)
+        currency = instruction.currency
+    return total, currency
+
+
+def _recovered_for(db: Session, row: PayrollReversal, run_employee_id: int) -> Decimal:
+    """The amount every recovery of ``row`` already records for the run employee (whatever became of it: a
+    cancelled recovery was a decision, never re-created)."""
+    total = ZERO
+    for amount, ref in (db.query(ArrearsProposalLine.recalculated_amount, ArrearsProposal.trigger_ref)
+                        .join(ArrearsProposal, and_(ArrearsProposal.company_id == ArrearsProposalLine.company_id,
+                                                    ArrearsProposal.id == ArrearsProposalLine.proposal_id))
+                        .filter(ArrearsProposal.company_id == row.company_id, ArrearsProposal.trigger == "REVERSAL",
+                                ArrearsProposal.original_run_employee_id == run_employee_id,
+                                ArrearsProposalLine.component_code == RECOVERY_COMPONENT)):
+        if (ref or {}).get("type") == "payroll_reversal" and (ref or {}).get("id") == row.id:
+            total += Decimal(amount)
+    return total
+
+
+def on_instruction_settled(db: Session, instruction: Any) -> List[int]:
+    """A payment that was in flight when its run employee's reversal was finalized settles later
+    (EC-COR-03, EC-COR-04): what settled beyond the recoveries the reversal already records becomes a recovery
+    receivable, exactly as ``on_run_finalized`` does for pay settled before it; never a bank debit.
+
+    Called by ``payment_events.transition`` whenever an instruction reaches (or changes) a settled state.
+    Idempotent: the recovery covers settled minus already recovered, so a replayed settlement or a
+    reconciliation of a settled payment adds nothing; the reversal row is locked so a settlement and the
+    reversal's finalization never both count the same money. A reversal that is APPROVED but not yet
+    finalized is left to ``on_run_finalized``. Returns the ids of the recoveries created."""
+    from app.models.payment_flows import PaymentObligation
+    from app.payroll.services import runs
+
+    if instruction.status not in SETTLED or instruction.run_id is None:
+        return []
+    obligation = db.query(PaymentObligation).filter(PaymentObligation.company_id == instruction.company_id,
+                                                    PaymentObligation.id == instruction.obligation_id).first()
+    if obligation is None or obligation.run_employee_id is None:
+        return []
+    run_employee_id = obligation.run_employee_id
+    reversals = (db.query(PayrollReversal)
+                 .filter(PayrollReversal.company_id == instruction.company_id,
+                         PayrollReversal.original_run_id == instruction.run_id,
+                         PayrollReversal.status.in_(("APPROVED", "FINALIZED")))
+                 .order_by(PayrollReversal.id).with_for_update(of=PayrollReversal).populate_existing().all())
+    created: List[int] = []
+    for row in reversals:
+        if row.status != "FINALIZED" or run_employee_id not in {int(i) for i in row.run_employee_ids or []}:
+            continue
+        settled, currency = _settled_for(db, row.company_id, run_employee_id)
+        missing = settled - _recovered_for(db, row, run_employee_id)
+        if missing <= 0 or currency is None:
+            continue
+        original = runs.load_run(db, row.company_id, row.original_run_id)
+        run_employee = db.query(PayrollRunEmployee).filter(PayrollRunEmployee.company_id == row.company_id,
+                                                           PayrollRunEmployee.id == run_employee_id).one()
+        proposal = _recovery(db, row, original, run_employee, missing, currency, instruction_id=instruction.id)
+        entry = {"run_employee_id": run_employee_id, "proposal_id": proposal.id,
+                 "amount": amount_str(missing, currency), "currency": currency,
+                 "recovery_mode": proposal.recovery_mode, "instruction_id": instruction.id,
+                 "settled_after_reversal": True}
+        effects = dict(row.effects or {})
+        effects["recoveries"] = [*(effects.get("recoveries") or []), entry]
+        row.effects = effects
+        row.row_version += 1
+        db.flush()
+        _audit(db, None, REVERSAL_RECOVERY_ADDED, f"Payment {instruction.reference or instruction.id} of reversed "
+               f"run {original.number} settled after reversal #{row.id}: recovery #{proposal.id}", row,
+               instruction_id=instruction.id, run_employee_id=run_employee_id, proposal_id=proposal.id,
+               amount=amount_str(missing, currency), currency=currency)
+        created.append(proposal.id)
+    return created
 
 
 # ---------------------------------------------------------------------------

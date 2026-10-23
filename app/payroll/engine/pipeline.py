@@ -27,6 +27,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.payroll import time_pay as tp
+from app.payroll import time_pay_overtime as tpo
 from app.payroll.engine.context import CalcContext, ContextError, build_context
 from app.payroll.engine.earnings import (
     blocking,
@@ -265,7 +266,11 @@ def overtime_stage(ctx: CalcContext, ledger: DayLedger, issues: list[CalcIssue])
             issues.append(blocking("CONFIG_ERROR", f"Overtime thresholds: {error.message}", component="OT_WORKDAY",
                                    error_code=error.code))
             return None
-        entries.extend(proposed.entries)
+        # The overtime service also materializes ATTENDANCE_AUTO proposals as approved, audited entries (from
+        # the same worked hours and policy) that reach the snapshot with origin THRESHOLD: a date that already
+        # has such a stored entry is paid from it, never a second time from the ledger (3.4 §9, EC-OT-03).
+        stored = {e.date for e in entries if e.origin == tpo.ORIGIN_THRESHOLD and e.status not in tpo.INACTIVE_STATUSES}
+        entries.extend(e for e in proposed.entries if e.date not in stored)
     if not entries:
         return None
     if policy is None:

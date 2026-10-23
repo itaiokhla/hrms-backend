@@ -47,6 +47,14 @@ from typing import Any
 from app.payroll import formula as fm
 from app.payroll import time_pay as tp
 from app.payroll.engine.context import CalcContext
+from app.payroll.formula.ast import Binary, Call, ComponentRef, VariableRef, children
+from app.payroll.formula.functions import (
+    HOURLY_CONVERTIBLE_UNITS,
+    RATE_UNIT_DAY,
+    RATE_UNIT_HOUR,
+    RATE_UNIT_PERIOD,
+    REFERENCE_FUNCTIONS,
+)
 from app.payroll.engine.lines import STAGE_EARNINGS, CalcIssue, Line
 from app.payroll.engine.snapshot import Compensation, ComponentDef, Segment, StructureLine
 from app.payroll.engine.trace import (
@@ -73,6 +81,12 @@ TIME_PAY_COMPONENTS = frozenset({"OT_WORKDAY", "OT_WEEKLY_OFF", "OT_HOLIDAY", "H
                                  "SHIFT_ALLOWANCE", "TASK_EARNING", "MIN_WAGE_TOP_UP", "HOLIDAY_PAY"})
 CATEGORY_FIX = {"TASK": "TASK_EARNING", "ALLOWANCE": "SHIFT_PREMIUM"}
 PAID_KINDS = ("EARNING", "REIMBURSEMENT", "BENEFIT_IN_KIND")
+# The unit of a RATE_X_UNITS rate is read from its units expression (SUM_TAG_HOURLY, OT_BASE unit guard).
+HOUR_UNIT_VARIABLES = frozenset({"att.payable_hours", "att.worked_hours", "att.night_hours", "ot.hours_workday",
+                                 "ot.hours_weekly_off", "ot.hours_holiday", "ot.hours_total"})
+DAY_UNIT_VARIABLES = frozenset({"att.paid_days", "att.present_days", "att.leave_days_paid", "att.holidays",
+                                "period.days", "period.working_days", "period.basis_days"})
+RATE_UNIT_OTHER = "OTHER"
 ZERO = Decimal(0)
 
 
@@ -234,6 +248,7 @@ def variables(ctx: CalcContext, totals: LedgerTotals, *, compensation: Compensat
     annual, monthly = ctc_values(ctx, compensation)
     values["ctc.annual"] = None if annual is None else fm.MoneyValue(annual, ctx.currency)
     values["ctc.monthly"] = None if monthly is None else fm.MoneyValue(monthly, ctx.currency)
+    values["ctc.period"] = None if annual is None else fm.MoneyValue(per_period(ctx, annual), ctx.currency)
     for name, raw in emp.attributes.items():
         values[f"emp.attr.{name}"] = raw
     return values
@@ -256,9 +271,50 @@ def ctc_values(ctx: CalcContext, compensation: Compensation | None) -> tuple[Dec
     return None, None
 
 
+def per_period(ctx: CalcContext, annual: Decimal) -> Decimal:
+    """``ctc.period``: the annual amount ÷ the periods of this calendar's tax year (3.5 §2.1: 26/27 bi-weekly).
+
+    3.3 §6.1 defines the pay basis of a CTC_BASED structure as annual and of a GROSS_BASED one as monthly
+    (annual = 12 × monthly), so on a monthly calendar ``ctc.period`` is exactly ``ctc.monthly`` (decision I-20).
+    """
+    with localcontext(CALC_CONTEXT):
+        return annual / ctx.period.periods_per_year
+
+
+def monthly_calendar(ctx: CalcContext) -> bool:
+    return ctx.period.periods_per_year == 12
+
+
 def standard_hours(ctx: CalcContext) -> Decimal:
     value = ctx.employee.standard_hours_per_day
     return value if value is not None else (ctx.setting_decimal("payroll.standard_hours_per_day") or Decimal(8))
+
+
+def rate_unit(line: StructureLine) -> str:
+    """The unit of a structure line's full-period rate (``EvalContext.rate_units``, read by SUM_TAG_HOURLY).
+
+    RATE_X_UNITS lines are per HOUR when their units read only hour variables (``att.payable_hours``,
+    ``ot.hours_*``, ...), per DAY when they read only day variables (``att.paid_days``, ...), and OTHER (pieces,
+    wage-input units, constants or a mix) otherwise; math and logic functions such as COALESCE do not change
+    the unit. Every other method gives an amount for the whole period (PERIOD).
+    """
+    if line.method != "RATE_X_UNITS":
+        return RATE_UNIT_PERIOD
+    try:
+        expr = fm.parse(str(dict(line.params).get("units")))
+    except fm.FormulaError:
+        return RATE_UNIT_OTHER
+    names: set[str] = set()
+    for node in fm.walk(expr):
+        if isinstance(node, VariableRef):
+            names.add(node.name)
+        elif isinstance(node, ComponentRef) or (isinstance(node, Call) and node.name in REFERENCE_FUNCTIONS):
+            return RATE_UNIT_OTHER
+    if names and names <= HOUR_UNIT_VARIABLES:
+        return RATE_UNIT_HOUR
+    if names and names <= DAY_UNIT_VARIABLES:
+        return RATE_UNIT_DAY
+    return RATE_UNIT_OTHER
 
 
 # --------------------------------------------------------------------------- structure evaluation
@@ -278,12 +334,31 @@ class _Plan:
     rates: dict[str, Decimal] = field(default_factory=dict)      # full-period value (RATE_X_UNITS: amount)
     unit_rates: dict[str, Decimal] = field(default_factory=dict)  # RATE()/SUM_TAG_RATE values
     units: dict[str, Decimal] = field(default_factory=dict)       # RATE_X_UNITS units
+    rate_units: dict[str, str] = field(default_factory=dict)      # code -> PERIOD | DAY | HOUR | OTHER
     steps: dict[str, list[str]] = field(default_factory=dict)
     references: dict[str, dict[str, str]] = field(default_factory=dict)
     notes: dict[str, list[str]] = field(default_factory=dict)
     deps: dict[str, set[str]] = field(default_factory=dict)       # code -> structure components it reads
     skipped: set[str] = field(default_factory=set)                # not eligible, frequency, ...
     failed: set[str] = field(default_factory=set)
+
+
+def _tag_calls(node: Any, by_basis: bool = False) -> list[tuple[Call, bool]]:
+    """SUM_TAG_RATE / SUM_TAG_HOURLY calls of a formula, each with whether it is (part of) a dividend whose
+    divisor reads ``period.basis_days``: ``SUM_TAG_RATE("A") / period.basis_days / 8 + SUM_TAG_RATE("B")``
+    divides A by the basis days, not B."""
+    found: list[tuple[Call, bool]] = []
+    if isinstance(node, Call) and node.name in ("SUM_TAG_RATE", "SUM_TAG_HOURLY"):
+        found.append((node, by_basis))
+    if isinstance(node, Binary) and node.op == "/":
+        divisor_reads_basis = any(isinstance(n, VariableRef) and n.name == "period.basis_days"
+                                  for n in fm.walk(node.right))
+        found.extend(_tag_calls(node.left, by_basis or divisor_reads_basis))
+        found.extend(_tag_calls(node.right, by_basis))
+        return found
+    for child in children(node):
+        found.extend(_tag_calls(child, by_basis))
+    return found
 
 
 class StructureEvaluator:
@@ -310,6 +385,7 @@ class StructureEvaluator:
         self.ot_rate_trace: dict[str, Any] = {}
         self.ot_rate_error: tuple[fm.FormulaError, list[str], dict[str, str]] | None = None
         self.ot_rate_reported = False
+        self.ot_units_checked = False
         self.ot_formula = self._ot_formula()
 
     # -- setup -------------------------------------------------------------------------------
@@ -330,6 +406,18 @@ class StructureEvaluator:
     def _env(self, plan: _Plan, code: str | None, stage: int = STAGE_EARNINGS, expect: str = "AMOUNT") -> fm.TypeEnv:
         return fm.TypeEnv(self.ctx.currency, components=plan.env_components, tags=plan.tags, tables=self.tables,
                           attributes=self._attribute_types(), component=code, stage=stage, expect=expect)
+
+    def _monthly_on_short_period(self, plan: _Plan, code: str) -> None:
+        """I-20: a formula reading ``ctc.monthly`` on a non-monthly calendar pays the monthly figure every period."""
+        if any(i.code == "CTC_MONTHLY_ON_NON_MONTHLY_PERIOD" and i.component == code for i in self.issues):
+            return
+        period = self.ctx.period
+        self.issues.append(warning(
+            "CTC_MONTHLY_ON_NON_MONTHLY_PERIOD", f"{code} reads ctc.monthly, a monthly figure, but this pay period is "
+            f"{period.frequency} ({period.periods_per_year} periods a year), so every period pays the monthly value. "
+            f"Use ctc.period (ctc.annual ÷ {period.periods_per_year}) for the amount of one pay period.",
+            component=code, frequency=period.frequency, periods_per_year=period.periods_per_year,
+            segment=plan.segment.key))
 
     def _attribute_types(self) -> dict[str, fm.FType]:
         result = {}
@@ -358,7 +446,9 @@ class StructureEvaluator:
         if method == "INPUT":
             return fm.method_formula(method, {"code": params.get("code") or line.component})
         if method == "BALANCING":
-            total = params.get("total") or "ctc.monthly"
+            # I-20: the balancing total is the pay basis for THIS period; on a non-monthly calendar that is
+            # ctc.annual ÷ periods per year, not the monthly figure every period.
+            total = params.get("total") or ("ctc.monthly" if monthly_calendar(self.ctx) else "ctc.period")
             others = list(params.get("others") or [
                 other.component for other in plan.compensation.lines
                 if other.component != line.component and other.method not in ("BALANCING", "SYSTEM", "INPUT")
@@ -391,6 +481,7 @@ class StructureEvaluator:
             for tag in component_or_default(ctx, code).tags:
                 tags.setdefault(tag, []).append(code)
         plan = _Plan(segment, compensation, sigs, {k: sorted(v) for k, v in sorted(tags.items())})
+        plan.rate_units = {line.component: rate_unit(line) for line in compensation.lines if line.method != "SYSTEM"}
         deps: dict[str, set[str]] = {}
         stage_of = {code: sigs[code].stage or STAGE_EARNINGS for code in codes}
         ot_deps: set[str] | None = None
@@ -420,6 +511,8 @@ class StructureEvaluator:
                             ot_deps = set(fm.check(self.ot_formula, self._env(plan, None)).dependencies)
                         found |= ot_deps
                     exprs.append(analysis.expr)
+                    if "ctc.monthly" in analysis.variables and not monthly_calendar(ctx):
+                        self._monthly_on_short_period(plan, code)
                 plan.exprs[code] = tuple(exprs) if isinstance(text, tuple) else exprs[0]
                 plan.sources[code] = " × ".join(f"({p})" for p in parts) if isinstance(text, tuple) else text
                 deps[code] = found - {code} if code not in found else found
@@ -462,7 +555,7 @@ class StructureEvaluator:
             variables=variables,
             inputs={k: fm.MoneyValue(v, currency) for k, v in self.inputs.items()},
             units=dict(self.input_units), prev=self.prev, ytd=self.ytd, tables=self.tables, proration=proration,
-            minor_units=dict(self.ctx.minor_units))
+            minor_units=dict(self.ctx.minor_units), rate_units=dict(plan.rate_units))
 
     def ensure_ot_rate(self, plan: _Plan, variables: dict[str, Any], *, report: bool) -> None:
         """``ot.hourly_rate`` from OVERTIME_POLICY.rate_formula over the full-period rates (3.4 §9.4).
@@ -484,10 +577,54 @@ class StructureEvaluator:
                 self.ot_rate = rate
                 self.ot_rate_trace = {"formula": self.ot_formula, "steps": result.steps,
                                       "references": result.references, "rate": format(rate, "f")}
+                self.check_ot_units(plan)
         if report:
             self.report_ot_rate()
         if self.ot_rate is not None and "ot.hourly_rate" in variables:
             variables["ot.hourly_rate"] = fm.MoneyValue(self.ot_rate, self.ctx.currency)
+
+    def check_ot_units(self, plan: _Plan) -> None:
+        """Warn when the overtime rate formula reads tagged rates whose units it cannot convert to hours.
+
+        ``SUM_TAG_RATE(tag)`` adds the rates as they are: a tag mixing period amounts with per-hour or per-day
+        rates, or a per-unit rate divided by ``period.basis_days`` (the 3.1 §5.5 formula on an hourly worker,
+        48.00/h ÷ 31 ÷ 8 = 0.19), gives a wrong hourly rate. ``SUM_TAG_HOURLY(tag)`` converts PERIOD, DAY and
+        HOUR rates and leaves out any other unit (pieces, wage-input units), which is reported too.
+        """
+        if self.ot_units_checked:
+            return
+        self.ot_units_checked = True
+        try:
+            expr = fm.parse(self.ot_formula)
+        except fm.FormulaError:
+            return
+        calls: dict[tuple[str, str], bool] = {}  # (function, tag) -> divided by period.basis_days
+        for node, by_basis in _tag_calls(expr):
+            tag = getattr(node.args[0], "value", None)
+            if isinstance(tag, str):
+                calls[(node.name, tag)] = calls.get((node.name, tag), False) or by_basis
+        for (name, tag), reads_basis in calls.items():
+            units = {code: plan.rate_units.get(code, RATE_UNIT_PERIOD) for code in plan.tags.get(tag, ())
+                     if code in plan.unit_rates and code not in plan.skipped and code not in plan.failed}
+            shown = ", ".join(f"{code} per {unit.lower()}" for code, unit in sorted(units.items()))
+            if name == "SUM_TAG_HOURLY":
+                left_out = sorted(code for code, unit in units.items() if unit not in HOURLY_CONVERTIBLE_UNITS)
+                if left_out:
+                    self.issues.append(warning(
+                        "OT_BASE_UNIT_UNKNOWN", f"The overtime hourly rate leaves out {', '.join(left_out)}: "
+                        f'SUM_TAG_HOURLY("{tag}") cannot convert a rate that is not per period, day or hour to an '
+                        "hourly rate. Remove the tag from those components or change "
+                        "OVERTIME_POLICY.rate_formula.", tag=tag, units=units, left_out=left_out,
+                        segment=plan.segment.key))
+                continue
+            kinds = set(units.values())
+            if len(kinds) > 1 or (kinds - {RATE_UNIT_PERIOD} and reads_basis):
+                divides = " and divides them by period.basis_days" if reads_basis else ""
+                self.issues.append(warning(
+                    "OT_BASE_UNITS_MIXED", f'OVERTIME_POLICY.rate_formula reads SUM_TAG_RATE("{tag}"), which adds '
+                    f"the rates as they are ({shown}){divides}; the overtime hourly rate is likely wrong. "
+                    f'SUM_TAG_HOURLY("{tag}") converts each rate to an hourly rate.', tag=tag, units=units,
+                    formula=self.ot_formula, segment=plan.segment.key))
 
     def report_ot_rate(self) -> None:
         if self.ot_rate_error is not None and not self.ot_rate_reported:
@@ -588,10 +725,16 @@ class StructureEvaluator:
                 if line.method == "BALANCING":
                     employer = plan.compensation.ctc_employer_contributions
                     if employer:
+                        # The contributions are monthly amounts (snapshot contract); on a non-monthly calendar
+                        # the balancing total is one period's CTC, so they are converted the same way (I-20).
+                        if not monthly_calendar(ctx):
+                            with localcontext(CALC_CONTEXT):
+                                employer = {k: v * 12 / ctx.period.periods_per_year for k, v in employer.items()}
                         with localcontext(CALC_CONTEXT):
                             value = value - sum(employer.values(), ZERO)
+                        per = "" if monthly_calendar(ctx) else f" (monthly × 12 ÷ {ctx.period.periods_per_year})"
                         plan.notes.setdefault(code, []).append(
-                            "minus employer contributions inside CTC: " + ", ".join(
+                            "minus employer contributions inside CTC" + per + ": " + ", ".join(
                                 f"{k} {format(v, 'f')}" for k, v in employer.items()))
                 unit_rate = value
             if component.cap is not None and value > component.cap:

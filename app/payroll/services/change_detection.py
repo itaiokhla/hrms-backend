@@ -18,7 +18,17 @@ live tables without writing anything (``snapshot.build(probe=True)``) and compar
   Approved compensation changes, settings and policy activations mark runs stale at once through the hooks
   ``runs.install_hooks`` wires (EC-CMP-13, EC-CFG-14);
 * the periodic job ``payroll.match_source_changes`` runs ``match_source_changes`` for a tenant once per
-  hour while runs with locked inputs exist (``schedule_matching``; ``snapshot.lock_inputs`` schedules it).
+  hour while runs with locked inputs exist (``schedule_matching``; ``snapshot.lock_inputs`` schedules it);
+  that pass is log-based and cheap, so it never sees claims, loans, bank accounts or YTD;
+* ``gate_full_check`` is the full pass at the two gates where an unseen change costs money: submission for
+  approval (approvers approve what they see) and finalization (what is paid). It rebuilds every employee
+  (about the cost of one input lock) and only at those two steps: a refused gate marks the run stale with
+  the changed sources and raises ``RunMarkedStale`` (409 RUN_STALE); the routes commit the stale marker before
+  returning the error, so the reasons survive the refusal and the processor recalculates. Chosen over a daily
+  full pass, which could miss a change made between the last pass and finalization. The last approval step
+  needs no own pass: nothing is paid before finalization, which checks again. Inputs an off-cycle selection
+  leaves out carry no source hash (``snapshot._Builder.apply_selection``), so their changes are ignored;
+  a snapshot without any source hash was not frozen from live sources and is not compared (``sourced_only``).
 
 Services take (db, ...) and never commit.
 """
@@ -32,6 +42,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 from sqlalchemy.orm import Session
 
 from app.core import clock
+from app.core.errors import AppError
 from app.models.jobs import Job
 from app.models.org import LegalEntity
 from app.models.pay_runs import PayPeriod, PayrollInputSnapshot, PayrollRun, PayrollRunEmployee
@@ -134,10 +145,16 @@ def pack_change(db: Session, run: PayrollRun, period: PayPeriod, locked: Sequenc
     return SourceChange(snapshot.source_key("pack", code), UPDATED)
 
 
-def detect_changes(db: Session, run: PayrollRun, *, full: bool = False) -> Dict[int, List[dict]]:
-    """``{employee_id: [changes]}`` for the run's frozen inputs (see the module docstring)."""
+def detect_changes(db: Session, run: PayrollRun, *, full: bool = False, sourced_only: bool = False,
+                   ignore_types: Sequence[str] = ()) -> Dict[int, List[dict]]:
+    """``{employee_id: [changes]}`` for the run's frozen inputs (see the module docstring). ``sourced_only``
+    leaves out snapshots without any source hash: the snapshot builder always records some (the employee,
+    the day ledger), so such a snapshot was not frozen from live sources and has nothing to compare.
+    ``ignore_types`` leaves out changes of those source types (``GATE_LIVE_SOURCES``)."""
     period = _period(db, run)
     locked = _locked_rows(db, run)
+    if sourced_only:
+        locked = [(row, stored) for row, stored in locked if stored.source_hashes]
     result: Dict[int, List[dict]] = {}
     pack = pack_change(db, run, period, locked)
     candidates = {row.id for row, _ in locked} if full else _log_candidates(db, run, period, locked)
@@ -147,6 +164,7 @@ def detect_changes(db: Session, run: PayrollRun, *, full: bool = False) -> Dict[
             changes = changed_sources(db, run, row, stored=stored)
         if pack is not None and pack not in changes:
             changes.append(pack)
+        changes = [c for c in changes if c.source_type not in ignore_types]
         if changes:
             result.setdefault(row.employee_id, []).extend(c.to_json() for c in changes)
     return result
@@ -158,14 +176,16 @@ def _reason(changes: Mapping[int, Sequence[Mapping[str, Any]]]) -> str:
             "recalculate them or defer the change to retro.")
 
 
-def match_run(db: Session, run: PayrollRun, *, full: bool = False) -> dict:
+def match_run(db: Session, run: PayrollRun, *, full: bool = False, sourced_only: bool = False,
+              ignore_types: Sequence[str] = ()) -> dict:
     """Mark ``run`` stale when its frozen inputs changed (a run already stale is left as it is)."""
     from app.payroll.services import runs
 
     summary = {"run_id": run.id, "marked": False, "changes": {}}
     if run.status not in runs.LOCKED_STATES or run.stale:
         return summary
-    changes = detect_changes(db, run, full=full)
+    changes = detect_changes(db, run, full=full, sourced_only=sourced_only, **(
+        {"ignore_types": tuple(ignore_types)} if ignore_types else {}))
     if not changes:
         return summary
     period = _period(db, run)
@@ -173,9 +193,43 @@ def match_run(db: Session, run: PayrollRun, *, full: bool = False) -> dict:
     runs.mark_stale(db, run.company_id, _reason(changes), pay_group_id=run.pay_group_id,
                     employee_ids=sorted(changes), from_date=period.period_start,
                     details={"source": "change_detection", "run_id": run.id, "changes": compact,
-                             "employees": len(changes)})
+                             "employees": len(changes), "employee_ids": sorted(changes)})
     summary.update(marked=True, changes={str(k): v for k, v in sorted(changes.items())})
     return summary
+
+
+# Sources the gates leave out because finalization re-reads them live: the statutory attestation (I-15) only
+# decides the statutory gate (``runs.finalization_blockers``, "re-evaluated live"); the engine reports it but no
+# amount depends on it. An attestation approved after the lock is how a run of an entity without a verified pack
+# becomes finalizable, so it must not force a recalculation (a revoked one blocks finalization live).
+GATE_LIVE_SOURCES = ("attestation",)
+
+
+class RunMarkedStale(AppError):
+    """409 RUN_STALE from a gate that has just marked the run stale. The stale marker is part of the refused
+    request's transaction: the caller commits it before returning the error (the gate writes nothing else)."""
+
+    def __init__(self, message: str, summary: Mapping[str, Any]):
+        super().__init__(409, message, "RUN_STALE")
+        self.summary = dict(summary)
+
+
+def gate_full_check(db: Session, run: PayrollRun, gate: str) -> dict:
+    """The full change-detection pass at a gate (``"submission"`` or ``"finalization"``, module docstring):
+    when a source changed since the inputs were locked, the run is marked stale and ``RunMarkedStale`` is
+    raised. A reversal run freezes nothing new (it repeats the reversed lines) and is not checked. Returns the summary of
+    a clean pass."""
+    from app.payroll import state_machines as sm
+
+    if run.run_type == sm.RunType.REVERSAL.value:
+        return {"run_id": run.id, "marked": False, "changes": {}, "checked": False}
+    outcome = match_run(db, run, full=True, sourced_only=True, ignore_types=GATE_LIVE_SOURCES)
+    if outcome["marked"]:
+        kinds = sorted({c["type"] for items in outcome["changes"].values() for c in items})
+        raise RunMarkedStale(
+            f"Inputs changed after they were locked ({', '.join(kinds)}) for {len(outcome['changes'])} employee(s); "
+            f"the run is now stale. Recalculate them or defer the change to retro before {gate}.", outcome)
+    return {**outcome, "checked": True}
 
 
 def _runs_with_locked_inputs(db: Session, company_id: int) -> List[PayrollRun]:
@@ -223,6 +277,6 @@ def _match_job(ctx: jobs.JobContext) -> dict:
 
 
 __all__ = [
-    "ADDED", "INVALID", "MATCH_JOB", "REMOVED", "SourceChange", "UPDATED", "changed_sources", "detect_changes",
-    "diff_sources", "match_run", "match_source_changes", "next_slot", "pack_change", "schedule_matching",
+    "ADDED", "GATE_LIVE_SOURCES", "INVALID", "MATCH_JOB", "REMOVED", "RunMarkedStale", "SourceChange", "UPDATED", "changed_sources",
+    "detect_changes", "diff_sources", "gate_full_check", "match_run", "match_source_changes", "next_slot", "pack_change", "schedule_matching",
 ]

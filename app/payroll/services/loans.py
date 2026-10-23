@@ -47,7 +47,7 @@ from app.payroll import audit as payroll_audit
 from app.payroll import formula as fm
 from app.payroll import state_machines as sm
 from app.payroll import time_pay_loans as tpl
-from app.payroll.money import Money, amount_str, decimal_str, is_storable
+from app.payroll.money import Money, amount_str, decimal_str, is_storable, quantize_amount
 from app.payroll.money_errors import MoneyError
 from app.payroll.services import approvals, policies
 from app.payroll.services.wage_inputs import (
@@ -400,6 +400,100 @@ def list_loans(db: Session, principal: Principal, *, own: bool = False, status: 
     total = query.count()
     rows = query.order_by(Loan.id.desc()).offset(skip).limit(limit).all()
     return total, with_employee_refs(db, principal.company_id, [serialize(db, r, detail=False) for r in rows])
+
+
+# ---------------------------------------------------------------------------
+# Policy preview (what an application would be checked against)
+# ---------------------------------------------------------------------------
+def _limit(value: Optional[Decimal], currency: str) -> Optional[dict]:
+    """A computed maximum, rounded down to the currency's minor unit (never above what the policy allows)."""
+    if value is None or value < 0:
+        return None
+    return money_json(quantize_amount(value, currency, "DOWN"), currency)
+
+
+def _kind_preview(db: Session, company_id: int, kind: str, place: Placement, today: date,
+                  figures: PayFigures) -> dict:
+    employee_id = place.employee.id
+    enabled = bool(resolve_setting(db, company_id, SWITCHES[kind], on=today, legal_entity_id=place.legal_entity_id))
+    found = policies.resolve_for_employee(db, company_id, POLICY_TYPES[kind], employee_id, today)
+    result: dict = {"enabled": enabled, "policy_status": found.get("status"), "policy": None, "limits": None,
+                    "usage": None}
+    if found.get("status") != "RESOLVED" or not found.get("version"):
+        return result
+    version = found["version"]
+    fields = dict(version["fields"] or {})
+    result["policy"] = {"name": (found.get("policy") or {}).get("name"), "version": version.get("version"),
+                        "effective_from": version.get("effective_from")}
+    open_count = db.query(func.count(Loan.id)).filter(
+        Loan.company_id == company_id, Loan.employee_id == employee_id, Loan.kind == kind,
+        Loan.status.in_(OPEN_LOAN_STATUSES)).scalar() or 0
+    if kind == tpl.LOAN:
+        rules = tpl.parse_loan_policy(fields)
+        result["limits"] = {
+            "max_amount_formula": fields.get("max_amount_formula"),
+            "max_amount": _limit(max_loan_amount(fields, place.currency, figures), place.currency),
+            "max_tenure_months": rules.max_tenure_months,
+            "interest_rate_percent": decimal_str(rules.interest_rate_percent),
+            "interest_method": rules.interest_method,
+            "max_instalment_percent_of_net": decimal_str(rules.max_instalment_percent_of_net),
+            "min_service_months": rules.min_service_months,
+            "max_active_loans": rules.max_active_loans,
+            "recover_balance_on_exit": rules.recover_balance_on_exit,
+        }
+        result["usage"] = {"open": int(open_count),
+                           "service_months": _service_months(place.employee.hire_date, today)
+                           if place.employee.hire_date else None}
+    else:
+        rules = tpl.parse_advance_policy(fields)
+        maximum = None
+        if figures.monthly_net is not None:
+            maximum = figures.monthly_net * rules.max_percent_of_monthly_net / 100
+        this_year = db.query(func.count(Loan.id)).filter(
+            Loan.company_id == company_id, Loan.employee_id == employee_id, Loan.kind == tpl.ADVANCE,
+            Loan.status.notin_((sm.LoanStatus.REJECTED, sm.LoanStatus.CANCELLED)),
+            extract("year", Loan.created_at) == today.year).scalar() or 0
+        result["limits"] = {
+            "max_percent_of_monthly_net": decimal_str(rules.max_percent_of_monthly_net),
+            "max_amount": _limit(maximum, place.currency),
+            "recover_in_runs": rules.recover_in_runs,
+            "max_per_year": rules.max_per_year,
+        }
+        result["usage"] = {"open": int(open_count), "this_year": int(this_year)}
+    return result
+
+
+def policy_preview(db: Session, principal: Principal, employee_id: Optional[int] = None, *,
+                   own: bool = False) -> dict:
+    """The LOAN_POLICY and ADVANCE_POLICY limits that apply to the employee today, the switches and the
+    employee's current usage: exactly what ``apply_loan`` checks, nothing about other employees.
+
+    ``own``: the caller's own employee (SELF; 404 without one, 403 without loans access to it); otherwise
+    an employee inside the caller's payroll:loans:read scope (404 outside it). Maximum amounts are computed
+    only when the pay figures they depend on are known (else null, never a guess); approval chains and
+    assignment rules are not exposed.
+    """
+    company_id = principal.company_id
+    today = company_today(db, company_id)
+    if own:
+        if principal.employee_id is None:
+            raise not_found("Employee")
+        if not (principal.has(READ) or principal.has(MANAGE)):
+            raise forbidden()  # before the placement lookup, so no loans access never learns placement errors
+        place = placement(db, company_id, principal.employee_id, today)
+        if not any(covers(principal, code, place.legal_entity_id, place.pay_group_id, principal.employee_id)
+                   for code in (READ, MANAGE)):
+            raise forbidden()
+    else:
+        place = scoped_placement(db, principal, READ, int(employee_id or 0), today)
+    figures = _figures_provider(db, company_id, place.employee.id, today, place.currency)
+    protected = _protected_net(db, company_id, place.legal_entity_id, today)
+    return {
+        "employee_id": place.employee.id, "as_of": today.isoformat(), "currency": place.currency,
+        "protected_net_percent": decimal_str(protected) if protected is not None else None,
+        "loan": _kind_preview(db, company_id, tpl.LOAN, place, today, figures),
+        "advance": _kind_preview(db, company_id, tpl.ADVANCE, place, today, figures),
+    }
 
 
 @approvals.on_decided(MODULE, SUBJECT)

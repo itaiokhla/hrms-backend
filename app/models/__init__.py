@@ -45,6 +45,7 @@ from . import (  # noqa: E402,F401
     payment_flows,
     payments,
     payroll_config,
+    payslip_queries,
     reports_compliance,
     security_keys,
     time_inputs,

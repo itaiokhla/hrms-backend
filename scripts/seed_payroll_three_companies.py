@@ -69,18 +69,28 @@ CREDENTIALS_MD = SECRETS_DIR / "payroll-credentials.md"
 DEFAULT_OUTBOX = ROOT / "logs" / "outbox-payroll"
 PLATFORM_EMAIL = "ops@hrms-platform.io"
 TAG = "PAYROLL-SEED"
+COMPONENT_EPOCH = "2025-01-01"  # components and structures are in force from here (employees hired 2025-01-06)
 DATASET_VERSION = 1
+FINALIZED_STATUSES = ("FINALIZED", "PAYMENT_PENDING", "PARTIALLY_PAID", "PAID", "RECONCILED", "CLOSED")
 
 # ---------------------------------------------------------------------------------------------- roles
 # Custom roles (permission codes of app/core/permission_registry.py; scopes are the registry's scopes).
-TEAM_LEAD_GRANTS = [("employee:read", "DIRECT_REPORTS"), ("attendance:read", "DIRECT_REPORTS"),
+TEAM_LEAD_GRANTS = [("employee:read", "DIRECT_REPORTS"), ("attendance:read", "DIRECT_REPORTS"), ("task:manage", "DIRECT_REPORTS"),
                     ("leave:read", "DIRECT_REPORTS"), ("leave:approve", "DIRECT_REPORTS"),
                     ("overtime:approve", "DIRECT_REPORTS"), ("task:approve", "DIRECT_REPORTS"),
                     ("report:read", "DIRECT_REPORTS")]
 SCOPED_PROCESSOR_CODES = ("payroll:run:read", "payroll:run:create", "payroll:run:calculate", "payroll:run:review",
                           "payroll:inputs:read", "payroll:inputs:edit", "payroll:compensation:read",
                           "payroll:payslip:read", "payroll:reports:read", "payroll:configuration:read")
-COMPLIANCE_REVIEWER = [("payroll:statutory:review", "COMPANY")]
+# The I-15 checker approves another administrator's attestation: payroll:statutory:submit (company scope).
+COMPLIANCE_REVIEWER = [("payroll:statutory:review", "COMPANY"), ("payroll:statutory:submit", "COMPANY")]
+
+# Overtime hourly base (company policy of each administrator). The default formula divides the full-period
+# OT_BASE rates by the period's days and hours, which suits salaried components; SUM_TAG_RATE of an hourly
+# RATE_X_UNITS component is already its per-hour rate, so hourly wages carry OT_HOURLY_BASE and are added as is.
+OT_RATE_FORMULA = ('SUM_TAG_RATE("OT_BASE") / period.basis_days / emp.standard_hours_per_day '
+                   '+ SUM_TAG_RATE("OT_HOURLY_BASE")')
+HOURLY_WAGE_TAGS = ["PART_OF_GROSS", "OT_HOURLY_BASE"]
 
 # What each account may do and see (the readable guide; the verification suites assert the real behaviour).
 EXPECTED = {
@@ -89,12 +99,14 @@ EXPECTED = {
                      "approve a run they calculated (separation of duties).",
     "hr_admin": "Employees, org structure, attendance, leave, holidays, users and roles; no payroll amounts or bank "
                 "data beyond their own (no payroll role).",
-    "payroll_processor": "Payroll inputs, compensation proposals, run create / pre-check / calculate / review / submit, "
-                         "loans and claims; cannot approve runs or release payments.",
+    "payroll_processor": "Payroll inputs, compensation proposals, run create / pre-check / calculate / review / submit; "
+                         "approves loans, advances and expense claims of others; cannot approve runs or release "
+                         "payments.",
     "payroll_approver": "Approves runs, compensation, structures and bank-detail changes prepared by others; never "
                         "their own pay line or anything they prepared.",
-    "finance_payments": "Payment batches, release (step-up, dual control), reconciliation, funding accounts; masked bank "
-                        "details only; no salary editing.",
+    "finance_payments": "Payment batches (prepare / approve / release with step-up; preparer, approver and releaser "
+                        "are three different people), reconciliation, funding accounts; masked bank details only; no "
+                        "salary editing. Only the funding account's signatory (finance3) can release.",
     "manager": "Reporting tree: employees, attendance, leave, overtime and task approvals; no compensation or "
                "payslips of others (no payroll grants).",
     "Team Lead": "Direct reports only: employee, attendance, leave, overtime and task approval; no pay amounts.",
@@ -252,11 +264,15 @@ COMPANIES: Dict[str, dict] = {
         "components": [
             {"code": "HRA", "kind": "EARNING", "category": "FIXED_ALLOWANCE", "name": "House rent allowance",
              "calc_method": "PERCENT_OF", "params": {"percent": "40", "bases": ["BASIC"]},
-             "tags": ["LOP_APPLICABLE", "PART_OF_CTC", "PART_OF_GROSS"], "proration": "BY_PAID_DAYS"},
+             "tags": ["LOP_APPLICABLE", "PART_OF_CTC", "PART_OF_GROSS", "TAXABLE_INCOME"], "proration": "BY_PAID_DAYS"},
             {"code": "HOURLY_WAGE", "kind": "EARNING", "category": "BASE", "name": "Hourly wage",
              "calc_method": "RATE_X_UNITS", "params": {"rate": "1", "units": "att.payable_hours"},
-             "tags": ["PART_OF_GROSS", "OT_BASE"], "proration": "NONE"},
+             "tags": [*HOURLY_WAGE_TAGS, "TAXABLE_INCOME"], "proration": "NONE"},
         ],
+        # The administrator marks the taxable earnings: the IN fixture pack withholds income tax on the
+        # TAXABLE_INCOME-tagged earnings only (the country-neutral standard components carry no tax tag).
+        "component_tags": {code: ["TAXABLE_INCOME"] for code in ("BASIC", "FIXED_ALLOWANCE", "OT_WORKDAY",
+                                                                 "OT_WEEKLY_OFF", "OT_HOLIDAY")},
         "structures": [
             {"key": "ctc", "code": "STAFF_CTC", "name": "Staff CTC (India)", "type": "CTC_BASED",
              "lines": [{"component": "BASIC", "method": "FORMULA", "formula": "ctc.monthly * 50%"},
@@ -301,10 +317,16 @@ COMPANIES: Dict[str, dict] = {
              "admin", "Payroll Officer (IN02)", "ctc", "960000", {"pay_group": "svc", "scope_entity": "IN02"}),
             ("svc1", "Farhan", "Ali", ["employee"], "hyd", "Delivery Team", "svcproc", "Delivery Consultant", "ctc",
              "1080000", {"pay_group": "svc"}),
+            # Payment duties are split over three people: preparer (finance), approver, releaser (signatory).
+            ("finance2", "Lakshmi", "Pillai", ["finance_payments", "employee"], "del", "Finance", "admin",
+             "Payments Approver", "ctc", "1260000", {}),
+            ("finance3", "Deepak", "Chopra", ["finance_payments", "employee"], "del", "Finance", "admin",
+             "Treasury Releaser (funding signatory)", "ctc", "1500000", {}),
         ],
         "accounts": {  # guide label -> person key (the admin is "admin")
             "Company Administrator": "admin", "HR Administrator": "hr", "Payroll Processor": "processor",
-            "Payroll Approver": "approver", "Finance & Payments": "finance", "Department Manager": "deptmgr",
+            "Payroll Approver": "approver", "Finance & Payments (preparer)": "finance",
+            "Finance & Payments (approver)": "finance2", "Finance & Payments (releaser, funding signatory)": "finance3", "Department Manager": "deptmgr",
             "Team Lead": "teamlead", "Employee": "emp1",
             "Denial: employee of another department": "emp5", "Denial: manager of another team": "opsmgr",
             "Denial: payroll processor scoped to IN02": "svcproc",
@@ -323,15 +345,25 @@ COMPANIES: Dict[str, dict] = {
             "ATTENDANCE_PAY_POLICY": {"unmarked_day": "PRESENT", "missing_punch_out": "EXCEPTION"},
             "OVERTIME_POLICY": {"buckets": [{"day_type": "WORKDAY", "multiplier": "1.5", "after_hours": "0"},
                                             {"day_type": "WEEKLY_OFF", "multiplier": "2", "after_hours": "0"},
-                                            {"day_type": "HOLIDAY", "multiplier": "2", "after_hours": "0"}]},
-            "ADVANCE_POLICY": {},
+                                            {"day_type": "HOLIDAY", "multiplier": "2", "after_hours": "0"}],
+                                "rate_formula": OT_RATE_FORMULA},
+            # Company policy: an advance is recovered over two monthly runs (so one stays outstanding).
+            "ADVANCE_POLICY": {"recover_in_runs": 2},
         },
         "brand": {"product_name": "Alpha People", "short_name": "Alpha", "tagline": "People first, at Alpha",
                   "primary_color": "#4338CA", "accent_color": "#6366F1", "sidebar_style": "LIGHT",
                   "default_locale": "en-IN", "show_powered_by": False,
                   "legal_footer": "Alpha Technologies Pvt Ltd (fictitious test company)",
                   "support_email": "people@alpha-tech.example"},
-        "finalize_group": "monthly", "draft_group": "weekly", "statutory_attestation": False,
+        "notes": ["Switches ON: overtime, salary advances (plus the starter profile's attendance, leave, wage inputs, "
+                  "tasks, reimbursements); minimum net pay 50 %.",
+                  "Overtime policy (company values): workday 1.5x, weekly off 2x, holiday 2x; hourly base = BASIC "
+                  "(OT_BASE) / calendar days / 8 h, plus the hourly wage itself for hourly crew (OT_HOURLY_BASE).",
+                  "Advance policy: recovered over 2 monthly runs. BASIC, HRA, FIXED_ALLOWANCE, HOURLY_WAGE and "
+                  "overtime are tagged TAXABLE_INCOME by the administrator (the IN fixture taxes tagged earnings).",
+                  "Loan/advance flow: September finalized -> advance approved -> LOAN_DISBURSEMENT off-cycle run "
+                  "finalized -> October run recovers instalment 1 of 2 (one instalment stays outstanding)."],
+        "finalize_group": "monthly", "draft_group": "weekly", "statutory_attestation": False, "previous_run": True,
         "bank": {"country": "IN", "currency": "INR", "people": ["emp1"]},
     },
     "beta": {
@@ -395,19 +427,26 @@ COMPANIES: Dict[str, dict] = {
             ("emp1", "Ravi", "Menon", ["employee"], "dxb", "Dispatch Team", "teamlead", "Fleet Dispatcher", "fleet",
              "9500.00", {"split": {"BASIC": "5500.00", "HOUSING_ALLOWANCE": "3200.00", "FOOD_ALLOWANCE": "800.00"},
                          "trip_pay": "1250.00", "overtime": True, "bank": "verified"}),
+            ("opsmgr", "Hassan", "Karim", ["manager"], "auh", "Operations", "admin", "Operations Manager", "office",
+             "23000.00", {"split": {"BASIC": "13500.00", "HOUSING_ALLOWANCE": "7000.00",
+                                    "TRANSPORT_ALLOWANCE": "2500.00"}}),
             ("emp2", "Fatima", "Zahra", ["employee"], "auh", "Warehouse Team", "opsmgr", "Warehouse Supervisor",
              "fleet", "11000.00", {"split": {"BASIC": "6500.00", "HOUSING_ALLOWANCE": "3700.00",
                                              "FOOD_ALLOWANCE": "800.00"}, "claim": "320.00", "loan": "6000.00",
                                    "bank": "pending_change"}),
-            ("opsmgr", "Hassan", "Karim", ["manager"], "auh", "Operations", "admin", "Operations Manager", "office",
-             "23000.00", {"split": {"BASIC": "13500.00", "HOUSING_ALLOWANCE": "7000.00",
-                                    "TRANSPORT_ALLOWANCE": "2500.00"}}),
             ("emp3", "Sara", "Ibrahim", ["employee"], "auh", "Operations", "opsmgr", "Inventory Clerk", "office",
              "8000.00", {"split": {"BASIC": "4800.00", "HOUSING_ALLOWANCE": "2400.00", "TRANSPORT_ALLOWANCE": "800.00"}}),
+            ("finance2", "Noura", "Saleh", ["finance_payments", "employee"], "dxb", "Finance", "admin",
+             "Payments Approver", "office", "17000.00", {"split": {"BASIC": "10000.00", "HOUSING_ALLOWANCE": "5000.00",
+                                                                  "TRANSPORT_ALLOWANCE": "2000.00"}}),
+            ("finance3", "Peter", "Fernandes", ["finance_payments", "employee"], "dxb", "Finance", "admin",
+             "Treasury Releaser (funding signatory)", "office", "20000.00",
+             {"split": {"BASIC": "12000.00", "HOUSING_ALLOWANCE": "6000.00", "TRANSPORT_ALLOWANCE": "2000.00"}}),
         ],
         "accounts": {
             "Company Administrator": "admin", "HR Administrator": "hr", "Payroll Processor": "processor",
-            "Payroll Approver": "approver", "Finance & Payments": "finance",
+            "Payroll Approver": "approver", "Finance & Payments (preparer)": "finance",
+            "Finance & Payments (approver)": "finance2", "Finance & Payments (releaser, funding signatory)": "finance3",
             "Department Manager (no compensation visibility)": "deptmgr", "Team Lead": "teamlead",
             "Employee": "emp1", "Denial: employee of another department": "emp3",
             "Denial: manager of another team": "opsmgr",
@@ -422,13 +461,24 @@ COMPANIES: Dict[str, dict] = {
                                             {"day_type": "WEEKLY_OFF", "multiplier": "1.5", "after_hours": "0"},
                                             {"day_type": "HOLIDAY", "multiplier": "1.5", "after_hours": "0"}]},
             "HOLIDAY_PAY_POLICY": {"holiday_work_multiplier": "1.5", "weekly_off_work_multiplier": "1.5"},
-            "LOAN_POLICY": {"min_service_months": 3},
+            "LOAN_POLICY": {"min_service_months": 3, "max_amount_formula": "2 * MONTHLY_GROSS",
+                            "max_tenure_months": 12},
         },
         "brand": {"product_name": "Beta Workforce", "short_name": "Beta", "tagline": "Moving people and freight",
                   "primary_color": "#0F766E", "accent_color": "#14B8A6", "sidebar_style": "DARK",
                   "default_locale": "en-AE", "legal_footer": "Beta Logistics LLC (fictitious test company)",
                   "support_email": "hr@beta-logistics.example"},
-        "finalize_group": "monthly", "draft_group": "monthly", "statutory_attestation": True,
+        # A finalized September gives the monthly net the loan's instalment check needs; the loan is then
+        # disbursed (off-cycle) and October's finalized run recovers its first instalment.
+        "notes": ["Switches ON: overtime, holiday-work premium, loans; minimum net pay 50 %. Mon-Fri week (country "
+                  "default); Dubai and Abu Dhabi branches.",
+                  "Overtime policy (company values): workday 1.25x, weekly off 1.5x, holiday 1.5x; holiday-work and "
+                  "weekly-off-work multipliers 1.5x. Loan policy: 3 months' service, max 2 x monthly gross, 12 months.",
+                  "Bank: emp1 and the team lead hold VERIFIED accounts (document review of a test letter); emp2 has a "
+                  "verified account plus a PENDING replacement (bank change awaiting approval).",
+                  "Department Manager: the system Manager role grants payroll permissions at SELF scope only, so no "
+                  "other employee's compensation is visible (asserted by verify_payroll_seed.py)."],
+        "finalize_group": "monthly", "draft_group": "monthly", "statutory_attestation": True, "previous_run": True,
         "bank": {"country": "AE", "currency": "AED", "people": ["emp1", "emp2", "teamlead"]},
     },
     "gamma": {
@@ -443,8 +493,8 @@ COMPANIES: Dict[str, dict] = {
         "branches": [("nyc", "US01", "New York", "NYC", "US-NY", "America/New_York", None),
                      ("cal", "US01", "California", "CAL", "US-CA", "America/Los_Angeles", None)],
         "work_weeks": [],
-        "pay_groups": [("biweekly", "US01", "BIWEEKLY_USD", "Bi-weekly (USD)", "USD", "BIWEEKLY",
-                        {"biweekly_anchor_date": "@anchor", "pay_day_rule": "DAYS_AFTER_PERIOD_END", "pay_day_value": 5},
+        "pay_groups": [("biweekly", "US01", "BIWEEKLY_USD", "Bi-weekly (USD)", "USD", "BI_WEEKLY",
+                        {"biweekly_anchor_date": "@anchor", "week_start_day": "MON", "pay_day_rule": "DAYS_AFTER_PERIOD_END", "pay_day_value": 5},
                         True)],
         "departments": ["Engineering", "Sales", "Administration", "Finance"],
         "teams": [("Web Team", "Engineering"), ("Field Sales Team", "Sales")],
@@ -452,7 +502,7 @@ COMPANIES: Dict[str, dict] = {
         "components": [
             {"code": "HOURLY_WAGE", "kind": "EARNING", "category": "BASE", "name": "Hourly wage",
              "calc_method": "RATE_X_UNITS", "params": {"rate": "1", "units": "att.payable_hours"},
-             "tags": ["PART_OF_GROSS", "OT_BASE"], "proration": "NONE"},
+             "tags": HOURLY_WAGE_TAGS, "proration": "NONE"},
         ],
         "structures": [
             {"key": "salaried", "code": "SALARIED_GROSS", "name": "Salaried (gross)", "type": "GROSS_BASED",
@@ -464,34 +514,40 @@ COMPANIES: Dict[str, dict] = {
                         "params": {"units": "COALESCE(att.payable_hours, 0)"}}]},
         ],
         "custom_roles": {"Team Lead": TEAM_LEAD_GRANTS, "Compliance Reviewer": COMPLIANCE_REVIEWER},
-        # GROSS_BASED bi-weekly: the basis is the gross per pay period of the structure (monthly figure here).
+        # Salaried amounts are the gross of one BI-WEEKLY period (annual salary / 26): a FIXED structure line pays
+        # its amount every pay period (only basis ANNUAL lines are divided by the periods per year).
         "people": [
             ("hr", "Olivia", "Martinez", ["hr_admin", "Compliance Reviewer"], "nyc", "Administration", "admin",
-             "HR Administrator", "salaried", "8200.00", {"split": {"BASIC": "8200.00"}}),
+             "HR Administrator", "salaried", "3800.00", {"split": {"BASIC": "3800.00"}}),
             ("processor", "Noah", "Kim", ["payroll_processor", "employee"], "nyc", "Finance", "admin",
-             "Payroll Processor", "salaried", "7400.00", {"split": {"BASIC": "7400.00"}}),
+             "Payroll Processor", "salaried", "3400.00", {"split": {"BASIC": "3400.00"}}),
             ("approver", "Grace", "Lee", ["payroll_approver", "employee"], "nyc", "Finance", "admin",
              "Payroll Approver", None, None, {"no_salary_reason": "approver"}),
             ("finance", "Ethan", "Wright", ["finance_payments", "employee"], "nyc", "Finance", "admin",
-             "Payments Specialist", "salaried", "7000.00", {"split": {"BASIC": "7000.00"}}),
+             "Payments Specialist", "salaried", "3200.00", {"split": {"BASIC": "3200.00"}}),
             ("deptmgr", "Michael", "Brown", ["manager"], "nyc", "Engineering", "admin", "Engineering Manager",
-             "salaried", "12500.00", {"split": {"BASIC": "12500.00"}}),
+             "salaried", "5800.00", {"split": {"BASIC": "5800.00"}}),
             ("teamlead", "Jessica", "Davis", ["employee", "Team Lead"], "nyc", "Web Team", "deptmgr", "Team Lead",
-             "salaried", "10400.00", {"split": {"BASIC": "10400.00"}, "bonus": "750.00"}),
+             "salaried", "4800.00", {"split": {"BASIC": "4800.00"}, "bonus": "750.00"}),
             ("emp1", "David", "Wilson", ["employee"], "nyc", "Web Team", "teamlead", "Frontend Engineer (hourly)",
              "hourly", "48.00", {"attendance_hours": True, "overtime": True, "task": True, "retro": "52.00"}),
             ("emp2", "Sarah", "Johnson", ["employee"], "cal", "Web Team", "teamlead", "Backend Engineer", "salaried",
-             "9100.00", {"split": {"BASIC": "9100.00"}, "claim": "86.40"}),
+             "4200.00", {"split": {"BASIC": "4200.00"}, "claim": "86.40"}),
             ("salesmgr", "Robert", "Garcia", ["manager"], "cal", "Sales", "admin", "Sales Manager", "salaried",
-             "9800.00", {"split": {"BASIC": "9800.00"}}),
+             "4500.00", {"split": {"BASIC": "4500.00"}}),
             ("emp3", "Chloe", "Nguyen", ["employee"], "cal", "Field Sales Team", "salesmgr", "Account Executive",
-             "salaried", "6200.00", {"split": {"BASIC": "6200.00"}, "commission": "1340.00", "joiner": 2}),
+             "salaried", "2850.00", {"split": {"BASIC": "2850.00"}, "commission": "1340.00", "joiner": 2}),
             ("emp4", "Liam", "Turner", ["employee"], "cal", "Field Sales Team", "salesmgr", "Sales Associate (hourly)",
              "hourly", "31.50", {"attendance_hours": True, "leaver": True}),
+            ("finance2", "Hannah", "Scott", ["finance_payments", "employee"], "nyc", "Finance", "admin",
+             "Payments Approver", "salaried", "3150.00", {"split": {"BASIC": "3150.00"}}),
+            ("finance3", "Lucas", "Reed", ["finance_payments", "employee"], "nyc", "Finance", "admin",
+             "Treasury Releaser (funding signatory)", "salaried", "3500.00", {"split": {"BASIC": "3500.00"}}),
         ],
         "accounts": {
             "Company Administrator": "admin", "HR Administrator": "hr", "Payroll Processor": "processor",
-            "Payroll Approver": "approver", "Finance & Payments": "finance", "Department Manager": "deptmgr",
+            "Payroll Approver": "approver", "Finance & Payments (preparer)": "finance",
+            "Finance & Payments (approver)": "finance2", "Finance & Payments (releaser, funding signatory)": "finance3", "Department Manager": "deptmgr",
             "Team Lead": "teamlead", "Employee": "emp1", "Denial: employee of another department": "emp3",
             "Denial: manager of another team": "salesmgr",
         },
@@ -502,12 +558,19 @@ COMPANIES: Dict[str, dict] = {
             "ATTENDANCE_PAY_POLICY": {"unmarked_day": "PRESENT", "missing_punch_out": "EXCEPTION"},
             "OVERTIME_POLICY": {"buckets": [{"day_type": "WORKDAY", "multiplier": "1.5", "after_hours": "0"},
                                             {"day_type": "WEEKLY_OFF", "multiplier": "1.5", "after_hours": "0"},
-                                            {"day_type": "HOLIDAY", "multiplier": "2", "after_hours": "0"}]},
+                                            {"day_type": "HOLIDAY", "multiplier": "2", "after_hours": "0"}],
+                                "rate_formula": OT_RATE_FORMULA},
         },
         "rate_cards": [("CODE_REVIEW", "45.00")],
         "brand": {"product_name": "Gamma HR Cloud", "short_name": "Gamma", "tagline": "Your team, in the cloud",
                   "primary_color": "#EA580C", "accent_color": "#1E3A8A", "sidebar_style": "DARK",
                   "default_locale": "en-US", "support_email": "people@gamma-solutions.example"},
+        "notes": ["Salaried amounts are per BI-WEEKLY period (annual / 26); hourly staff are paid rate x punched hours "
+                  "(09:00-17:30 with a 30-minute unpaid lunch = 8 h a day).",
+                  "Overtime policy (company values): workday 1.5x, weekly off 1.5x, holiday 2x; hourly base as Alpha "
+                  "(the default formula alone would divide an hourly rate by days and hours - reported defect).",
+                  "Retro: after the finalized period, emp1's rate is corrected backdated (48.00 -> 52.00 from the "
+                  "period start); the arrears proposal waits for approval."],
         "finalize_group": "biweekly", "draft_group": "biweekly", "statutory_attestation": True,
         "bank": {"country": "US", "currency": "USD", "people": ["emp2"]},
     },
@@ -524,6 +587,7 @@ class Context:
     before_login: Optional[Callable[[], None]] = None
     today: Optional[date] = None
     log: Callable[[str], None] = print
+    make_platform_client: Optional[Callable[[], Any]] = None  # platform console host (default: make_client)
     blocked: List[dict] = field(default_factory=list)
     stats: Dict[str, int] = field(default_factory=lambda: {"created": 0, "existing": 0})
 
@@ -663,7 +727,7 @@ class CompanySeed:
     def ensure_plan(self) -> None:
         if not self.ctx.platform_password:
             return
-        ops = Api(self.ctx.make_client(), PLATFORM_EMAIL)
+        ops = Api((self.ctx.make_platform_client or self.ctx.make_client)(), PLATFORM_EMAIL)
         ops.post("platform/auth/login", {"email": PLATFORM_EMAIL, "password": self.ctx.platform_password})
         listed = items_of(ops.get("platform/companies", q=self.spec["name"], limit=50))
         current = next((c for c in listed if c.get("id") == self.state["company_id"]), {})
@@ -779,9 +843,9 @@ class CompanySeed:
             else:
                 self.ctx.existing()
             self.ids["pay_groups"][gkey] = row["id"]
-            calendar = self.admin.get(f"payroll/pay-groups/{row['id']}/calendar")
-            calendar_row = calendar.get("calendar") if isinstance(calendar, dict) and "calendar" in calendar else calendar
-            if not calendar_row or not calendar_row.get("id"):
+            calendar = self.admin.get(f"payroll/pay-groups/{row['id']}/calendar")  # {"current": ..., "history": [...]}
+            calendar_row = calendar.get("current") if isinstance(calendar, dict) else None
+            if not calendar_row:
                 self.admin.post(f"payroll/pay-groups/{row['id']}/calendar",
                                 {"frequency": frequency, "rules": rules, "effective_from": self.ctx.store["anchors"]["epoch"]})
                 self.ctx.created(f"pay calendar {code}")
@@ -811,10 +875,14 @@ class CompanySeed:
         by_display = {r["name"]: r for r in roles}
         for name, grants in self.spec["custom_roles"].items():
             row = by_display.get(name)
+            wanted = [{"permission": p, "scope": s} for p, s in grants]
             if row is None:
                 row = self.admin.post("roles", {"name": name, "description": f"{name} ({TAG} custom role)",
-                                                "grants": [{"permission": p, "scope": s} for p, s in grants]})
+                                                "grants": wanted})
                 self.ctx.created(f"role {name}")
+            elif sorted((g["permission"], g["scope"]) for g in row.get("grants") or []) != sorted(grants):
+                row = self.admin.patch(f"roles/{row['id']}", {"grants": wanted})
+                self.ctx.created(f"grants of role {name}")
             else:
                 self.ctx.existing()
             by_name[name] = row
@@ -1010,8 +1078,16 @@ class CompanySeed:
                                                           scope_id=entity_id)["items"]}
             batch = []
             for key, value in values.items():
+                if key not in scoped:
+                    # The pack's employer choices are not in the settings registry of the running API
+                    # (app.payroll.packs.register_settings is never called at start-up): reported, not faked.
+                    self.ctx.block(self.spec["name"], f"statutory switch {key} on {entity_code}", RuntimeError(
+                        f"GET /api/v1/payroll/settings/values?scope_type=LEGAL_ENTITY has no {key}: country-pack "
+                        "settings are not registered in the running API (packs.register_settings never called)"))
+                    continue
                 here = scoped[key].get("here") or {}
-                if here.get("value") == value and here.get("effective_from", "9999") <= epoch:
+                # A value the country pack already requires (legal constraint) stores no row: nothing to save.
+                if (here.get("value") == value and here.get("effective_from", "9999") <= epoch) or                         (not here and scoped[key].get("value") == value and scoped[key].get("legal_limit")):
                     self.ctx.existing()
                     continue
                 batch.append({"key": key, "scope_type": "LEGAL_ENTITY", "scope_id": entity_id, "value": value,
@@ -1022,43 +1098,82 @@ class CompanySeed:
                 self.ctx.created(f"{len(batch)} {entity_code} settings")
 
     def ensure_policies(self) -> None:
+        """Company policies in force from the dataset epoch.
+
+        The starter profile activates its catch-all policies (versions and assignment rules) from the signup
+        day; the dataset's periods start earlier, so every ACTIVE policy is re-dated to the epoch (same fields,
+        reason recorded) and the company's own policy values (``spec.policies``: multipliers and rules entered
+        by the administrator as company policy, never statutory facts) are activated. A draft policy of a
+        switch that stays OFF is left a draft."""
         epoch = self.ctx.store["anchors"]["epoch"]
-        policies = {p["type"]: p for p in self.admin.get("payroll/policies")}
-        for type_code, overrides in self.spec["policies"].items():
-            summary = policies.get(type_code)
-            if summary is None:
-                continue
+        for summary in self.admin.get("payroll/policies"):
+            type_code = summary["type"]
+            overrides = self.spec["policies"].get(type_code)
             detail = self.admin.get(f"payroll/policies/{summary['id']}")
             versions = detail.get("versions") or []
-            active = next((v for v in versions if v["status"] == "ACTIVE"), None)
-            base = dict((active or versions[-1])["fields"])
-            wanted = {**base, **overrides}
-            if active and active["effective_from"] <= epoch and all(active["fields"].get(k) == v
-                                                                     for k, v in overrides.items()):
-                self.ctx.existing()
+            actives = [v for v in versions if v["status"] == "ACTIVE"]
+            if not actives and overrides is None:
                 continue
-            draft = next((v for v in versions if v["status"] == "DRAFT"), None)
-            if draft is None:
-                draft = self.admin.post(f"payroll/policies/{summary['id']}/versions",
-                                        {"fields": wanted, "effective_from": epoch})
+            current = actives[-1] if actives else versions[-1]
+            wanted = {**dict(current["fields"]), **(overrides or {})}
+            dated = any(v["effective_from"] <= epoch for v in actives)
+            if dated and all(all(v["fields"].get(k) == val for k, val in (overrides or {}).items()) for v in actives):
+                self.ctx.existing()
             else:
-                draft = self.admin.put(f"payroll/policies/{summary['id']}/versions/{draft['version']}",
-                                       {"fields": wanted, "effective_from": epoch})
-            number = draft.get("version") or draft.get("latest_version")
-            self.admin.post(f"payroll/policies/{summary['id']}/versions/{number}/activate",
-                            {"effective_from": epoch,
-                             "reason": f"{TAG}: values entered by the administrator as company policy"})
-            self.ctx.created(f"policy {type_code} v{number}")
+                draft = next((v for v in versions if v["status"] == "DRAFT"), None)
+                if draft is None:
+                    draft = self.admin.post(f"payroll/policies/{summary['id']}/versions",
+                                            {"fields": wanted, "effective_from": epoch})
+                else:
+                    draft = self.admin.put(f"payroll/policies/{summary['id']}/versions/{draft['version']}",
+                                           {"fields": wanted, "effective_from": epoch})
+                number = draft.get("version") or draft.get("latest_version")
+                why = "values entered by the administrator as company policy" if overrides else                     "starter policy applies from the dataset epoch"
+                self.admin.post(f"payroll/policies/{summary['id']}/versions/{number}/activate",
+                                {"effective_from": epoch, "reason": f"{TAG}: {why}"})
+                self.ctx.created(f"policy {type_code} v{number} from {epoch}")
+            rules = detail.get("assignments") or []
+            if rules and any(r["effective_from"] > epoch for r in rules):
+                self.admin.put(f"payroll/policies/{summary['id']}/assignments", {"rules": [
+                    {"criteria": r["criteria"], "priority": r["priority"], "effective_to": r["effective_to"],
+                     "effective_from": min(r["effective_from"], epoch)} for r in rules]})
+                self.ctx.created(f"assignment rules of {type_code} from {epoch}")
+            elif not rules and overrides is not None:
+                self.admin.put(f"payroll/policies/{summary['id']}/assignments", {"rules": [
+                    {"criteria": {"everyone": True}, "priority": 0, "effective_from": epoch}]})
+                self.ctx.created(f"assignment rule (everyone) of {type_code}")
 
     def ensure_components(self) -> None:
+        """The standard catalogue plus the company's own components, all in force from COMPONENT_EPOCH.
+
+        ``components/seed`` creates the standard components from today; inputs and runs of the dataset's
+        earlier periods need them, so each one gets a backdated version (same values, reason recorded)."""
         self.admin.post("payroll/components/seed")
-        have = {c["code"] for c in self.admin.get("payroll/components", include_archived="true")}
+        listed = self.admin.get("payroll/components", include_archived="true")
+        have = {c["code"] for c in listed}
         for comp in self.spec["components"]:
             if comp["code"] in have:
                 self.ctx.existing()
                 continue
-            self.admin.post("payroll/components", {**comp, "effective_from": "2025-01-01"})
+            self.admin.post("payroll/components", {**comp, "effective_from": COMPONENT_EPOCH})
             self.ctx.created(f"component {comp['code']}")
+        extra_tags = self.spec.get("component_tags", {})
+        for comp in listed:
+            current = comp.get("current_version") or {}
+            if comp.get("read_only") or comp.get("status") != "ACTIVE" or not current:
+                continue
+            tags = list(current.get("tags") or [])
+            missing = [t for t in extra_tags.get(comp["code"], []) if t not in tags]
+            if str(current.get("effective_from"))[:10] > COMPONENT_EPOCH or missing:
+                body = {"effective_from": COMPONENT_EPOCH,
+                        "reason": f"{TAG}: the standard component applies to the dataset's whole history"}
+                if missing:
+                    body["tags"] = tags + missing
+                    body["reason"] += f"; the administrator marks it {', '.join(missing)}"
+                self.admin.post(f"payroll/components/{comp['code']}/versions", body)
+                self.ctx.created(f"component {comp['code']} from {COMPONENT_EPOCH}")
+            else:
+                self.ctx.existing()
 
     def ensure_structures(self) -> None:
         rows = {s["code"]: s for s in self.admin.get("payroll/salary-structures")}
@@ -1123,11 +1238,21 @@ class CompanySeed:
             candidates = [d for d in dates_in(start, end) if d.weekday() < 5]
         return candidates[max(0, len(candidates) - offset)]
 
+    def working_day_after_today(self, gkey: str, offset: int = 1) -> date:
+        """A Monday-Friday day of the finalized period after the anchor day (leave cannot start in the past)."""
+        anchors = self.ctx.store["anchors"]
+        period = anchors["periods"][self.key][gkey]
+        end, today = _d(period["end"]), _d(anchors["today"])
+        candidates = [d for d in dates_in(today + timedelta(days=1), end) if d.weekday() < 5]
+        if not candidates:  # the anchor day is the period's last working day: the next period
+            candidates = [d for d in dates_in(end + timedelta(days=1), end + timedelta(days=14)) if d.weekday() < 5]
+        return candidates[min(offset, len(candidates)) - 1]
+
     def ensure_leave(self) -> None:
         for pkey, person in self.ids["people"].items():
             if not person.get("extras", {}).get("leave"):
                 continue
-            day = self.working_day_before_today(person["pay_group"], offset=2)
+            day = self.working_day_after_today(person["pay_group"], offset=1)
             existing = items_of(self.admin.get("leaves", employee_id=person["employee_id"], limit=200))
             if any(str(l.get("start_date"))[:10] == _iso(day) and l.get("status") in ("pending", "approved")
                    for l in existing):
@@ -1143,7 +1268,7 @@ class CompanySeed:
         for pkey, person in self.ids["people"].items():
             if not person.get("extras", {}).get("lop_day"):
                 continue
-            day = self.working_day_before_today(person["pay_group"], offset=3)
+            day = self.working_day_after_today(person["pay_group"], offset=2)
             existing = items_of(self.admin.get("leaves", employee_id=person["employee_id"], limit=200))
             if any(str(l.get("start_date"))[:10] == _iso(day) and l.get("leave_type") == "unpaid"
                    and l.get("status") in ("pending", "approved") for l in existing):
@@ -1205,7 +1330,9 @@ class CompanySeed:
                 self.ctx.existing()
 
     def ensure_wage_inputs(self) -> None:
-        processor, approver = self.session("processor"), self.session("approver")
+        # payroll:inputs:approve belongs to the processor roles: the processor prepares, the payroll manager
+        # (company administrator) approves (maker-checker).
+        processor, approver = self.session("processor"), self.admin
         mapping = (("trip_pay", "TRIP_PAY"), ("bonus", "BONUS"), ("commission", "COMMISSION"))
         for pkey, person in self.ids["people"].items():
             extras = person.get("extras", {})
@@ -1217,14 +1344,15 @@ class CompanySeed:
                 rows = items_of(processor.get("payroll/wage-inputs", employee_id=person["employee_id"], limit=200))
                 row = next((r for r in rows if r.get("external_ref") == ref), None)
                 if row is None:
-                    row = processor.post("payroll/wage-inputs", {
+                    row = items_of(processor.post("payroll/wage-inputs", {
                         "employee_id": person["employee_id"], "component_code": component,
                         "period_start": period["start"], "period_end": period["end"],
                         "amount": money(extras[extra_key], self.cur), "reason": f"{TAG}: {component.lower()} (test)",
-                        "external_ref": ref, "submit": True})
+                        "external_ref": ref, "submit": True}))[0]  # {"items": [the input]}
                     self.ctx.created(f"wage input {component} {extras[extra_key]} for {pkey}")
                 if row.get("status") in ("SUBMITTED", "PENDING_APPROVAL"):
-                    approver.post(f"payroll/wage-inputs/{row['id']}/approve", {"remarks": f"{TAG}: approved"})
+                    approver.post(f"payroll/wage-inputs/{row['id']}/approve",
+                                  {"remarks": f"{TAG}: approved by the payroll manager"})
                     self.ctx.created(f"wage input {component} approved")
                 else:
                     self.ctx.existing()
@@ -1232,8 +1360,8 @@ class CompanySeed:
     def ensure_tasks(self) -> None:
         for task_type, rate in self.spec.get("rate_cards", []):
             cards = items_of(self.admin.get("payroll/task-rate-cards", task_type=task_type))
-            if not cards:
-                self.session("processor").post("payroll/task-rate-cards", {
+            if not cards:  # rate cards are configuration (payroll:configuration:write): the payroll manager
+                self.admin.post("payroll/task-rate-cards", {
                     "task_type": task_type, "rate": money(rate, self.cur), "effective_from": "2025-01-01"})
                 self.ctx.created(f"rate card {task_type} {rate}")
             else:
@@ -1245,7 +1373,10 @@ class CompanySeed:
             tasks = items_of(self.admin.get("tasks", limit=200))
             task = next((t for t in tasks if t.get("external_ref") == ref), None)
             day = self.working_day_before_today(person["pay_group"], offset=2)
+            # The team lead records the work, attaches the evidence and submits (task:manage over direct
+            # reports); the department manager above approves it (maker-checker).
             manager = self.session(person["manager"])
+            checker = self.session(self.person(person["manager"])["manager"])
             if task is None:
                 task = manager.post("tasks", {"title": "Code review batch (test)", "task_type": "CODE_REVIEW",
                                               "quantity": "6", "unit": "reviews", "completed_on": _iso(day),
@@ -1256,15 +1387,14 @@ class CompanySeed:
             if task.get("status") in ("DRAFT", "OPEN", "ASSIGNED"):
                 evidence = task.get("evidence") or []
                 if not evidence:
-                    self.session(pkey).request(
+                    manager.request(
                         "POST", f"tasks/{task['id']}/evidence",
-                        files={"file": ("review-log.txt", b"Test evidence: six code reviews (fictitious).\n",
-                                        "text/plain")})
-                self.session(pkey).post(f"tasks/{task['id']}/submit")
+                        files={"file": ("review-log.png", tiny_png(), "image/png")})  # test evidence (PNG)
+                manager.post(f"tasks/{task['id']}/submit")
                 task = self.admin.get(f"tasks/{task['id']}")
                 self.ctx.created("task submitted")
             if task.get("status") in ("SUBMITTED", "PENDING_APPROVAL"):
-                manager.post(f"tasks/{task['id']}/approve", {"remarks": f"{TAG}: approved"})
+                checker.post(f"tasks/{task['id']}/approve", {"remarks": f"{TAG}: approved by the department manager"})
                 self.ctx.created("task approved")
             else:
                 self.ctx.existing()
@@ -1278,7 +1408,8 @@ class CompanySeed:
             claims = items_of(mine.get("me/payroll/reimbursement-claims"))
             claim = next((c for c in claims if (c.get("merchant") or "").startswith(TAG)), None)
             if claim is None:
-                day = self.working_day_before_today(person["pay_group"], offset=3)
+                # Dated on the anchor day: the starter reimbursement policy applies from the signup day (F-41).
+                day = _d(self.ctx.store["anchors"]["today"])
                 claim = mine.post("me/payroll/reimbursement-claims", {
                     "claim_type": "GENERAL", "expense_date": _iso(day), "amount": money(amount, self.cur),
                     "merchant": f"{TAG} Test Office Supplies", "description": "Printer toner (test receipt)"})
@@ -1290,8 +1421,8 @@ class CompanySeed:
                 self.ctx.created("claim receipt")
             claim = self.session("processor").get(f"payroll/reimbursement-claims/{claim['id']}")
             if claim.get("status") in ("SUBMITTED", "PENDING_APPROVAL"):
-                self.session("approver").post(f"payroll/reimbursement-claims/{claim['id']}/approve",
-                                              {"remarks": f"{TAG}: approved"})
+                self.session("processor").post(f"payroll/reimbursement-claims/{claim['id']}/approve",
+                                               {"remarks": f"{TAG}: receipt checked and approved"})
                 self.ctx.created("claim approved")
             else:
                 self.ctx.existing()
@@ -1299,7 +1430,7 @@ class CompanySeed:
     def ensure_loans(self) -> None:
         for pkey, person in self.ids["people"].items():
             extras = person.get("extras", {})
-            for kind, amount, tenure in (("ADVANCE", extras.get("advance"), 1), ("LOAN", extras.get("loan"), 6)):
+            for kind, amount, tenure in (("ADVANCE", extras.get("advance"), 2), ("LOAN", extras.get("loan"), 6)):
                 if not amount:
                     continue
                 loans = items_of(self.session("processor").get("payroll/loans", employee_id=person["employee_id"]))
@@ -1312,8 +1443,8 @@ class CompanySeed:
                     self.ctx.created(f"{kind.lower()} {amount} for {pkey}")
                 loan = self.session("processor").get(f"payroll/loans/{loan['id']}")
                 if loan.get("status") in ("SUBMITTED", "PENDING_APPROVAL", "REQUESTED"):
-                    self.session("approver").post(f"payroll/loans/{loan['id']}/approve",
-                                                  {"reason": f"{TAG}: approved"})
+                    self.session("processor").post(f"payroll/loans/{loan['id']}/approve",
+                                                   {"remarks": f"{TAG}: approved (employee applied, processor checked)"})
                     self.ctx.created(f"{kind.lower()} approved")
                 else:
                     self.ctx.existing()
@@ -1327,15 +1458,16 @@ class CompanySeed:
             mine = self.session(pkey)
             accounts = items_of(mine.get("me/payroll/bank-accounts"))
             want = person["extras"].get("bank", "verified")
-            if not accounts:
+            originals = sorted((a for a in accounts if not a.get("replaces_account_id")), key=lambda a: a["id"])
+            if not originals:
                 step_up(self.ctx, mine, self.state["company_id"], person["email"])
                 mine.post("me/payroll/bank-accounts", bank_details(bank["country"], bank["currency"], person,
                                                                    variant=0))
                 self.ctx.created(f"bank account (test data) for {pkey}")
                 accounts = items_of(mine.get("me/payroll/bank-accounts"))
-            account = accounts[0]
-            changes = items_of(self.admin.get("payroll/bank-change-requests", employee_id=person["employee_id"])) \
-                if False else items_of(self.session("approver").get("payroll/bank-change-requests"))
+                originals = sorted((a for a in accounts if not a.get("replaces_account_id")), key=lambda a: a["id"])
+            account = originals[0]  # the first account; a replacement (pending change) is never approved here
+            changes = items_of(self.session("approver").get("payroll/bank-change-requests"))
             pending = [c for c in changes if c.get("bank_account_id") == account["id"]
                        and c.get("status") in ("PENDING_APPROVAL", "PENDING", "SUBMITTED")]
             if pending:
@@ -1346,8 +1478,16 @@ class CompanySeed:
                 self.ctx.created("bank change approved")
             account = self.session("approver").get(f"payroll/bank-accounts/{account['id']}")
             if account.get("verification_status") != "VERIFIED":
+                # Ownership is verified by a document review of an uploaded (fictitious) bank letter; format
+                # validation alone never verifies ownership.
+                evidence = next((v for v in account.get("verifications") or []
+                                 if v.get("result") == "EVIDENCE_SUBMITTED"), None)
+                if evidence is None:
+                    evidence = mine.request("POST", f"me/payroll/bank-accounts/{account['id']}/evidence",
+                                            files={"file": ("test-bank-letter.png", tiny_png(), "image/png")})
+                    self.ctx.created(f"bank letter (test evidence) uploaded by {pkey}")
                 self.session("approver").post(f"payroll/bank-accounts/{account['id']}/verify", {
-                    "method": "DOCUMENT_REVIEW", "decision": "PASS",
+                    "method": "DOCUMENT_REVIEW", "decision": "PASS", "evidence_id": evidence["id"],
                     "reason": f"{TAG}: test bank letter reviewed (fictitious account)"})
                 self.ctx.created(f"bank account verified for {pkey}")
             else:
@@ -1362,6 +1502,29 @@ class CompanySeed:
                     self.ctx.created(f"pending bank change (test data) for {pkey}")
                 else:
                     self.ctx.existing()
+
+    def ensure_funding_accounts(self) -> None:
+        """One payroll funding account per legal entity (fictitious test details), opened by the payments
+        preparer after step-up; the releaser is its signatory (release needs a signatory and step-up)."""
+        preparer = self.session("finance")
+        releaser_user = self.ids["users"]["finance3"]
+        accounts = self.state.setdefault("funding_accounts", {})
+        for code, entity_id in self.ids["entities"].items():
+            rows = items_of(preparer.get(f"payroll/legal-entities/{entity_id}/funding-accounts"))
+            row = next((r for r in rows if (r.get("name") or "").startswith(TAG)), None)
+            if row is None:
+                step_up(self.ctx, preparer, self.state["company_id"], self.accounts["finance"]["email"])
+                details = bank_details(self.spec["country"], self.cur, {
+                    "employee_id": 900000 + entity_id, "name": f"{self.spec['name']} payroll (test)"}, variant=9)
+                if details.get("account_type") == "SAVINGS":
+                    details["account_type"] = "CURRENT"  # a company account
+                row = preparer.post(f"payroll/legal-entities/{entity_id}/funding-accounts", {
+                    "name": f"{TAG} {code} payroll funding (test data)", "purpose": "PAYROLL",
+                    "signatory_user_ids": [releaser_user], "formats": ["GENERIC_CSV"], "details": details})
+                self.ctx.created(f"funding account {code} (signatory finance3)")
+            else:
+                self.ctx.existing()
+            accounts[code] = {"id": row["id"], "signatory_user_ids": row.get("signatory_user_ids")}
 
     # -------------------------------------------------------------- 7. statutory attestation (I-15)
     def ensure_attestation(self) -> None:
@@ -1389,12 +1552,16 @@ class CompanySeed:
     def _runs(self, api: Api, gkey: str, period_id: int) -> list:
         return items_of(api.get("payroll/runs", pay_group_id=self.ids["pay_groups"][gkey], pay_period_id=period_id))
 
-    def ensure_finalized_run(self) -> None:
-        """REGULAR run of the current period: processor pre-checks, calculates, reviews and submits; the
-        independent approver approves; the payroll manager (founder) steps up and finalizes."""
+    def ensure_finalized_run(self, which: str = "finalized") -> None:
+        """REGULAR run taken through the whole approval chain: processor pre-checks, calculates, reviews and
+        submits; the independent approver approves; the payroll manager (founder) steps up and finalizes.
+
+        ``finalized`` is the anchor period (it holds the seeded leave, overtime and inputs); ``previous`` is
+        the period before it (Alpha: a finalized month gives the monthly net that salary advances need)."""
         gkey = self.spec["finalize_group"]
-        period = self.period_of(gkey, _d(self.ctx.store["anchors"]["periods"][self.key][gkey]["start"]))
-        processor, approver, admin = self.session("processor"), self.session("approver"), self.admin
+        start = _d(self.ctx.store["anchors"]["periods"][self.key][gkey]["start"])
+        period = self.period_of(gkey, start if which == "finalized" else start - timedelta(days=1))
+        processor = self.session("processor")
         runs = [r for r in self._runs(processor, gkey, period["id"]) if r.get("run_type") == "REGULAR"
                 and r.get("status") != "CANCELLED"]
         run = runs[0] if runs else None
@@ -1403,16 +1570,20 @@ class CompanySeed:
             run = processor.post("payroll/runs", {"run_type": "REGULAR", "pay_group_id": self.ids["pay_groups"][gkey],
                                                   "pay_period_id": period["id"],
                                                   "label": f"{self.spec['name']} {period['start']} regular"},
-                                 key=f"{TAG}-{self.key}-run-create")
+                                 key=f"{TAG}-{self.key}-run-create-{period['id']}")
             self.ctx.created(f"run {run['number']}")
-        run_id = run["id"]
-        record["finalized"] = {"id": run_id, "pay_group": gkey, "period": [period["start"], period["end"]]}
-        done = ("FINALIZED", "PAYMENT_PENDING", "PARTIALLY_PAID", "PAID", "RECONCILED", "CLOSED")
+        record[which] = {"id": run["id"], "pay_group": gkey, "period": [period["start"], period["end"]]}
+        self._drive_to_finalized(run["id"], record[which])
+
+    def _drive_to_finalized(self, run_id: int, entry: dict) -> None:
+        """Take a run from its current state to FINALIZED through the product's own lifecycle (no waivers)."""
+        processor, approver, admin = self.session("processor"), self.session("approver"), self.admin
+        done = FINALIZED_STATUSES
         attempts = 0
         for _ in range(12):
             run = processor.get(f"payroll/runs/{run_id}")
             status = run["status"]
-            record["finalized"]["status"] = status
+            entry["status"] = status
             if status in done:
                 break
             if status == "DRAFT":
@@ -1422,7 +1593,8 @@ class CompanySeed:
                     raise RuntimeError("pre-check blocked: " + self._blocking_codes(processor, run_id))
                 self.ctx.created("run pre-checked")
             elif status in ("READY", "VALIDATION_FAILED", "CALCULATION_FAILED"):
-                self._waive_by_design(processor, run_id)
+                # People without a salary by design (founder, approver, trainee) are excluded by the run with
+                # NO_SALARY (blocking only for them, never waivable); nothing is waived here.
                 attempts += 1
                 if status != "READY" and attempts > 2:
                     raise RuntimeError(f"calculation ends in {status}: " + self._blocking_codes(processor, run_id))
@@ -1454,11 +1626,57 @@ class CompanySeed:
                            key=f"{TAG}-{self.key}-run-{run_id}-finalize")
                 self.ctx.created("run finalized by the payroll manager (step-up)")
             else:
-                raise RuntimeError(f"the regular run is {status}; the seed does not drive that state")
+                raise RuntimeError(f"run {run_id} is {status}; the seed does not drive that state")
         else:
-            raise RuntimeError(f"the regular run did not finish (last status {run['status']})")
-        if record["finalized"]["status"] in done:
+            raise RuntimeError(f"run {run_id} did not finish (last status {run['status']})")
+        if entry["status"] in done:
             self.ctx.existing()
+
+    def ensure_loan_disbursement(self) -> None:
+        """Approved, undisbursed loans and advances are paid through a LOAN_DISBURSEMENT off-cycle run (the only
+        product path that disburses: finalizing it records the disbursement and activates the loan), so the
+        finalized regular run of the anchor period recovers the first instalment."""
+        loans = []
+        processor = self.session("processor")
+        for pkey, person in self.ids["people"].items():
+            extras = person.get("extras", {})
+            if not (extras.get("advance") or extras.get("loan")):
+                continue
+            for loan in items_of(processor.get("payroll/loans", employee_id=person["employee_id"])):
+                if loan.get("status") not in ("REJECTED", "CANCELLED"):
+                    loans.append(loan)
+        if not loans:
+            return
+        gkey = self.spec["finalize_group"]
+        period = self.period_of(gkey, _d(self.ctx.store["anchors"]["periods"][self.key][gkey]["start"]))
+        runs = [r for r in items_of(processor.get("payroll/off-cycle-runs", kind="LOAN_DISBURSEMENT", limit=50))
+                if r.get("status") != "CANCELLED"]
+        run = runs[0] if runs else None
+        pending = [l["id"] for l in loans if l.get("status") == "APPROVED" and not l.get("disbursed_on")]
+        if run is None:
+            if not pending:
+                self.ctx.existing()
+                return
+            run = processor.post("payroll/off-cycle-runs", {
+                "kind": "LOAN_DISBURSEMENT", "pay_group_id": self.ids["pay_groups"][gkey],
+                "pay_period_id": period["id"], "loan_ids": pending,
+                "reason": f"{TAG}: disbursement of the approved loans and advances (test data, no real money)",
+                "label": f"{self.spec['name']} loan disbursement"},
+                key=f"{TAG}-{self.key}-loan-disbursement")
+            self.ctx.created(f"loan disbursement run {run.get('number')}")
+        entry = self.state.setdefault("runs", {}).setdefault("loan_disbursement", {})
+        entry.update(id=run["id"], pay_group=gkey, period=[period["start"], period["end"]])
+        self._drive_to_finalized(run["id"], entry)
+        # Finalizing records the disbursement through the outbox (thread worker on the stack, inline in tests).
+        deadline = time.monotonic() + 120
+        while True:
+            states = [processor.get(f"payroll/loans/{l['id']}").get("status") for l in loans]
+            if all(s not in ("APPROVED",) for s in states) or time.monotonic() > deadline:
+                break
+            time.sleep(1.0)
+        if any(s == "APPROVED" for s in states):
+            raise RuntimeError("the loan disbursement run is finalized but the loans were not disbursed "
+                               f"(statuses {states})")
 
     def _blocking_codes(self, api: Api, run_id: int) -> str:
         items = items_of(api.get(f"payroll/runs/{run_id}/exceptions", status="OPEN", severity="BLOCKING", limit=500))
@@ -1467,22 +1685,12 @@ class CompanySeed:
             counts[item["code"]] = counts.get(item["code"], 0) + 1
         return ", ".join(f"{code} x{n}" for code, n in sorted(counts.items())) or "no open blocking exception"
 
-    def _waive_by_design(self, api: Api, run_id: int) -> None:
-        """People without a salary by design (founder, approver, trainee) are excluded: the reviewer waives
-        those NO_SALARY findings with the reason; nothing else is waived."""
-        for item in items_of(api.get(f"payroll/runs/{run_id}/exceptions", status="OPEN", code="NO_SALARY",
-                                     limit=200)):
-            api.post(f"payroll/exceptions/{item['id']}/waive",
-                     {"reason": f"{TAG}: no salary by design (founder, approver or trainee); excluded from this run",
-                      "row_version": item.get("row_version")})
-            self.ctx.created(f"NO_SALARY finding waived for employee {item.get('employee_id')}")
-
     def _acknowledge_variance(self, api: Api, run_id: int) -> None:
         variance = api.get(f"payroll/runs/{run_id}/variance", only_flagged="true", limit=200)
         for item in items_of(variance):
-            if item.get("requires_acknowledgment") and not item.get("acknowledged"):
+            if item.get("pending"):  # open variance codes of this employee
                 api.post(f"payroll/runs/{run_id}/variance/{item['run_employee_id']}/acknowledge",
-                         {"comment": f"{TAG}: first payroll of the seeded company (no previous period)"})
+                         {"comment": f"{TAG}: expected change for the seeded test data (joiner, leave, inputs)"})
 
     def ensure_draft_run(self) -> None:
         gkey = self.spec["draft_group"]
@@ -1528,7 +1736,11 @@ class CompanySeed:
                     self.session("approver").post(f"payroll/compensation/{proposed['id']}/approve",
                                                   {"remarks": f"{TAG}: correction approved"})
                 self.ctx.created(f"backdated correction {rate} {self.cur}/h from {period['start']} for {pkey}")
-            self.session("processor").post("payroll/arrears-proposals/detect", {"employee_ids": [person["employee_id"]]})
+            # The approved backdated salary reaching the finalized period proposes arrears by itself (EC-CMP-12).
+            proposals = items_of(self.session("processor").get("payroll/arrears-proposals",
+                                                               employee_id=person["employee_id"]))
+            self.state.setdefault("arrears_proposals", {})[pkey] = [
+                {"id": p.get("id"), "status": p.get("status")} for p in proposals]
 
     def ensure_leaver(self) -> None:
         for pkey, person in self.ids["people"].items():
@@ -1579,11 +1791,17 @@ class CompanySeed:
         self.optional("tasks and rate cards", self.ensure_tasks)
         self.optional("reimbursement claims", self.ensure_claims)
         self.optional("bank accounts", self.ensure_bank_accounts)
+        self.optional("funding accounts", self.ensure_funding_accounts)
         self.optional("statutory attestation (I-15)", self.ensure_attestation)
         self.log("runs")
-        self.optional("regular run: calculate, approve, finalize", self.ensure_finalized_run)
-        # Advances need the monthly net of a finalized run (F-36), so they follow it and recover next period.
+        if self.spec.get("previous_run"):
+            self.optional("previous-period run: calculate, approve, finalize",
+                          lambda: self.ensure_finalized_run("previous"))
+        # Loans and advances need the monthly net of a finalized run (F-36): they follow the previous period's
+        # run, are disbursed through an off-cycle run, and the anchor period's run recovers an instalment.
         self.optional("loans and advances", self.ensure_loans)
+        self.optional("loan disbursement (off-cycle run)", self.ensure_loan_disbursement)
+        self.optional("regular run: calculate, approve, finalize", self.ensure_finalized_run)
         self.optional("open draft run", self.ensure_draft_run)
         self.optional("backdated salary correction (retro)", self.ensure_retro_correction)
         self.state["ids"] = {k: v for k, v in self.ids.items() if k != "people"}
@@ -1639,6 +1857,15 @@ def compute_anchors(today: date) -> dict:
             "leavers": {"gamma": _iso(today - timedelta(days=1))}}
 
 
+def earliest_local_date() -> date:
+    """Today in the company time zone that is furthest behind (New York): no company sees the anchor day as a
+    future date (an expense, punch or overtime dated 'today' is refused when it is tomorrow for the company)."""
+    import pytz
+
+    now = datetime.now(pytz.utc)
+    return min(now.astimezone(pytz.timezone(spec["timezone"])).date() for spec in COMPANIES.values())
+
+
 def record_periods(seed: CompanySeed) -> None:
     anchors = seed.ctx.store["anchors"]
     periods = anchors["periods"].setdefault(seed.key, {})
@@ -1657,15 +1884,21 @@ def frontend_base(store: dict, slug: str) -> str:
     return f"http://localhost:{port}/login"
 
 
-def scope_text(spec: dict, person: dict, store_company: dict) -> str:
+PAYROLL_SYSTEM_ROLES = ("payroll_manager", "payroll_processor", "payroll_approver", "finance_payments")
+
+
+def scope_text(spec: dict, person: dict, roles: List[str]) -> str:
+    """The account's payroll scope and the employee's own placement (legal entity / pay group)."""
     extras = person.get("extras", {}) if isinstance(person.get("extras"), dict) else {}
     group = person.get("pay_group") or ""
     branch = next((b for b in spec["branches"] if b[0] == person.get("branch")), None)
     entity = branch[1] if branch else spec["entity"]["code"]
-    text = f"{entity} / pay group {next((g[2] for g in spec['pay_groups'] if g[0] == group), group or '-')}"
+    home = f"own placement {entity} / {next((g[2] for g in spec['pay_groups'] if g[0] == group), group or '-')}"
     if extras.get("scope_entity"):
-        text += f"; payroll scope LEGAL_ENTITY={extras['scope_entity']} only"
-    return text
+        return f"payroll scope: LEGAL_ENTITY {extras['scope_entity']} only (scope target); {home}"
+    if any(r in PAYROLL_SYSTEM_ROLES for r in roles):
+        return f"payroll scope: company-wide (every legal entity and pay group); {home}"
+    return f"no payroll scope (self-service only); {home}"
 
 
 def write_guide(store: dict, path_json: Path, path_md: Path) -> None:
@@ -1706,14 +1939,28 @@ def write_guide(store: dict, path_json: Path, path_md: Path) -> None:
                 expected += " Deliberately has no payroll:compensation:read: salary pages and amounts answer 403/404."
             spec_person = next((p for p in spec["people"] if p[0] == pkey), None)
             extras = spec_person[10] if spec_person else {}
-            person_scope = scope_text(spec, {**person, "extras": extras}, company) if spec_person else \
-                f"{spec['entity']['code']} (company-wide payroll via Payroll Manager)"
+            person_scope = scope_text(spec, {**person, "extras": extras}, roles) if spec_person else \
+                "payroll scope: company-wide via Payroll Manager (every legal entity and pay group)"
             lines.append(f"| {label} | {account.get('email', '-')} | {', '.join(roles)} | "
                          f"`{path_json.name}` → companies.{ckey}.accounts.{pkey}.password | {expected} | "
-                         f"{person_scope} | {person.get('code', 'founder')} {person.get('name', account.get('name', ''))} "
-                         f"({person.get('position', 'administrator')}) |")
+                         f"{person_scope} | {person.get('code') or 'founder'} "
+                         f"{person.get('name') or account.get('name', '')} "
+                         f"({person.get('position') or spec['admin_place'][1]}) |")
         runs = company.get("runs", {})
         lines += ["", "Seeded data: " + "; ".join(seeded_facts(ckey)), ""]
+        lines += [f"- {note}" for note in spec.get("notes", [])] + ([""] if spec.get("notes") else [])
+        if spec.get("statutory_attestation"):
+            lines += [f"Compliance: {spec['country']} has no verified country pack (CONFIG_ONLY), so payroll runs "
+                      "without statutory lines and finalizes only under the ACTIVE I-15 attestation of "
+                      f"{spec['entity']['code']}: made by the Company Administrator (maker), approved by the HR "
+                      "Administrator through the custom role Compliance Reviewer (payroll:statutory:review + "
+                      "payroll:statutory:submit, checker). Those two accounts can read, approve or revoke "
+                      "attestations; every other account gets 403. Payslips and registers say \"Statutory "
+                      "deductions not calculated - compliance not verified\".", ""]
+        else:
+            lines += ["Compliance: entities IN01/IN02 use the development-only IN fixture pack (\"FIXTURE - not "
+                      "law\"); income-tax withholding is switched ON per legal entity (the fixture makes it "
+                      "mandatory) and professional tax ON for IN02. Never a statement of Indian law.", ""]
         if runs:
             lines.append("Runs: " + "; ".join(f"{k} run #{v.get('id')} {v.get('pay_group')} {v.get('period')} "
                                                f"→ {v.get('status')}" for k, v in runs.items()))
@@ -1763,12 +2010,13 @@ def load_store(path: Path) -> dict:
 
 def run_seed(make_client: Callable[[], Any], *, store: dict, outbox_dir: Path, platform_password: Optional[str],
              before_login: Optional[Callable[[], None]] = None, today: Optional[date] = None,
-             companies: Optional[List[str]] = None, log: Callable[[str], None] = print) -> Context:
+             companies: Optional[List[str]] = None, log: Callable[[str], None] = print,
+             make_platform_client: Optional[Callable[[], Any]] = None) -> Context:
     """Seed (or re-check) the dataset; returns the context with stats and blocked steps. Raises on core failures."""
     ctx = Context(make_client=make_client, store=store, outbox_dir=outbox_dir, platform_password=platform_password,
-                  before_login=before_login, today=today, log=log)
+                  before_login=before_login, today=today, log=log, make_platform_client=make_platform_client)
     store.setdefault("dataset_version", DATASET_VERSION)
-    store.setdefault("anchors", compute_anchors(today or date.today()))
+    store.setdefault("anchors", compute_anchors(today or earliest_local_date()))
     store["blocked"] = []
     for key in companies or list(COMPANIES):
         seed = CompanySeed(ctx, key, COMPANIES[key])

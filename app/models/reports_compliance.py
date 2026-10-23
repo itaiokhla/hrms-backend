@@ -52,6 +52,11 @@ JOURNAL_FORMATS = ("GENERIC_CSV",)
 JOURNAL_SIDES = ("DEBIT", "CREDIT")
 
 
+def _in(values) -> str:
+    """A SQL value list; never a Python tuple repr (a one-item tuple would render ``('X',)``, F-47)."""
+    return "(" + ", ".join(f"'{v}'" for v in values) + ")"
+
+
 def _fk(table: str, columns, target: str, name: str, ondelete=None) -> ForeignKeyConstraint:
     local = ["company_id", *([columns] if isinstance(columns, str) else columns)]
     remote = [f"{target}.company_id", f"{target}.id"]
@@ -121,8 +126,8 @@ class StatutoryReport(TenantMixin, BaseModel):
         _fk("statutory_reports", "submitted_by_user_id", "users", "submitted_by"),
         _fk("statutory_reports", "amended_by_user_id", "users", "amended_by"),
         _fk("statutory_reports", "created_by_user_id", "users", "created_by"),
-        CheckConstraint(f"status IN {STATUTORY_REPORT_STATUSES}", name="ck_statutory_reports_status"),
-        CheckConstraint(f"frequency IN {REPORT_FREQUENCIES}", name="ck_statutory_reports_frequency"),
+        CheckConstraint(f"status IN {_in(STATUTORY_REPORT_STATUSES)}", name="ck_statutory_reports_status"),
+        CheckConstraint(f"frequency IN {_in(REPORT_FREQUENCIES)}", name="ck_statutory_reports_frequency"),
         CheckConstraint("period_end >= period_start", name="ck_statutory_reports_window"),
         CheckConstraint("version >= 1", name="ck_statutory_reports_version"),
         CheckConstraint("(amends_report_id IS NULL) = (version = 1)", name="ck_statutory_reports_amendment"),
@@ -138,7 +143,7 @@ class StatutoryReport(TenantMixin, BaseModel):
         CheckConstraint("status NOT IN ('READY_TO_FILE') OR export_sha256 IS NOT NULL",
                         name="ck_statutory_reports_exported"),
         # EC-STA-11: SUBMITTED (and everything after it) needs the filing reference.
-        CheckConstraint(f"status NOT IN {FILED_STATUSES} OR (filing_ref IS NOT NULL AND submitted_at IS NOT NULL)",
+        CheckConstraint(f"status NOT IN {_in(FILED_STATUSES)} OR (filing_ref IS NOT NULL AND submitted_at IS NOT NULL)",
                         name="ck_statutory_reports_filing_ref"),
         CheckConstraint("status <> 'ACCEPTED' OR (acknowledgement_ref IS NOT NULL AND acknowledged_at IS NOT NULL)",
                         name="ck_statutory_reports_acknowledged"),
@@ -184,9 +189,9 @@ class AccountingJournal(TenantMixin, BaseModel):
         _fk("accounting_journals", "run_id", "payroll_runs", "run"),
         _fk("accounting_journals", "legal_entity_id", "legal_entities", "legal_entity"),
         _fk("accounting_journals", "posted_by_user_id", "users", "posted_by"),
-        CheckConstraint(f"status IN {JOURNAL_STATUSES}", name="ck_accounting_journals_status"),
-        CheckConstraint(f"trigger IN {JOURNAL_TRIGGERS}", name="ck_accounting_journals_trigger"),
-        CheckConstraint(f"format IN {JOURNAL_FORMATS}", name="ck_accounting_journals_format"),
+        CheckConstraint(f"status IN {_in(JOURNAL_STATUSES)}", name="ck_accounting_journals_status"),
+        CheckConstraint(f"trigger IN {_in(JOURNAL_TRIGGERS)}", name="ck_accounting_journals_trigger"),
+        CheckConstraint(f"format IN {_in(JOURNAL_FORMATS)}", name="ck_accounting_journals_format"),
         CheckConstraint("number ~ '^JE-[0-9]{4}-[0-9]{6}$'", name="ck_accounting_journals_number"),
         CheckConstraint("(status = 'POSTED') = (posted_at IS NOT NULL AND content_hash IS NOT NULL)",
                         name="ck_accounting_journals_posted"),
@@ -220,7 +225,7 @@ class AccountingJournalLine(TenantMixin, BaseModel):
         UniqueConstraint("journal_id", "line_no", name="uq_accounting_journal_lines_no"),
         _fk("accounting_journal_lines", "journal_id", "accounting_journals", "journal"),
         _fk("accounting_journal_lines", "cost_center_id", "cost_centers", "cost_center"),
-        CheckConstraint(f"side IN {JOURNAL_SIDES}", name="ck_accounting_journal_lines_side"),
+        CheckConstraint(f"side IN {_in(JOURNAL_SIDES)}", name="ck_accounting_journal_lines_side"),
         CheckConstraint("amount > 0", name="ck_accounting_journal_lines_amount"),
         CheckConstraint("currency ~ '^[A-Z]{3}$'", name="ck_accounting_journal_lines_currency"),
         CheckConstraint("line_no >= 1", name="ck_accounting_journal_lines_no"),

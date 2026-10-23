@@ -5,6 +5,8 @@ payroll:funding_accounts:manage at COMPANY scope or the account's LEGAL_ENTITY; 
 caller's scope (or another tenant's) is a 404.
 
 * ``GET /payroll/funding-accounts`` lists every account in scope (filters: entity, status, purpose);
+  ``GET /payroll/funding-accounts/options`` is the masked, read-only list for payment users (any of
+  payroll:payment:prepare / approve / submit / reconcile in the entity's scope; no manage permission);
   ``GET/POST /payroll/legal-entities/{id}/funding-accounts`` lists and creates per entity (step-up).
 * ``PATCH /payroll/funding-accounts/{id}`` changes name, purpose, signatories, formats, provider profile
   or bank details (bank details need a fresh step-up); ``If-Match`` or ``row_version`` is required (409 on
@@ -97,6 +99,20 @@ def list_funding_accounts(
 ):
     return {"items": service.list_accounts(db, principal, legal_entity_id=legal_entity_id, status=status,
                                            purpose=purpose)}
+
+
+@router.get("/payroll/funding-accounts/options")
+def funding_account_options(
+    legal_entity_id: Optional[int] = Query(None, ge=1),
+    currency: Optional[str] = Query(None, pattern=r"^[A-Z]{3}$"),
+    include_inactive: bool = Query(False),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    """Masked, read-only accounts for payment users (payroll:payment:prepare / approve / submit / reconcile or
+    funding_accounts:manage, by legal entity scope). Declared before ``/{account_id}``."""
+    return {"items": service.list_options(db, principal, legal_entity_id=legal_entity_id, currency=currency,
+                                          include_inactive=include_inactive)}
 
 
 @router.get("/payroll/legal-entities/{legal_entity_id}/funding-accounts")

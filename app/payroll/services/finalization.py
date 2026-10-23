@@ -29,8 +29,8 @@ employee (a FULL hold keeps the employee out; a PAYMENT hold is finalized and it
   ``consumed``; the partial unique index makes a second consumption impossible (409
   SOURCE_ALREADY_CONSUMED). Then the owning services record it: ``wage_inputs.consume_inputs`` (unpaid
   reservations are released), ``overtime.consume_entries`` plus the comp-off credit of entries taken as time
-  off (EC-OT-09, a COMP_OFF leave balance transaction), ``tasks.mark_tasks_paid``, ``claims.schedule_claims``
-  + ``mark_claims_paid`` (claims scheduled but not paid are released), ``loans.post_instalment`` (once per
+  off (EC-OT-09, a COMP_OFF leave balance transaction), ``tasks.mark_task_shares_paid`` (one share per
+  assignee), ``claims.schedule_claims`` + ``mark_claims_paid`` (claims scheduled but not paid are released), ``loans.post_instalment`` (once per
   loan and run employee), and ENCASH leave-balance transactions for leave-encashment lines. Arrears
   instalments are settled by retro's own ``payroll.run.finalized`` handler. REVERSAL runs consume nothing
   (their lines reference the reversed lines).
@@ -271,6 +271,8 @@ def _consume_sources(db: Session, run: PayrollRun, rows: Sequence[PayrollRunEmpl
         for line in lines_by_row.get(row.id, ()):
             for kind, source_id, key, raw in parse_sources(line, row.employee_id):
                 src = existing.get((line.id, kind, source_id))
+                if src is not None and kind == "TASK" and not src.consumed and src.source_key != key:
+                    src.source_key = key   # a task line calculated before per-assignee keys (EC-TSK-*, EC-VAR-01)
                 if src is None:
                     src = PayrollLineSource(company_id=cid, line_id=line.id, run_id=run.id, run_employee_id=row.id,
                                             source_type=kind, source_id=source_id, source_key=key, consumed=False)
@@ -309,6 +311,33 @@ def _consume_sources(db: Session, run: PayrollRun, rows: Sequence[PayrollRunEmpl
     except IntegrityError:
         raise _fail(409, "SOURCE_ALREADY_CONSUMED", "A source of this run was paid by another run meanwhile.")
     return result
+
+
+def _check_frozen_loans(db: Session, run: PayrollRun, period: PayPeriod, rows: Sequence[PayrollRunEmployee]) -> int:
+    """EC-RUN-09 for loans and advances: their changes are not in the source change log, so a loan prepaid,
+    rescheduled, paused, closed or cancelled after the inputs were locked would otherwise be recovered at the
+    frozen instalment. Every loan a snapshot froze must still have the version it froze (``loans`` version hash,
+    the snapshot's ``loan:<id>`` source hash); otherwise the run is stale (409 RUN_STALE, recalculate)."""
+    from app.payroll.services import loans as loan_service
+
+    frozen: Dict[int, Tuple[PayrollRunEmployee, Dict[str, str]]] = {}
+    ids = [r.snapshot_id for r in rows if r.snapshot_id is not None]
+    hashes = dict(db.query(PayrollInputSnapshot.id, PayrollInputSnapshot.source_hashes).filter(
+        PayrollInputSnapshot.company_id == run.company_id, PayrollInputSnapshot.id.in_(ids or [0])).all())
+    for row in rows:
+        loans = {k: v for k, v in (hashes.get(row.snapshot_id) or {}).items() if k.startswith("loan:")}
+        if loans:
+            frozen[row.id] = (row, loans)
+    changed: List[str] = []
+    for row, loans in frozen.values():
+        current = {f"loan:{item['loan_id']}": item.get("version_hash") for item in loan_service.loan_instalments_due(
+            db, run.company_id, row.employee_id, period.period_start, period.period_end)}
+        changed.extend(f"{key} (employee #{row.employee_id})" for key, digest in sorted(loans.items())
+                       if current.get(key) != digest)
+    if changed:
+        raise _fail(409, "RUN_STALE", "A loan or advance changed after the inputs were locked (" + ", ".join(
+            changed[:10]) + "); recalculate the employees before finalizing.")
+    return len(frozen)
 
 
 def _comp_off_credits(content: Mapping[str, Any]) -> List[Tuple[int, date, Decimal, Decimal]]:
@@ -391,7 +420,7 @@ def _apply_consumption(db: Session, run: PayrollRun, period: PayPeriod, rows: Se
 
     cid = run.company_id
     done = defaultdict(int)
-    tasks: Set[int] = set()
+    tasks: Set[Tuple[int, int]] = set()   # (task id, employee id): each assignee's share is paid once
     comp_off_type: Optional[str] = None
     for row in rows:
         kinds = consumed.by_row.get(row.id, {})
@@ -411,7 +440,7 @@ def _apply_consumption(db: Session, run: PayrollRun, period: PayPeriod, rows: Se
             entries.add(entry_id)
         if entries:
             done["overtime_entries"] += overtime_service.consume_entries(db, cid, sorted(entries), row.id)
-        tasks.update(kinds.get("TASK", ()))
+        tasks.update((task_id, row.employee_id) for task_id in kinds.get("TASK", ()))
         if kinds.get("CLAIM"):
             ids = sorted(kinds["CLAIM"])
             claims_service.schedule_claims(db, cid, ids, runs.claims_ref(row.id))
@@ -446,7 +475,7 @@ def _apply_consumption(db: Session, run: PayrollRun, period: PayPeriod, rows: Se
                                         note=f"Encashed in run {run.number}"):
                 done["leave_encashments"] += 1
     if tasks:
-        done["tasks_paid"] = task_service.mark_tasks_paid(db, cid, sorted(tasks), run.id)
+        done["tasks_paid"] = task_service.mark_task_shares_paid(db, cid, sorted(tasks), run.id)
     every = runs._run_employee_ids(db, run)
     done["wage_inputs_released"] = wage_input_service.release_inputs(db, cid, every)
     done["claims_released"] = sum(claims_service.release_claims(db, cid, runs.claims_ref(rid)) for rid in every)
@@ -562,6 +591,23 @@ def _write_liabilities(db: Session, values: List[dict]) -> int:
 # ---------------------------------------------------------------------------
 # Finalize
 # ---------------------------------------------------------------------------
+def _stale_other_runs(db: Session, run: PayrollRun, rows: Sequence[PayrollRunEmployee]) -> int:
+    """EC-RUN-09: this finalization changed what other runs froze for the same employees in the legal entity
+    (their YTD balances, previous finalized period, pack state and carry-forwards, loan balances). Those runs
+    were locked before and are marked stale (``runs.mark_stale``, the one stale writer; this run is FINALIZED
+    already, so it is not among them): they recalculate the employees before submission or finalization
+    instead of paying from out-of-date year-to-date figures. ``employee_ids`` lets a recalculation of just
+    these employees clear the reason."""
+    employee_ids = sorted({r.employee_id for r in rows})
+    if not employee_ids:
+        return 0
+    return runs.mark_stale(
+        db, run.company_id, f"Run {run.number} was finalized for {len(employee_ids)} of this run's employee(s): "
+        "their year-to-date figures changed after these inputs were locked.",
+        legal_entity_id=run.legal_entity_id, employee_ids=employee_ids,
+        details={"source": "finalization", "finalized_run_id": run.id, "employee_ids": employee_ids})
+
+
 def _ensure_action(run: PayrollRun, action: str) -> None:
     try:
         sm.transition_spec(sm.RUN, run.status, action)
@@ -592,6 +638,10 @@ def finalize_run(db: Session, principal: Principal, run_id: int, *, confirm_labe
     request = approvals.latest_request(db, run_approvals.MODULE, run_approvals.SUBJECT, run.id)
     if run.approval_request_id is not None and (request is None or request.status != approvals.APPROVED):
         raise _fail(409, "APPROVAL_INCOMPLETE", "The approval chain of this run is not complete.")
+    # The full change-detection pass before anything is paid (change_detection.gate_full_check): a source changed
+    # since the inputs were locked marks the run stale and raises 409 RUN_STALE.
+    from app.payroll.services import change_detection
+    change_detection.gate_full_check(db, run, "finalization")
 
     cid = run.company_id
     period = runs.period_of(db, run)
@@ -619,6 +669,7 @@ def finalize_run(db: Session, principal: Principal, run_id: int, *, confirm_labe
                                "payment_holds": sum(1 for r in rows if r.hold_type == "PAYMENT"),
                                "packs": pack_versions, "statutory_verified": statutory["verified"]}
     if run.run_type != sm.RunType.REVERSAL.value:
+        _check_frozen_loans(db, run, period, rows)
         consumed = _consume_sources(db, run, rows, lines_by_row)
         effects["sources_consumed"] = consumed.count
         effects.update(_apply_consumption(db, run, period, rows, lines_by_row, consumed, principal.user_id))
@@ -645,6 +696,7 @@ def finalize_run(db: Session, principal: Principal, run_id: int, *, confirm_labe
 
     run = runs.transition(db, principal, run, "FINALIZE", STEP_UP_MFA=True, STATUTORY_PACK_VERIFIED=True,
                           IDEMPOTENCY_KEY=True, details={"effects": effects})
+    _stale_other_runs(db, run, rows)
     event = outbox.emit(db, FINALIZED_TOPIC, {"run_id": run.id})
     return {"run": run, "effects": effects, "outbox_event_id": event.id}
 
@@ -665,6 +717,9 @@ def _default_payment_summary(db: Session, run: PayrollRun) -> dict:
 
 # Hook: the payments milestone may replace it with the instruction-based summary (same keys).
 payment_summary = _default_payment_summary
+
+
+CARRIED_HOLD_AUDIT_FIELDS = ("run_employee_id", "employee_id", "reason_code")
 
 
 def carried_holds(db: Session, run: PayrollRun) -> List[dict]:
@@ -695,8 +750,11 @@ def close_run(db: Session, principal: Principal, run_id: int, *, note: Optional[
             raise _fail(409, "PAYMENTS_OPEN", "This run still has payments to make; it closes once they are "
                         "reconciled.")
         guards = {"NOTHING_TO_PAY": True}
+    # The audit keeps ids and reason codes only: no salary data in logs or job payloads (the net amounts
+    # stay in the run employees and the caller's response).
+    audited = [{k: h.get(k) for k in CARRIED_HOLD_AUDIT_FIELDS} for h in holds]
     run = runs.transition(db, principal, run, "CLOSE", reason=(note or "").strip() or None,
-                          details={"carried_holds": holds, "payment_summary": summary}, **guards)
+                          details={"carried_holds": audited, "payment_summary": summary}, **guards)
     return {"run": run, "carried_holds": holds}
 
 

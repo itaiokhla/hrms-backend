@@ -62,7 +62,11 @@ from app.services.audit_log_service import AuditLogService
 logger = logging.getLogger(__name__)
 
 FINALIZED_TOPIC = "payroll.run.finalized"
+REVERSED_TOPIC = "payroll.run.reversed"  # emitted by services.reversals
+FINAL_SETTLEMENT_TOPIC = "payroll.final_settlement.finalized"  # emitted by services.final_settlement
 RUN_FINALIZED_JOB = "documents.run_finalized"
+RUN_REVERSED_JOB = "documents.run_reversed"
+FINAL_SETTLEMENT_JOB = "documents.final_settlement_statement"
 GENERATE_JOB = "documents.generate_payslips"
 SWEEP_JOB = "documents.publication_sweep"
 EMAIL_JOB = "documents.payslip_email"
@@ -97,11 +101,44 @@ def _period(db: Session, run: PayrollRun) -> PayPeriod:
     return db.query(PayPeriod).filter(PayPeriod.company_id == run.company_id, PayPeriod.id == run.pay_period_id).one()
 
 
-def run_is_reversed(db: Session, run: PayrollRun) -> bool:
-    """Guard RUN_NOT_REVERSED: a finalized reversal run exists for ``run``."""
-    return db.query(PayrollRun.id).filter(
+def reversed_run_employee_ids(db: Session, run: PayrollRun) -> set[int]:
+    """Run employees of ``run`` covered by a finalized REVERSAL run (guard RUN_NOT_REVERSED, per employee).
+
+    A reversal may select employees (3.5 §12): only the selected run employees are reversed, the others'
+    payslips stay publishable. The selection comes from the reversal record (``payroll_reversals``); a
+    finalized REVERSAL run without one covers the employees it carries.
+    """
+    from app.models.corrections import PayrollReversal
+
+    reversal_runs = [rid for (rid,) in db.query(PayrollRun.id).filter(
         PayrollRun.company_id == run.company_id, PayrollRun.reverses_run_id == run.id,
-        PayrollRun.status.in_(sm.RUN_FINALIZED_STATES)).first() is not None
+        PayrollRun.status.in_(sm.RUN_FINALIZED_STATES))]
+    if not reversal_runs:
+        return set()
+    covered: set[int] = set()
+    recorded: set[int] = set()
+    for reversal_run_id, selected in db.query(PayrollReversal.reversal_run_id, PayrollReversal.run_employee_ids).filter(
+            PayrollReversal.company_id == run.company_id, PayrollReversal.original_run_id == run.id,
+            PayrollReversal.reversal_run_id.in_(reversal_runs)):
+        covered.update(int(i) for i in selected or [])
+        recorded.add(reversal_run_id)
+    unrecorded = [rid for rid in reversal_runs if rid not in recorded]
+    if unrecorded:
+        employees = {e for (e,) in db.query(PayrollRunEmployee.employee_id).filter(
+            PayrollRunEmployee.company_id == run.company_id, PayrollRunEmployee.run_id.in_(unrecorded),
+            PayrollRunEmployee.status != "EXCLUDED")}
+        covered.update(rid for rid, employee_id in db.query(PayrollRunEmployee.id, PayrollRunEmployee.employee_id)
+                       .filter(PayrollRunEmployee.company_id == run.company_id, PayrollRunEmployee.run_id == run.id)
+                       if employee_id in employees)
+    return covered
+
+
+def run_is_reversed(db: Session, run: PayrollRun) -> bool:
+    """Guard RUN_NOT_REVERSED for the whole run: every finalized employee of ``run`` is reversed."""
+    reversed_rows = reversed_run_employee_ids(db, run)
+    if not reversed_rows:
+        return False
+    return all(row.id in reversed_rows for row in eligible_rows(db, run))
 
 
 def _today(db: Session, company_id: int) -> date:
@@ -378,13 +415,15 @@ def apply_publication(db: Session, company_id: int, run_id: int, *, now: Optiona
     run = _run(db, company_id, run_id)
     if not sm.is_run_finalized(run.status) or run_is_reversed(db, run):
         return {"published": 0, "waiting": 0}
+    reversed_rows = reversed_run_employee_ids(db, run)  # a partial reversal blocks only its own employees
     period = _period(db, run)
     trigger, at = publish_trigger(db, run, period)
     entity = db.query(LegalEntity).filter(LegalEntity.company_id == company_id,
                                           LegalEntity.id == run.legal_entity_id).one()
     moment = scheduled_moment(entity, period.pay_date, at)
     now = now or clock.utcnow()
-    waiting = [d for d in latest_payslips(db, company_id, run.id) if d.status == "GENERATED" and not d.draft]
+    waiting = [d for d in latest_payslips(db, company_id, run.id)
+               if d.status == "GENERATED" and not d.draft and d.run_employee_id not in reversed_rows]
     rows = {r.id: r for r in db.query(PayrollRunEmployee).filter(
         PayrollRunEmployee.company_id == company_id, PayrollRunEmployee.id.in_([d.run_employee_id for d in waiting]))}
     instructions = _instructions_by_row(db, company_id, list(rows)) if trigger in (
@@ -426,8 +465,9 @@ def publish_run(db: Session, principal: Principal, run_id: int, *, reason: Optio
             raise bad_request("A reason is required.", "REASON_REQUIRED")
         if run_is_reversed(db, run):
             raise conflict("The run was reversed; its payslips are not published.", "RUN_REVERSED")
+        reversed_rows = reversed_run_employee_ids(db, run)
         for doc in latest_payslips(db, run.company_id, run.id):
-            if doc.status == "GENERATED" and not doc.draft:
+            if doc.status == "GENERATED" and not doc.draft and doc.run_employee_id not in reversed_rows:
                 documents.transition(db, principal, doc, "PUBLISH_MANUALLY", reason=text)
                 notify(db, doc)
                 manual += 1
@@ -439,7 +479,7 @@ def publish_manually(db: Session, principal: Principal, document_id: int, reason
     """Manual publication of one payslip with a reason (EC-DOC-11): permission in scope, run not reversed."""
     doc = documents.get_for_staff(db, principal, document_id, doc_types=(PAYSLIP,), permission=documents.PUBLISH)
     run = _run(db, doc.company_id, doc.run_id)
-    if run_is_reversed(db, run):
+    if doc.run_employee_id in reversed_run_employee_ids(db, run):
         raise conflict("The run was reversed; its payslips are not published.", "RUN_REVERSED")
     latest = documents.latest_version(db, doc.company_id, PAYSLIP, doc.source_key)
     if latest is not None and latest.id != doc.id:
@@ -501,7 +541,7 @@ def notify(db: Session, doc: PayDocument) -> dict:
             if is_payslip:
                 revised = content.get("title_key") == "REVISED_PAYSLIP"
                 title = f"Your {'revised ' if revised else ''}payslip for {label} is ready"
-                path = f"/payslips/{doc.id}"
+                path = f"/me/payslips/{doc.id}"
             else:
                 title = f"New document: {doc.title}"
                 path = f"/me/documents/{doc.id}"
@@ -640,7 +680,7 @@ def send_email(db: Session, company_id: int, document_id: int) -> dict:
     context = {
         "recipient": {"first_name": employee.first_name, "name": employee.full_name, "email": employee.email},
         "period": {"label": (content.get("period") or {}).get("label") or doc.title},
-        "link": {"url": link(company_id, f"/payslips/{doc.id}")},
+        "link": {"url": link(company_id, f"/me/payslips/{doc.id}")},
     }
     message = EmailService.compose(EMAIL_TEMPLATE, employee.email, context, company_id)
     if values.get("payslip.email_include_net_pay") is True:
@@ -758,13 +798,30 @@ def _reversal_content(original: PayDocument, reversal_run: PayrollRun, row: Payr
     }
 
 
-def reverse_run_documents(db: Session, reversal_run: PayrollRun) -> int:
-    """EC-DOC-12: the reversed run's payslips become REVERSED and each employee gets a reversal statement."""
+def reverse_run_documents(db: Session, reversal_run: PayrollRun, *,
+                          run_employee_ids: Optional[Sequence[int]] = None) -> int:
+    """EC-DOC-12: the reversed employees' payslips become REVERSED and each gets a reversal statement.
+
+    Only the employees the reversal covers: ``run_employee_ids`` (original run employees, from the
+    ``payroll.run.reversed`` event) or else the employees of the finalized REVERSAL run. The original
+    documents' content never changes; idempotent (a repeated event issues nothing new).
+    """
     if reversal_run.run_type != "REVERSAL" or reversal_run.reverses_run_id is None:
         return 0
+    if not sm.is_run_finalized(reversal_run.status):
+        return 0
     original_run = _run(db, reversal_run.company_id, reversal_run.reverses_run_id)
+    if run_employee_ids is not None:
+        wanted_rows = {int(i) for i in run_employee_ids}
+        covered = lambda doc: doc.run_employee_id in wanted_rows  # noqa: E731
+    else:
+        reversed_employees = {e for (e,) in db.query(PayrollRunEmployee.employee_id).filter(
+            PayrollRunEmployee.company_id == reversal_run.company_id, PayrollRunEmployee.run_id == reversal_run.id)}
+        covered = lambda doc: doc.employee_id in reversed_employees  # noqa: E731
     count = 0
     for doc in latest_payslips(db, original_run.company_id, original_run.id):
+        if not covered(doc):
+            continue
         row = db.query(PayrollRunEmployee).filter(PayrollRunEmployee.company_id == doc.company_id,
                                                   PayrollRunEmployee.id == doc.run_employee_id).one()
         visible = doc.status in PUBLISHED_STATES or doc.status == "SUPERSEDED"
@@ -832,13 +889,61 @@ def _email(ctx: jobs.JobContext) -> dict:
     return send_email(ctx.db, ctx.company_id, document_id)
 
 
+def handle_run_reversed(db: Session, company_id: int, payload: Mapping[str, Any]) -> dict:
+    """``payroll.run.reversed`` (corrections): mark the reversed payslips REVERSED, issue reversal statements."""
+    reversal_run_id = payload.get("reversal_run_id")
+    if not isinstance(reversal_run_id, int):
+        raise jobs.PermanentJobError("payroll.run.reversed needs a reversal_run_id")
+    reversal_run = _run(db, company_id, reversal_run_id)
+    if reversal_run.reverses_run_id != payload.get("run_id"):
+        raise jobs.PermanentJobError("the reversal run does not reverse the given run")
+    ids = payload.get("run_employee_ids")
+    if ids is not None and not (isinstance(ids, list) and all(isinstance(i, int) for i in ids)):
+        raise jobs.PermanentJobError("run_employee_ids must be a list of ids")
+    return {"reversed": reverse_run_documents(db, reversal_run, run_employee_ids=ids or None)}
+
+
+def handle_final_settlement(db: Session, company_id: int, payload: Mapping[str, Any]) -> dict:
+    """``payroll.final_settlement.finalized`` (corrections): issue the full-and-final statement, published."""
+    from app.payroll.services import registers
+
+    run_id, employee_id = payload.get("run_id"), payload.get("employee_id")
+    if not isinstance(run_id, int):
+        raise jobs.PermanentJobError("payroll.final_settlement.finalized needs a run_id")
+    run = _run(db, company_id, run_id)
+    try:
+        issued = registers.final_settlement_documents(
+            db, None, run, employee_ids=[employee_id] if isinstance(employee_id, int) else None)
+    except Exception as exc:  # noqa: BLE001 - a run that is not a finalized settlement never will be
+        from app.core.errors import AppError
+
+        if isinstance(exc, AppError) and exc.status_code == 409:
+            raise jobs.PermanentJobError(str(exc.detail)) from exc
+        raise
+    return {"run_id": run.id, "statements": [d.id for d in issued]}
+
+
+@jobs.register(RUN_REVERSED_JOB)
+def _on_run_reversed(ctx: jobs.JobContext) -> dict:
+    return handle_run_reversed(ctx.db, ctx.company_id, ctx.payload)
+
+
+@jobs.register(FINAL_SETTLEMENT_JOB)
+def _on_final_settlement(ctx: jobs.JobContext) -> dict:
+    return handle_final_settlement(ctx.db, ctx.company_id, ctx.payload)
+
+
 outbox.subscribe(FINALIZED_TOPIC, RUN_FINALIZED_JOB)
+outbox.subscribe(REVERSED_TOPIC, RUN_REVERSED_JOB)
+outbox.subscribe(FINAL_SETTLEMENT_TOPIC, FINAL_SETTLEMENT_JOB)
 
 
 __all__ = [
-    "EMAIL_JOB", "GENERATE_JOB", "MAX_TASK_ATTEMPTS", "RUN_FINALIZED_JOB", "SWEEP_JOB", "apply_publication",
-    "employee_secret", "generate_payslip", "generation_status", "handle_run_finalized", "issue_revised_payslip",
+    "EMAIL_JOB", "FINAL_SETTLEMENT_JOB", "GENERATE_JOB", "MAX_TASK_ATTEMPTS", "RUN_FINALIZED_JOB", "RUN_REVERSED_JOB",
+    "SWEEP_JOB", "apply_publication", "employee_secret", "generate_payslip", "generation_status",
+    "handle_final_settlement", "handle_run_finalized", "handle_run_reversed", "issue_revised_payslip",
     "latest_payslips", "notify", "on_payment_progress", "process_tasks", "publish_bulk", "publish_manually",
-    "publish_run", "queue_tasks", "resend", "retry_failed", "reverse_run_documents", "run_is_reversed",
+    "publish_run", "queue_tasks", "resend", "retry_failed", "reverse_run_documents", "reversed_run_employee_ids",
+    "run_is_reversed",
     "secret_status", "send_email", "set_employee_secret", "start_generation", "trigger_met",
 ]

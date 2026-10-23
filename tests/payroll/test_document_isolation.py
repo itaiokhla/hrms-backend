@@ -44,12 +44,15 @@ def _seed(cid, entity, group, employee_id, user_id):
         "document_generation_tasks": sql("SELECT id FROM document_generation_tasks WHERE company_id = :c LIMIT 1",
                                          c=cid)[0][0],
         "document_notifications": sql("SELECT id FROM document_notifications WHERE company_id = :c LIMIT 1",
-                                      c=cid)[0][0],
-        "document_access_log": sql("SELECT id FROM document_access_log WHERE company_id = :c LIMIT 1", c=cid)[0][0]}
+                                      c=cid)[0][0]}
     with tenant(cid) as conn:
         def insert(statement, **params):
             return conn.execute(text(statement), {"c": cid, **params}).scalar_one()
 
+        ids["document_access_log"] = insert(
+            "INSERT INTO document_access_log (company_id, document_id, user_id, action, at, details, created_at, "
+            "updated_at) VALUES (:c, :d, :u, 'VIEW', now(), '{}'::jsonb, now(), now()) RETURNING id",
+            d=document_id, u=user_id)
         ids["export_jobs"] = insert(
             "INSERT INTO export_jobs (company_id, requested_by_user_id, kind, params, status, row_version, created_at, "
             "updated_at) VALUES (:c, :u, 'REGISTER_CSV', '{}'::jsonb, 'QUEUED', 1, now(), now()) RETURNING id",

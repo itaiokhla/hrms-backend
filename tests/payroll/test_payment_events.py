@@ -55,7 +55,7 @@ def sandbox_world(pay, nets):
     sql("UPDATE funding_accounts SET provider_profile = 'SANDBOX' WHERE id = :f", f=pay["funding"])
     run_id = finalized_run(pay, nets)
     batch = ok(pay["pete"].post(BATCHES, json={"run_id": run_id, "method": "API"}), 201)["batches"][0]
-    ok(pay["fran"].post(f"{BATCHES}/{batch['id']}/approve"))
+    ok(pay["alma"].post(f"{BATCHES}/{batch['id']}/approve"))
     step_up(pay["fran"])
     ok(pay["fran"].post(f"{BATCHES}/{batch['id']}/release"))
     return run_id, batch["id"]

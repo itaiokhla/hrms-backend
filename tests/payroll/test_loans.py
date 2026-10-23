@@ -5,6 +5,7 @@ append-only ledger with one instalment per run employee, approved actions, self-
 EC-VAR-06, EC-VAR-08, EC-SEC-01, EC-SEC-05.
 """
 
+from contextlib import contextmanager
 from datetime import timedelta
 from decimal import Decimal
 
@@ -253,9 +254,23 @@ def test_ec_var_08_one_instalment_per_run_employee_and_the_balance_comes_from_th
                      c=cid, l=loan_id)
         expect_error(conn, CHECK, "INSERT INTO loan_transactions (company_id, loan_id, kind, amount, currency, "
                      "effective_on) VALUES (:c, :l, 'INSTALMENT', 1, 'INR', now())", c=cid, l=loan_id)
-        expect_error(conn, CHECK, "UPDATE loan_transactions SET amount = 1 WHERE id = :i", i=tx_id)  # append-only
+        # Append-only, twice over: the application role holds only SELECT and INSERT on the ledger ...
+        expect_error(conn, DENIED, "UPDATE loan_transactions SET amount = 1 WHERE id = :i", i=tx_id)
+        expect_error(conn, DENIED, "DELETE FROM loan_transactions WHERE id = :i", i=tx_id)
+    with owner() as conn:  # ... and the trigger refuses any change even for the owner role
+        expect_error(conn, CHECK, "UPDATE loan_transactions SET amount = 1 WHERE id = :i", i=tx_id)
         expect_error(conn, CHECK, "DELETE FROM loan_transactions WHERE id = :i", i=tx_id)
+    assert sql("SELECT amount FROM loan_transactions WHERE id = :i", i=tx_id) == [(Decimal("10352.90"),)]
     assert "LOAN_INSTALMENT_POSTED" in audit_actions(cid, "loan", loan_id)
+
+
+@contextmanager
+def owner():
+    """A connection as the owner role (no row-level security, every table privilege)."""
+    from app.database.db import system_engine
+
+    with system_engine.begin() as conn:
+        yield conn
 
 
 # ---------------------------------------------------------------------------
@@ -432,12 +447,23 @@ def test_ec_sec_01_loan_tables_are_isolated_across_three_tenants(world):
                 for other in others:
                     foreign = seeded[other][table]
                     assert conn.execute(text(f"SELECT count(*) FROM {table} WHERE id = :i"), {"i": foreign}).scalar() == 0
+                    if table == "loan_transactions":
+                        # The application role may not update or delete the ledger at all (SELECT, INSERT only).
+                        expect_error(conn, DENIED, f"UPDATE {table} SET updated_at = now() WHERE id = :i", i=foreign)
+                        expect_error(conn, DENIED, f"DELETE FROM {table} WHERE id = :i", i=foreign)
+                        continue
                     assert conn.execute(text(f"UPDATE {table} SET updated_at = now() WHERE id = :i"),
                                         {"i": foreign}).rowcount == 0
                     assert conn.execute(text(f"DELETE FROM {table} WHERE id = :i"), {"i": foreign}).rowcount == 0
-                # The ledger's append-only trigger refuses any update before row-level security is checked.
-                expect_error(conn, CHECK if table == "loan_transactions" else DENIED,
-                             f"UPDATE {table} SET company_id = :o WHERE id = :i", o=others[0], i=seeded[cid][table])
+                # Moving an own row to another tenant: refused by the RLS check (the ledger: by the privilege).
+                expect_error(conn, DENIED, f"UPDATE {table} SET company_id = :o WHERE id = :i", o=others[0],
+                             i=seeded[cid][table])
+    with owner() as conn:  # even the owner role, which bypasses row-level security, cannot rewrite the ledger
+        expect_error(conn, CHECK, "UPDATE loan_transactions SET company_id = :o WHERE id = :i", o=companies[1],
+                     i=seeded[companies[0]]["loan_transactions"])
+    for cid in companies:  # every seeded row is still where it was
+        for table in TABLES:
+            assert sql(f"SELECT company_id FROM {table} WHERE id = :i", i=seeded[cid][table]) == [(cid,)]
     a, b = companies[0], companies[1]
     with tenant(a) as conn:  # composite keys refuse another tenant's loan, employee or policy version
         expect_error(conn, FOREIGN_KEY, "INSERT INTO loan_transactions (company_id, loan_id, kind, amount, currency, "

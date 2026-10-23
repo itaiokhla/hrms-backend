@@ -2,7 +2,7 @@
 
 /api/v1/payroll/payment-batches (proposal, create, approve, reject, cancel, generate-file, file, release,
 bank-changes), /payroll/payment-obligations, /payroll/payment-balances, /payroll/payment-instructions
-(events, reissue, cancel, release-hold, manual proof) and /payroll/manual-settlements/{id}/approve|reject.
+(events, reissue, cancel, release-hold, manual proof) and /payroll/manual-settlements/{id}/approve|reject|file.
 
 Permissions payroll:payment:prepare / approve / submit / reconcile, scoped by legal entity: objects of
 entities outside the caller's scope are 404, a missing permission is 403. Responses mask every bank
@@ -25,7 +25,7 @@ from app.core.principal import Principal, get_principal
 from app.database.db import get_db
 from app.models.payment_flows import BATCH_STATUSES, INSTRUCTION_STATUSES, MANUAL_METHODS, OBLIGATION_STATUSES
 from app.payroll.api_types import StrictModel
-from app.payroll.services import idempotency, obligations
+from app.payroll.services import idempotency, obligations, payment_proofs
 from app.payroll.services import payment_batches as batches
 from app.payroll.services import payment_events as events
 
@@ -90,7 +90,7 @@ def _if_match(request: Request, body_version: Optional[int]) -> Optional[int]:
 def _batch_result(data: dict) -> dict:
     """Compact action result (stored for idempotent replays; never bank details)."""
     return {k: data[k] for k in ("id", "reference", "status", "run_id", "method", "currency", "item_count", "total",
-                                 "sandbox", "row_version", "file") if k in data}
+                                 "sandbox", "row_version", "file", "value_date", "value_date_warnings") if k in data}
 
 
 # ---------------------------------------------------------------------------
@@ -375,3 +375,16 @@ def reject_manual_proof(proof_id: int, data: RejectProofIn, request: Request,
                      "row_version": proof.row_version}
 
     return idempotency.execute(db, principal, request, handler, body=data.model_dump())
+
+
+@router.get("/payroll/manual-settlements/{proof_id}/file")
+def manual_proof_file(proof_id: int, download: bool = Query(False), principal: Principal = Depends(get_principal),
+                      db: Session = Depends(get_db)):
+    """The uploaded proof of a manual payment, for whoever may review it (payroll:payment:reconcile in scope;
+    404 across tenants and entities). Shown inline unless ``download=true``; audited, never cached."""
+    proof = payment_proofs.proof_file(db, principal, proof_id)
+    db.commit()  # the download audit event
+    disposition = "attachment" if download else "inline"
+    headers = {**NO_STORE, "Content-Security-Policy": "sandbox", "X-Proof-SHA256": proof.sha256,
+               "Content-Disposition": f'{disposition}; filename="{proof.file_name}"'}
+    return Response(proof.data, media_type=proof.mime, headers=headers)

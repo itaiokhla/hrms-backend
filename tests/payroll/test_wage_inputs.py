@@ -110,7 +110,30 @@ def place(employee_id, entity_id, pay_group_id):
 
 def component(company_id, code, method="INPUT", kind="EARNING", category="BONUS", params=None,
               approval_above=None, approval_currency=None):
+    """The id of the tenant's component `code`, in force since 2020-01-01.
+
+    A new tenant is provisioned with the country-neutral catalogue (component_seed: BASIC, BONUS,
+    COMMISSION, ...), so a seeded code is reused rather than inserted twice (the code is unique per
+    tenant). The seeded definition must be the one the caller asks for; a test that needs particular
+    params or an approval threshold uses a code outside the seeded set. The seeded version starts on the
+    signup day, so it is made effective from 2020-01-01 like the components created here, for inputs of
+    the whole current period to resolve it.
+    """
     from app.models.compensation import PayComponent, PayComponentVersion
+
+    existing = sql("SELECT p.id, p.kind, p.category, p.status, v.calc_method, v.params, v.input_approval_above "
+                   "FROM pay_components p JOIN pay_component_versions v ON v.company_id = p.company_id AND "
+                   "v.component_id = p.id AND v.version = 1 WHERE p.company_id = :c AND p.code = :code",
+                   c=company_id, code=code)
+    if existing:
+        [(component_id, have_kind, have_category, status, have_method, have_params, have_threshold)] = existing
+        assert (have_kind, have_category, status, have_method) == (kind, category, "ACTIVE", method), (
+            f"{code} already exists as {have_kind}/{have_category}/{have_method} ({status}); use another code")
+        assert not params and approval_above is None and not have_params and have_threshold is None, (
+            f"{code} is a seeded component; use a code outside the seeded set for specific params")
+        sql("UPDATE pay_component_versions SET effective_from = DATE '2020-01-01' WHERE company_id = :c "
+            "AND component_id = :p AND version = 1", c=company_id, p=component_id)
+        return component_id
 
     with session(company_id) as (db, _):
         row = PayComponent(company_id=company_id, code=code, kind=kind, category=category, owner="COMPANY",
@@ -246,7 +269,11 @@ def get(client, input_id):
 
 @pytest.fixture
 def inputs_world(world):
+    """BONUS, COMMISSION and BASIC are the provisioned catalogue's; CLAWBACK and OT_HOURS are added."""
     cid = world["cid"]
+    seeded = dict(sql("SELECT code, id FROM pay_components WHERE company_id = :c AND code IN "
+                      "('BONUS', 'COMMISSION', 'BASIC')", c=cid))
+    assert set(seeded) == {"BONUS", "COMMISSION", "BASIC"}  # provisioned at signup
     world["components"] = {
         "BONUS": component(cid, "BONUS"),
         "COMMISSION": component(cid, "COMMISSION", category="COMMISSION"),
@@ -254,6 +281,7 @@ def inputs_world(world):
         "OT_HOURS": component(cid, "OT_HOURS", method="RATE_X_UNITS", category="OVERTIME"),
         "BASIC": component(cid, "BASIC", method="FIXED", category="BASE"),
     }
+    assert all(world["components"][code] == seeded[code] for code in seeded)  # reused, never a second row
     return world
 
 

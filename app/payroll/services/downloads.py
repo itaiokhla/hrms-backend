@@ -9,7 +9,8 @@
 * Access trail: every view, download and e-mail is a ``document_access_log`` row (actor, IP, time) and
   the audit log gets DOCUMENT_VIEWED / DOCUMENT_DOWNLOADED. The first time an employee opens their own
   published payslip, the DOCUMENT machine records VIEWED.
-* Download center (``export_jobs``): a user's exports only; bulk payslip ZIPs and register CSV/XLSX are
+* Download center (``export_jobs``): a user's exports only (``download_center`` merges them with the user's
+  report exports, which are redeemed through the same signed links, kind "report"); bulk payslip ZIPs and register CSV/XLSX are
   built by job ``documents.export`` with the requester's permissions and scope re-checked in the job.
   ZIPs are written to private storage in chunks of ``CHUNK`` documents and streamed back from disk, so
   10,000 payslips never sit in memory (EC-DOC-20). Every exported PDF carries the overlay "Confidential —
@@ -59,6 +60,11 @@ EXPORT_JOB = "documents.export"
 EXPORT_CATEGORY = "payroll-exports"
 CHUNK = 100
 EXPORT_PERMISSION = "payroll:reports:export"
+REPORT_KIND = "report"  # a report export (app.payroll.services.reports, a ``jobs`` row of type payroll.report_export)
+CENTER_SOURCES = ("EXPORT", "REPORT_EXPORT")
+CENTER_MAX_WINDOW = 5000
+EXPORT_TITLES = {"PAYSLIPS_ZIP": "Payslips (ZIP)", "REGISTER_CSV": "Payroll register (CSV)",
+                 "REGISTER_XLSX": "Payroll register (XLSX)"}
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,600}\.[A-Za-z0-9_-]{43}$")
 RESULTS_STATES = frozenset((
     "CALCULATED", "REVIEW_REQUIRED", "VALIDATION_FAILED", "APPROVAL_PENDING", "APPROVED", "REJECTED",
@@ -115,7 +121,7 @@ def read_token(principal: Principal, token: str, *, now: Optional[datetime] = No
     if int(claims.get("e", 0)) < int(now.timestamp()):
         raise AppError(410, "This download link has expired. Request a new one.", "DOWNLOAD_LINK_EXPIRED")
     kind, object_id = claims.get("k"), claims.get("i")
-    if kind not in ("doc", "export") or not isinstance(object_id, int):
+    if kind not in ("doc", "export", REPORT_KIND) or not isinstance(object_id, int):
         raise not_found("Download")
     return kind, object_id
 
@@ -177,7 +183,14 @@ def redeem(db: Session, principal: Principal, token: str, ip: Optional[str]) -> 
         headers = {**documents.FILE_HEADERS, "X-Document-Number": doc.number or "", "X-Document-SHA256": doc.sha256,
                    "X-Brand-Version": doc.brand_version or "", "X-Rerendered": "true" if rerendered else "false"}
         return Served(data, None, doc.file_name, doc.mime, headers)
+    if kind == REPORT_KIND:
+        from app.payroll.services import reports
+
+        # Permission, ownership, readiness and the stored hash are re-checked and the download audited there.
+        data, file_name, media_type = reports.export_file(db, principal, object_id)
+        return Served(data, None, file_name, media_type, dict(documents.FILE_HEADERS))
     job = own_export(db, principal, object_id)
+    recheck_export_access(db, principal, job)
     if job.status == "EXPIRED" or (job.expires_at is not None and job.expires_at <= clock.utcnow()):
         _expire(job)
         raise AppError(410, "This export has expired. Request it again.", "EXPORT_EXPIRED")
@@ -245,6 +258,79 @@ def list_exports(db: Session, principal: Principal, *, skip: int = 0, limit: int
     return {"total": total, "items": [export_json(j) for j in items]}
 
 
+def _center_export_item(principal: Principal, job: ExportJob) -> dict:
+    run_id = (job.params or {}).get("run_id")
+    return {
+        "source": "EXPORT", "id": job.id, "kind": job.kind, "title": EXPORT_TITLES.get(job.kind, job.kind),
+        "format": {"PAYSLIPS_ZIP": "ZIP", "REGISTER_CSV": "CSV", "REGISTER_XLSX": "XLSX"}.get(job.kind),
+        "run_id": run_id, "report_code": None, "status": job.status, "file_name": job.file_name,
+        "bytes": job.bytes, "items": job.item_count, "error": job.error,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "expires_at": job.expires_at.isoformat() if job.expires_at else None,
+        "link_endpoint": f"/api/v1/payroll/exports/{job.id}/download",
+        "download": (download_link(principal, "export", job.id)
+                     if job.status == "READY" and documents.has_staff_scope(principal, EXPORT_PERMISSION) else None),
+    }
+
+
+def _center_report_item(principal: Principal, job, now: datetime) -> dict:
+    from app.payroll.services import reports
+
+    data = reports.export_json(job, now)
+    report = reports.BY_CODE.get(data.get("report_code") or "")
+    # A link only while the caller may still download it (permissions and scope re-checked, EC-DOC-06).
+    ready = data["status"] == "READY" and reports.can_download(principal, job)
+    created = data.get("created_at")
+    return {
+        "source": "REPORT_EXPORT", "id": job.id, "kind": "REPORT",
+        "title": f"{report.name if report is not None else data.get('report_code')} ({data.get('format')})",
+        "format": data.get("format"), "run_id": None, "report_code": data.get("report_code"),
+        "status": data["status"], "file_name": data.get("file_name"), "bytes": data.get("bytes"),
+        "items": data.get("rows"), "error": data.get("error"),
+        "created_at": created.isoformat() if isinstance(created, datetime) else created,
+        "expires_at": data.get("expires_at"),
+        "link_endpoint": f"/api/v1/payroll/report-exports/{job.id}/link",
+        "download": download_link(principal, REPORT_KIND, job.id) if ready else None,
+    }
+
+
+def download_center(db: Session, principal: Principal, *, source: Optional[str] = None, skip: int = 0,
+                    limit: int = 50) -> dict:
+    """The caller's own downloads in one list, newest first: payslip ZIP / register exports (``export_jobs``)
+    and report exports (``jobs`` of type payroll.report_export), with one skip/limit paging model and a
+    signed five-minute link for every READY file (EC-DOC-06). Only the requester ever sees an item."""
+    from app.models.jobs import Job
+    from app.payroll.services import reports
+
+    if source is not None and source not in CENTER_SOURCES:
+        raise bad_request("Unknown download source.", "SOURCE_INVALID")
+    if skip + limit > CENTER_MAX_WINDOW:
+        raise bad_request(f"Page through at most {CENTER_MAX_WINDOW} downloads.", "PAGE_TOO_DEEP")
+    now = clock.utcnow()
+    window = skip + limit
+    entries: list[tuple[datetime, int, str, Any]] = []
+    total = 0
+    if source in (None, "EXPORT"):
+        exports = db.query(ExportJob).filter(ExportJob.company_id == principal.company_id,
+                                             ExportJob.requested_by_user_id == principal.user_id)
+        for job in exports.filter(ExportJob.status == "READY", ExportJob.expires_at <= now).with_for_update().all():
+            _expire(job)
+        db.flush()
+        total += exports.count()
+        entries += [(j.created_at, j.id, "EXPORT", j) for j in
+                    exports.order_by(ExportJob.created_at.desc(), ExportJob.id.desc()).limit(window).all()]
+    if source in (None, "REPORT_EXPORT"):
+        jobs_query = db.query(Job).filter(Job.company_id == principal.company_id, Job.type == reports.EXPORT_JOB,
+                                          Job.created_by_user_id == principal.user_id)
+        total += jobs_query.count()
+        entries += [(j.created_at, j.id, "REPORT_EXPORT", j) for j in
+                    jobs_query.order_by(Job.created_at.desc(), Job.id.desc()).limit(window).all()]
+    entries.sort(key=lambda e: (e[0], e[2] == "EXPORT", e[1]), reverse=True)
+    items = [_center_export_item(principal, row) if kind == "EXPORT" else _center_report_item(principal, row, now)
+             for _, _, kind, row in entries[skip:skip + limit]]
+    return {"total": total, "skip": skip, "limit": limit, "items": items}
+
+
 def _run_for_export(db: Session, principal: Principal, run_id: Any, permission: str) -> PayrollRun:
     if not isinstance(run_id, int) or isinstance(run_id, bool):
         raise bad_request("params.run_id is required.", "EXPORT_PARAMS_INVALID")
@@ -271,6 +357,20 @@ def check_export(db: Session, principal: Principal, kind: str, params: Mapping[s
     if run.status not in RESULTS_STATES:
         raise conflict("The run has no calculation results yet.", "RUN_NOT_CALCULATED")
     return run
+
+
+def recheck_export_access(db: Session, principal: Principal, job: ExportJob) -> None:
+    """The requester's permission and scope over the export's run, again at download time (EC-DOC-06): a user
+    whose payroll:reports:export (or, for payslip ZIPs, payroll:payslip:read) was revoked gets 403, one whose
+    scope no longer covers the run gets 404. The run's state is not re-checked: the file was built from it."""
+    run_id = (job.params or {}).get("run_id")
+    documents.require_staff(principal, EXPORT_PERMISSION)
+    if job.kind == "PAYSLIPS_ZIP":
+        documents.require_staff(principal, documents.READ)
+        run = _run_for_export(db, principal, run_id, documents.READ)
+        access.ensure_run_access(principal, EXPORT_PERMISSION, run)
+    else:
+        _run_for_export(db, principal, run_id, EXPORT_PERMISSION)
 
 
 def request_export(db: Session, principal: Principal, kind: str, params: Mapping[str, Any]) -> ExportJob:
@@ -481,7 +581,9 @@ def _export(ctx: jobs.JobContext) -> dict:
 
 
 __all__ = [
-    "CHUNK", "EXPORT_JOB", "EXPORT_TTL", "Served", "TOKEN_TTL", "build_register", "check_export", "download_link",
+    "CHUNK", "EXPORT_JOB", "EXPORT_TTL", "REPORT_KIND", "Served", "TOKEN_TTL", "build_register", "check_export",
+    "recheck_export_access",
+    "download_center", "download_link",
     "export_json", "generate_export", "issue_download", "list_exports", "make_token", "own_export", "read_token",
     "record_view", "redeem", "register_rows", "request_export", "stamp_pdf", "watermark_text",
 ]

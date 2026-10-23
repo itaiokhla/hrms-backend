@@ -100,7 +100,8 @@ def test_views_and_downloads_are_logged_and_the_first_own_view_is_recorded(docs_
     trail = sql("SELECT action, user_id, ip IS NOT NULL FROM document_access_log WHERE document_id = :d ORDER BY id",
                 d=doc_id)
     actions = [a for a, *_ in trail]
-    assert actions.count("VIEW") == 2 and actions.count("DOWNLOAD") == 1 and "EMAIL" in actions
+    # payslip.email_notify is OFF in docs_world: no EMAIL entry (test_publication.py covers the e-mail trail).
+    assert actions.count("VIEW") == 2 and actions.count("DOWNLOAD") == 1 and "EMAIL" not in actions
     assert all(has_ip for action, _, has_ip in trail if action in ("VIEW", "DOWNLOAD"))
     logged = audit_actions(w["cid"], "document", doc_id)
     assert "DOCUMENT_VIEWED" in logged and "DOCUMENT_DOWNLOADED" in logged

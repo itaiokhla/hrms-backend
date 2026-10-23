@@ -17,7 +17,7 @@
 * Pay figures (the per-unit rate) are shown only to viewers holding payroll:configuration:read/write, or
   payroll:inputs:read covering every assignee; managers approve quantities, not pay (contract §25, F-42).
   The same rule guards setting a rate on create/edit (PAY_FIELDS_NOT_PERMITTED).
-* approved_tasks() and rate_card_rows() return plain dicts for the run snapshot; mark_tasks_paid() is
+* approved_tasks() and rate_card_rows() return plain dicts for the run snapshot; mark_task_shares_paid() is
   called by run finalization. Approvals and reversals append to source_change_log (record type "task",
   one row per assignee, 3.4 §16) so draft runs see them.
 
@@ -65,9 +65,11 @@ from app.services.audit_log_service import AuditLogService
 MODULE = "task"
 SUBJECT_TYPE = "task"
 READ, MANAGE, APPROVE = "task:read", "task:manage", "task:approve"
-VISIBLE_PERMISSIONS = (READ, MANAGE, APPROVE)
 CONFIG_READ, CONFIG_WRITE = "payroll:configuration:read", "payroll:configuration:write"
 INPUTS_READ = "payroll:inputs:read"
+# Who sees task rows (read only): task permissions, and payroll:inputs:read ("View wage inputs, overtime, task pay
+# and arrears that feed payroll") within its scope, like overtime.READ_PERMISSIONS.
+VISIBLE_PERMISSIONS = (READ, MANAGE, APPROVE, INPUTS_READ)
 RATE_CARD_READ_PERMISSIONS = (CONFIG_READ, CONFIG_WRITE, INPUTS_READ, MANAGE)
 # Viewers who may see per-unit rates at any scope (configuration holders read the rate cards anyway).
 PAY_CONFIG_PERMISSIONS = (CONFIG_READ, CONFIG_WRITE)
@@ -407,7 +409,8 @@ def serialize(db: Session, task: Task, *, request: ApprovalRequest | None = None
         "status_reason": task.status_reason,
         "row_version": task.row_version,
         "assignees": [{"employee_id": a.employee_id, "employee_name": names.get(a.employee_id),
-                       "split_percent": format(Decimal(a.split_percent).quantize(Decimal("0.01")), "f")}
+                       "split_percent": format(Decimal(a.split_percent).quantize(Decimal("0.01")), "f"),
+                       "paid_in_run_id": a.paid_in_run_id}
                       for a in task.assignees],
         "evidence": [{"id": e.id, "file_name": e.file_name, "mime": e.mime, "bytes": e.bytes, "sha256": e.sha256,
                       "uploaded_at": _iso(e.created_at)} for e in task.evidence],
@@ -948,7 +951,14 @@ def content_hash(data: Mapping[str, Any]) -> str:
 
 
 def snapshot_json(task: Task, employee_id: int | None = None, attribution: str = "APPROVAL_DATE") -> dict[str, Any]:
-    share = next((a.split_percent for a in task.assignees if a.employee_id == employee_id), None)
+    """The task as one assignee's run sees it. ``paid_in_run_id`` is the run that paid the task, or, while
+    other shares are still unpaid, the run that paid THIS assignee's share (EC-TSK-*, EC-VAR-01): a share
+    paid once is excluded as ALREADY_PAID, and another assignee being paid never changes this assignee's view
+    (no stale marking of the other assignee's run)."""
+    mine = next((a for a in task.assignees if a.employee_id == employee_id), None)
+    share = mine.split_percent if mine is not None else None
+    paid_in = task.paid_in_run_id if task.paid_in_run_id is not None else (
+        mine.paid_in_run_id if mine is not None else None)
     attributed = task.approved_on if attribution == "APPROVAL_DATE" else (task.completed_on or task.approved_on)
     data = {
         "task_id": f"task:{task.id}",
@@ -967,7 +977,7 @@ def snapshot_json(task: Task, employee_id: int | None = None, attribution: str =
         "attribution_date": _iso(attributed),
         "evidence_count": len(task.evidence),
         "external_ref": task.external_ref,
-        "paid_in_run_id": task.paid_in_run_id,
+        "paid_in_run_id": paid_in,
         "assignees": [{"employee_id": str(a.employee_id),
                        "split_percent": format(Decimal(a.split_percent).quantize(Decimal("0.01")), "f")}
                       for a in task.assignees],
@@ -979,7 +989,9 @@ def snapshot_json(task: Task, employee_id: int | None = None, attribution: str =
 
 def approved_tasks(db: Session, company_id: int, employee_id: int, attribution_start: date, attribution_end: date,
                    attribution: str) -> list[dict[str, Any]]:
-    """Unpaid APPROVED tasks of an assignee attributed to [attribution_start, attribution_end], for the snapshot.
+    """APPROVED tasks with this assignee's share unpaid, attributed to [attribution_start, attribution_end], for
+    the snapshot. A task shared with assignees of other pay groups stays APPROVED until every share is paid, so
+    each assignee's own run picks up its share exactly once (TaskAssignee.paid_in_run_id, EC-TSK-*, EC-VAR-01).
 
     ``attribution`` is APPROVAL_DATE (approved_on) or COMPLETION_DATE (completed_on, or approved_on for a
     task without a completion date). Rejected, disputed, submitted and draft tasks never appear (EC-TSK-02);
@@ -992,7 +1004,7 @@ def approved_tasks(db: Session, company_id: int, employee_id: int, attribution_s
     query = (db.query(Task).options(selectinload(Task.assignees), selectinload(Task.evidence))
              .filter(Task.company_id == company_id, Task.status == APPROVED, Task.paid_in_run_id.is_(None),
                      exists().where(TaskAssignee.company_id == Task.company_id, TaskAssignee.task_id == Task.id,
-                                    TaskAssignee.employee_id == employee_id)))
+                                    TaskAssignee.employee_id == employee_id, TaskAssignee.paid_in_run_id.is_(None))))
     if attribution == "APPROVAL_DATE":
         query = query.filter(Task.approved_on >= attribution_start, Task.approved_on <= attribution_end)
     else:
@@ -1023,23 +1035,76 @@ def rate_card_rows(db: Session, company_id: int, start: date, end: date, task_ty
     return result
 
 
+def _mark_paid(db: Session, task: Task, assignees: Sequence[TaskAssignee], run_id: int) -> int:
+    """Pay ``assignees``' shares of a locked task by ``run_id``; the task turns PAID (paid_in_run_id = this run)
+    once every share is paid. A share is paid exactly once: paying it again by the same run is a no-op, by
+    another run a conflict (TASK_SHARE_ALREADY_PAID). Returns how many shares changed."""
+    changed = 0
+    for assignee in assignees:
+        if assignee.paid_in_run_id == run_id:
+            continue
+        if assignee.paid_in_run_id is not None:
+            raise conflict(f"The share of employee #{assignee.employee_id} in task #{task.id} was already paid by "
+                           f"run #{assignee.paid_in_run_id}; it is paid exactly once.", "TASK_SHARE_ALREADY_PAID")
+        if task.status != APPROVED:
+            _transition(task, "MARK_PAID")   # raises: only an approved task's shares are paid
+        assignee.paid_in_run_id = run_id
+        changed += 1
+        _task_audit(db, None, TASK_PAID, task, f"Share of employee #{assignee.employee_id} in task #{task.id} "
+                    f"paid by run #{run_id}", run_id=run_id, share_employee_id=assignee.employee_id)
+    turned_paid = task.status == APPROVED and all(a.paid_in_run_id is not None for a in task.assignees)
+    if turned_paid:
+        task.status = _transition(task, "MARK_PAID")
+        task.paid_in_run_id = run_id
+        _task_audit(db, None, TASK_PAID, task, f"Task #{task.id} paid by run #{run_id}", run_id=run_id)
+    if changed or turned_paid:
+        task.row_version += 1
+    return changed
+
+
+def _locked_tasks(db: Session, company_id: int, ids: Sequence[int]) -> dict[int, Task]:
+    rows = (db.query(Task).options(selectinload(Task.assignees))
+            .filter(Task.company_id == company_id, Task.id.in_(ids)).order_by(Task.id).with_for_update(of=Task).all())
+    if len(rows) != len(ids):
+        raise not_found("Task")
+    return {t.id: t for t in rows}
+
+
+def mark_task_shares_paid(db: Session, company_id: int, shares: Iterable[tuple[int, int]], run_id: int) -> int:
+    """Pay the (task id, employee id) shares a finalized run paid (each exactly once, EC-TSK-*, EC-VAR-01);
+    returns how many shares changed. A task turns PAID when its last share is paid."""
+    wanted: dict[int, set[int]] = {}
+    for task_id, employee_id in shares:
+        wanted.setdefault(int(task_id), set()).add(int(employee_id))
+    if not wanted:
+        return 0
+    tasks = _locked_tasks(db, company_id, sorted(wanted))
+    changed = 0
+    for task_id, employee_ids in sorted(wanted.items()):
+        task = tasks[task_id]
+        assignees = [a for a in task.assignees if a.employee_id in employee_ids]
+        if len(assignees) != len(employee_ids):
+            raise conflict(f"Task #{task_id} has no share for employee(s) "
+                           f"{sorted(employee_ids - {a.employee_id for a in assignees})}.", "TASK_SHARE_NOT_FOUND")
+        changed += _mark_paid(db, task, sorted(assignees, key=lambda a: a.employee_id), run_id)
+    db.flush()
+    return changed
+
+
 def mark_tasks_paid(db: Session, company_id: int, task_ids: Iterable[int], run_id: int) -> int:
-    """APPROVED -> PAID for tasks paid by a finalized run (exactly once); returns how many changed."""
+    """APPROVED -> PAID for whole tasks paid by a finalized run (exactly once): every unpaid share is paid by
+    ``run_id``. Returns how many tasks changed. Run finalization pays per assignee (mark_task_shares_paid)."""
     ids = sorted(set(task_ids))
     if not ids:
         return 0
-    rows = (db.query(Task).options(selectinload(Task.assignees))
-            .filter(Task.company_id == company_id, Task.id.in_(ids)).with_for_update(of=Task).all())
-    if len(rows) != len(ids):
-        raise not_found("Task")
+    tasks = _locked_tasks(db, company_id, ids)
     changed = 0
-    for task in rows:
+    for task in tasks.values():
         if task.status == PAID and task.paid_in_run_id == run_id:
             continue
-        task.status = _transition(task, "MARK_PAID")
-        task.paid_in_run_id = run_id
-        task.row_version += 1
+        if task.status != APPROVED:
+            _transition(task, "MARK_PAID")   # raises
+        _mark_paid(db, task, [a for a in task.assignees if a.paid_in_run_id is None], run_id)   # -> PAID
         changed += 1
-        _task_audit(db, None, TASK_PAID, task, f"Task #{task.id} paid by run #{run_id}", run_id=run_id)
     db.flush()
     return changed

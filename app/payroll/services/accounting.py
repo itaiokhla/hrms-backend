@@ -4,9 +4,10 @@ When ``payroll.accounting.enabled`` is ON for the run's legal entity, one journa
 at ``payroll.accounting.post_on``:
 
 * FINALIZE: the outbox event ``payroll.run.finalized`` ({"run_id"}) queues ``payroll.accounting_finalized``;
-* PAYMENT_SETTLED: the event ``payroll.run.payment_settled`` ({"run_id"}), emitted when the run's payment
-  stage reaches PAID, queues ``payroll.accounting_settled`` (the payments milestone may also call
-  ``on_payment_settled`` in its own transaction). Nothing is posted for a run that is not paid.
+* PAYMENT_SETTLED: a committed transaction that moves a run into PAID or RECONCILED (``runs.transition``
+  from the payments milestone) queues ``payroll.accounting_settled`` once per run (see "PAYMENT_SETTLED
+  trigger" below); an outbox event ``payroll.run.payment_settled`` ({"run_id"}) or a direct call of
+  ``on_payment_settled`` do the same. Nothing is posted for a run that is not paid.
 
 Each posting line of a finalized employee (EARNING, DEDUCTION, EMPLOYER_CONTRIBUTION, REIMBURSEMENT,
 ROUNDING; benefits in kind and informational lines move no money) is booked as a debit of the mapping's
@@ -33,11 +34,12 @@ import csv
 import hashlib
 import io
 import json
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from sqlalchemy import and_, func, text
+from sqlalchemy import and_, event, func, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -76,6 +78,7 @@ PAID_RUN_STATUSES = ("PAID", "RECONCILED", "CLOSED")
 CSV_COLUMNS = ("journal_number", "posting_date", "legal_entity", "run_number", "line_no", "account", "cost_center",
                "currency", "debit", "credit", "component", "description")
 _ZERO = Decimal("0")
+logger = logging.getLogger("hrms.payroll.accounting")
 
 
 @dataclass(frozen=True)
@@ -370,6 +373,58 @@ def _on_settled(ctx: jobs.JobContext) -> dict:
 
 outbox.subscribe(FINALIZED_TOPIC, FINALIZED_JOB)
 outbox.subscribe(SETTLED_TOPIC, SETTLED_JOB)
+
+
+# --------------------------------------------------------------------------- PAYMENT_SETTLED trigger
+#
+# The payments milestone moves a run to PAID (or RECONCILED) through ``runs.transition`` without an event of
+# its own. So that ``post_on = PAYMENT_SETTLED`` never depends on every caller remembering to call
+# ``on_payment_settled``, a flush that moves a run INTO a paid state records the run, and the transaction's
+# commit queues ``payroll.accounting_settled`` once per run (idempotency key; ``handle_event`` re-checks the
+# settings, the status and never double-posts). A rolled-back transaction queues nothing.
+
+_PAID_RUNS_KEY = "accounting.paid_run_ids"
+
+
+def _paid_runs_in_flush(session: Session, _flush_context) -> None:
+    from sqlalchemy import inspect as sa_inspect
+
+    for obj in session.dirty:
+        if not isinstance(obj, PayrollRun):
+            continue
+        history = sa_inspect(obj).attrs.status.history  # pre-flush history; never emits SQL
+        if not history.added or not history.deleted:
+            continue
+        if history.added[0] in PAID_RUN_STATUSES and history.deleted[0] not in PAID_RUN_STATUSES:
+            session.info.setdefault(_PAID_RUNS_KEY, set()).add((obj.company_id, obj.id))
+
+
+def _queue_settled_journals(session: Session) -> None:
+    from app.database.db import BYPASS_KEY, current_company_id
+
+    pending = session.info.pop(_PAID_RUNS_KEY, None)
+    if not pending:
+        return
+    bound = current_company_id(session)
+    for company_id, run_id in sorted(pending):
+        if bound != company_id and not session.info.get(BYPASS_KEY):
+            # Not the run's tenant transaction: the journal can still be posted by hand (POST .../journal).
+            logger.warning("accounting: run %s became paid outside its tenant transaction; journal not queued",
+                           run_id)
+            continue
+        jobs.enqueue(session, company_id=company_id, type=SETTLED_JOB, payload={"run_id": run_id},
+                     idempotency_key=f"accounting:settled:{run_id}", max_attempts=5)
+
+
+def _forget_paid_runs(session: Session, previous_transaction=None) -> None:
+    # A savepoint rollback keeps what the outer transaction recorded (the handler re-checks the run status).
+    if not getattr(previous_transaction, "nested", False):
+        session.info.pop(_PAID_RUNS_KEY, None)
+
+
+event.listen(Session, "after_flush", _paid_runs_in_flush)
+event.listen(Session, "before_commit", _queue_settled_journals)
+event.listen(Session, "after_soft_rollback", _forget_paid_runs)
 
 
 # --------------------------------------------------------------------------- API helpers

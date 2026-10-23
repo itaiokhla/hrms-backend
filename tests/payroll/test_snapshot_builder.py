@@ -257,6 +257,48 @@ def test_approved_wage_inputs_are_frozen_and_reserved_at_lock(runs_world):
     assert engine.calculate(stored.content).amount("SPOT_BONUS") == Decimal("2500.00")
 
 
+def test_ec_cor_06_off_cycle_bonus_snapshot_keeps_only_the_selected_components(runs_world):
+    from app.payroll import engine
+
+    w = runs_world
+    set_setting(w["cid"], "payroll.attendance.enabled", False)
+    set_setting(w["cid"], "payroll.wage_inputs.require_approval_above", {"amount": "99999.00", "currency": "INR"})
+    component(w["cid"], "SPOT_BONUS")
+    component(w["cid"], "SPOT_COMMISSION")
+    start, end = w["period"]["start"], w["period"]["end"]
+    ids = {}
+    for code, amount in (("SPOT_BONUS", "2500.00"), ("SPOT_COMMISSION", "800.00")):
+        r = w["acme"].post(WAGE_INPUTS, json={"employee_id": emma(w), "component_code": code, "period_start": start,
+                                              "period_end": end, "amount": {"amount": amount, "currency": "INR"}})
+        assert r.status_code == 201, r.text
+        ids[code] = r.json()["items"][0]["id"]
+    r = w["acme"].post("/api/v1/payroll/off-cycle-runs", json={
+        "kind": "BONUS", "reason": "Diwali bonus", "pay_group_id": w["group"], "pay_period_id": w["period"]["id"],
+        "employee_ids": [emma(w)], "component_codes": ["SPOT_BONUS"]})
+    assert r.status_code == 201, r.text
+    bonus_run = r.json()["id"]
+    force_status(bonus_run, "READY")
+    result = lock(w["cid"], bonus_run, [emma(w)])
+    [stored] = result.snapshots.values()
+    content = stored.content
+    assert content["run"]["run_type"] == "OFF_CYCLE"
+    assert [i["component"] for i in content["wage_inputs"]] == ["SPOT_BONUS"]    # the commission stays for payroll
+    assert all(s["compensation"]["lines"] == [] for s in content["segments"] if s["compensation"])
+    assert content["overtime_entries"] == [] and content["reimbursements"] == []
+    assert not (content.get("tasks") or {}).get("records")
+    assert f"run_selection:{bonus_run}" in stored.source_hashes
+    reserved = dict(sql("SELECT id, reserved_by_run_employee_id FROM wage_inputs WHERE id = ANY(:i)",
+                        i=list(ids.values())))
+    assert reserved[ids["SPOT_BONUS"]] == stored.run_employee_id and reserved[ids["SPOT_COMMISSION"]] is None
+    produced = {line.component for line in engine.calculate(content).lines if line.kind == "EARNING"}
+    assert produced == {"SPOT_BONUS"}                                            # no BASIC / HRA in a bonus run
+    # A regular run of the same period still freezes the salary and the unselected input.
+    regular = new_run(w["acme"], w["group"], w["period"]["id"])
+    full = built(w["cid"], regular["id"], emma(w)).content
+    assert {i["component"] for i in full["wage_inputs"]} == {"SPOT_COMMISSION"}   # the bonus is reserved elsewhere
+    assert full["segments"][0]["compensation"]["lines"]
+
+
 def test_f_17_ec_sta_08_ytd_is_per_legal_entity_tax_year_and_currency(snap_world):
     w = snap_world
     tax_year = sql("SELECT tax_year FROM pay_periods WHERE id = :p", p=w["period"]["id"])[0][0]

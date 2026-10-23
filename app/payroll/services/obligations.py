@@ -11,7 +11,9 @@ EC-PAY-15, EC-PAY-16, EC-PAY-17, EC-PAY-23, EC-BNK-03, EC-BNK-09, EC-RUN-13).
   snapshot: masked JSON for display and the identifiers sealed with the tenant data key, bound to the
   instruction's idempotency key. A later bank change never redirects an instruction (EC-BNK-03).
   An allocation to an account in another currency is converted with an FX snapshot; without a rate the
-  instruction waits NOT_READY (never 1:1, EC-PAY-17).
+  instruction waits NOT_READY (never 1:1, EC-PAY-17). A quote older than ``payroll.fx.max_rate_age_hours``
+  is re-quoted before batching (both quotes kept in the history); without a usable rate the payment is
+  held (FX_RATE_MISSING) until one exists (EC-PAY-20).
 * Readiness: no account → NOT_READY (MISSING_BANK_ACCOUNT); cooling-off not over → NOT_READY
   (COOLING_OFF); a failed account → NOT_READY (ACCOUNT_FAILED); an unverified account when
   ``payroll.bank.exclude_unverified_from_payout`` → ON_HOLD (UNVERIFIED_ACCOUNT); a risk hold on the
@@ -36,7 +38,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -78,8 +80,11 @@ REASONS = {
     "EMPLOYEE_HOLD": "The employee's payment is on hold",
     "ALLOCATION_INVALID": "The payee's split-payment rules are invalid",
     "FX_RATE_MISSING": "No usable exchange rate for the account currency",
+    "FX_QUOTE_EXPIRED": "The exchange-rate quote expired and no current rate exists (EC-PAY-20)",
 }
 SYSTEM_HOLDS = ("UNVERIFIED_ACCOUNT", "ACCOUNT_REVIEW")
+# Holds placed by an approved run reversal (reversals._hold_unsent): only the reversal ends them.
+REVERSAL_HOLDS = ("RUN_REVERSAL",)
 # Routing keys of bank_accounts.routing, mapped to the bank-file routing schemes (banking.files).
 ROUTING_SCHEMES = {"ifsc": "IFSC", "sort_code": "SORT_CODE", "aba": "ABA", "routing_number": "ABA", "bsb": "BSB",
                    "bank_code": "BANK_CODE"}
@@ -507,6 +512,9 @@ def release_hold(db: Session, principal: Principal, instruction_id: int, reason:
         run_employee = _run_employee_for(db, obligation)
         if run_employee is not None and _payment_hold(run_employee):
             raise conflict("The employee's payment is on hold on the run; release it there.", "RUN_EMPLOYEE_HELD")
+        if row.status_reason in REVERSAL_HOLDS:
+            raise conflict("The payment is held by an approved run reversal; it is cancelled when the reversal is "
+                           "finalized and cannot be released by hand.", "REVERSAL_HOLD")
         if row.status_reason in SYSTEM_HOLDS and current_readiness(db, row).status == "ON_HOLD":
             raise conflict(f"{REASONS[row.status_reason]}: fix the bank account first.", "HOLD_CAUSE_PRESENT")
     row = events.transition(db, principal, row, "RELEASE_HOLD", reason=reason, expected_version=expected_version,
@@ -524,18 +532,63 @@ def fx_target(row: PaymentInstruction) -> Optional[str]:
     return None
 
 
-def _requote(db: Session, row: PaymentInstruction, target: str) -> bool:
+def _requote(db: Session, row: PaymentInstruction, target: str, on: Optional[date] = None) -> bool:
     """Convert a waiting instruction into its account currency with a current rate (EC-PAY-17, EC-PAY-20:
     never 1:1, never a stale rate). Records both amounts and the conversion; False without a usable rate."""
     obligation = db.query(PaymentObligation).filter(PaymentObligation.company_id == row.company_id,
                                                     PaymentObligation.id == row.obligation_id).one()
-    amount, conversion_id = _fx(db, obligation, Decimal(row.amount), target, obligation.pay_date or events.now().date())
+    when = on or obligation.pay_date or events.now().date()
+    amount, conversion_id = _fx(db, obligation, Decimal(row.amount), target, when)
     if amount is None:
         return False
     row.account_amount, row.account_currency, row.fx_conversion_id = amount, target, conversion_id
     row.row_version += 1
     db.flush()
     return True
+
+
+def fx_quote_expired(db: Session, row: PaymentInstruction) -> bool:
+    """EC-PAY-20: the instruction's FX quote is older than ``payroll.fx.max_rate_age_hours`` (a stale rate
+    is never paid out: an unsent payment is re-quoted before batching, a batched one blocks the release)."""
+    if row.fx_conversion_id is None:
+        return False
+    from app.models.catalogue import FxConversion
+    from app.payroll.services import fx as fx_service
+
+    conversion = db.query(FxConversion).filter(FxConversion.company_id == row.company_id,
+                                               FxConversion.id == row.fx_conversion_id).first()
+    if conversion is None or conversion.created_at is None:
+        return True
+    max_age = fx_service.settings_for(db, row.company_id, events.now().date()).max_rate_age_hours
+    return conversion.created_at + timedelta(hours=max_age) < events.now()
+
+
+def _requote_expired(db: Session, row: PaymentInstruction) -> PaymentInstruction:
+    """Re-quote an unsent instruction whose FX quote expired (EC-PAY-20) with today's rate, recording both
+    quotes; without a usable rate it is held (FX_RATE_MISSING) until one exists. It then joins a batch whose
+    approval covers the new amount."""
+    target = row.account_currency or (row.beneficiary_snapshot or {}).get("currency")
+    old_amount, old_conversion = row.account_amount, row.fx_conversion_id
+    if target and _requote(db, row, target, on=events.now().date()):
+        db.add(PaymentEvent(
+            company_id=row.company_id, instruction_id=row.id, event_status="FX_REQUOTED", outcome="RECORDED",
+            from_status=row.status, to_status=row.status, source="SYSTEM", at=events.now(),
+            details={"previous_amount": events.money_json(old_amount, target), "previous_conversion_id": old_conversion,
+                     "amount": events.money_json(row.account_amount, target), "conversion_id": row.fx_conversion_id}))
+        db.flush()
+        return row
+    return events.transition(db, None, row, "HOLD", system=True, reason=REASONS["FX_QUOTE_EXPIRED"],
+                             updates={"status_reason": "FX_RATE_MISSING"})
+
+
+def _release_fx_hold(db: Session, row: PaymentInstruction) -> Optional[PaymentInstruction]:
+    """A payment held for a missing rate is re-quoted and released once a current rate exists."""
+    target = row.account_currency or (row.beneficiary_snapshot or {}).get("currency")
+    if not target or not _requote(db, row, target, on=events.now().date()):
+        return None
+    row = events.transition(db, None, row, "RELEASE_HOLD", system=True, reason="A current exchange rate exists",
+                            updates={"status_reason": None})
+    return ready_if_usable(db, row)
 
 
 def ready_if_usable(db: Session, row: PaymentInstruction) -> PaymentInstruction:
@@ -576,6 +629,22 @@ def refresh_readiness(db: Session, principal: Principal, run_id: int) -> dict:
         if employee_held and row.status in ("NOT_READY", "READY"):
             changed.append(events.transition(db, None, row, "HOLD", system=True, reason=REASONS["EMPLOYEE_HOLD"],
                                              updates={"status_reason": "EMPLOYEE_HOLD"}))
+            continue
+        if row.status == "READY":
+            # A risk hold or an unverified account found after the instruction became READY holds it before
+            # it can join a batch (a later fix of the account lifts the system hold below).
+            readiness = current_readiness(db, row)
+            if readiness.status == "ON_HOLD":
+                changed.append(events.transition(db, None, row, "HOLD", system=True, reason=REASONS[readiness.reason],
+                                                 updates={"status_reason": readiness.reason}))
+                continue
+        if row.status == "READY" and fx_quote_expired(db, row):  # EC-PAY-20: never pay out a stale quote
+            changed.append(_requote_expired(db, row))
+            continue
+        if row.status == "ON_HOLD" and row.status_reason == "FX_RATE_MISSING":
+            released = _release_fx_hold(db, row)
+            if released is not None:
+                changed.append(released)
             continue
         if row.status == "ON_HOLD":
             # System-placed holds lift when their cause is gone; a hold placed by a person needs a person.

@@ -65,10 +65,14 @@ def sync_tenant_hosts() -> None:
 def start_payroll_runtime() -> None:
     """Payroll v2 runtime: refuse a missing or malformed master key, redact logs, start the embedded worker."""
     from app import worker
+    from app.payroll import packs
     from app.payroll.services import jobs, keys
 
     keys.check_master_key()
     jobs.install_log_redaction()
+    # Country packs' employer choices (payroll.statutory.<CC>.*) join the settings registry, so a legal entity
+    # can switch its schemes; an unverified pack still locks them OFF through its constraints (EC-STA-01).
+    packs.register_settings(environment=packs.environment_name(settings.environment))
     if worker.validate_mode() == "thread":
         worker.start_embedded()
 

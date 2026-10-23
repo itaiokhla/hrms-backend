@@ -93,6 +93,8 @@ VARIABLES: dict[str, VariableDef] = _defs(
     VariableDef("emp.subdivision", STRING, "ISO 3166-2 subdivision of the branch", nullable=True),
     VariableDef("ctc.annual", MONEY_PAY, "Annual cost to company from the compensation assignment"),
     VariableDef("ctc.monthly", MONEY_PAY, "Monthly cost to company from the compensation assignment"),
+    VariableDef("ctc.period", MONEY_PAY, "Cost to company (CTC_BASED) or gross (GROSS_BASED) for one pay period: "
+                "ctc.annual ÷ periods per year (equals ctc.monthly on a monthly calendar)"),
     VariableDef("emp.gender", STRING, "Gender (country packs only)", nullable=True, protected=True),
     VariableDef("emp.religion", STRING, "Religion (country packs only)", nullable=True, protected=True),
     VariableDef("emp.caste", STRING, "Caste (country packs only)", nullable=True, protected=True),

@@ -30,6 +30,7 @@ Services take (db, principal, ...) and never commit.
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -61,6 +62,7 @@ SUBMIT = sm.PAYMENT_SUBMIT
 RECONCILE = sm.PAYMENT_RECONCILE
 VIEW_PERMISSIONS = (PREPARE, APPROVE, SUBMIT, RECONCILE)
 AUDIT_MODULE = payroll_audit.PAYMENTS
+logger = logging.getLogger(__name__)
 MANUAL_SETTLEMENT = "MANUAL_SETTLEMENT"
 MANUAL_PROOF_SUBMITTED = "MANUAL_PROOF_SUBMITTED"
 MANUAL_PROOF_REJECTED = "MANUAL_PROOF_REJECTED"
@@ -285,6 +287,12 @@ def transition(db: Session, principal: Optional[Principal], instruction: Payment
         audit(db, principal, spec.audit_event, f"Payment {row.reference or row.id}: {previous} -> {spec.target}"
               + (f": {reason}" if reason else ""), "payment_instruction", row.id, row.company_id, action=action,
               from_status=previous, to_status=spec.target, reason=reason, **dict(details or {}))
+    if spec.target in SETTLED and (previous not in SETTLED or "settled_amount" in (updates or {})):
+        # Money arrived: if the run employee was reversed while this payment was in flight, the reversal
+        # records a recovery receivable for it (EC-COR-03/EC-COR-04; idempotent, never a bank debit).
+        from app.payroll.services import reversals
+
+        reversals.on_instruction_settled(db, row)
     return row
 
 
@@ -347,6 +355,13 @@ def apply_evidence(db: Session, principal: Optional[Principal], row: PaymentInst
                          evidence_ref=evidence_ref, actor_user_id=actor, details={"reason": "SANDBOX_INSTRUCTION"})
         return EvidenceResult("CONFLICT", row, "SANDBOX_INSTRUCTION")
     status = event_status
+    if status in SETTLED and amount is not None and amount > payout_amount(row):
+        # Evidence of more than was paid out is never a settlement (EC-MON-18): keep it for review.
+        record_unapplied(db, row, status, "CONFLICT", source=source, external_event_id=external_event_id,
+                         evidence_ref=evidence_ref, sandbox=sandbox, actor_user_id=actor,
+                         details={"reason": "AMOUNT_EXCEEDS_PAYMENT",
+                                  "amount": amount_str(amount, payout_currency(row))})
+        return EvidenceResult("CONFLICT", row, "AMOUNT_EXCEEDS_PAYMENT")
     if status == "SETTLED" and amount is not None and amount < payout_amount(row):
         status = "PARTIALLY_SETTLED"
     outcome = sm.apply_event(row.status, status)
@@ -520,6 +535,22 @@ def sync_run(db: Session, principal: Optional[Principal], company_id: int, run_i
         run = runs.transition(db, None, run, action, system=True, **guard)
     if run.status == "PAID" and all_settled_reconciled(statuses) and can_reconcile(principal, run.legal_entity_id):
         runs.transition(db, principal, run, "RECONCILE", SETTLED_INSTRUCTIONS_MATCHED=True)
+    publication_progress(db, company_id, run_id)
+
+
+def publication_progress(db: Session, company_id: int, run_id: int) -> None:
+    """Re-check the run's payslip publication now (ON_PAYMENT_SUBMITTED / ON_SETTLED, 3.6 §7) instead of
+    waiting for the hourly sweep. Publication only moves documents and queues notification jobs (nothing is
+    rendered here) and is idempotent. It runs in a savepoint of the caller's transaction: a publication
+    problem (two settlements publishing the same payslip at once, say) never undoes a payment status; the
+    sweep re-checks what was missed."""
+    from app.payroll.services import publication
+
+    try:
+        with db.begin_nested():
+            publication.on_payment_progress(db, company_id, run_id)
+    except Exception:  # noqa: BLE001 - best effort by design, see the docstring
+        logger.warning("payslip publication re-check failed for run %s", run_id, exc_info=True)
 
 
 # ---------------------------------------------------------------------------

@@ -345,8 +345,11 @@ def test_ec_run_03_crashed_chunk_is_retried_without_duplicate_lines(calc_world, 
     chunk = [j for j in jobs_of(w["run"]) if j[1] == calculation.CALCULATE_CHUNK_JOB][0]
     assert chunk[2] == "QUEUED" and chunk[4] == 1                       # re-queued with backoff
     assert sql("SELECT count(*) FROM payroll_lines WHERE run_id = :r", r=w["run"])[0][0] == 0  # rolled back
-    sql("UPDATE jobs SET run_at = now() WHERE id = :j", j=chunk[0])
-    assert jobs.run_pending(ids=[chunk[0]]) == 1
+    sql("UPDATE jobs SET run_at = now() - interval '1 second' WHERE id = :j", j=chunk[0])
+    assert jobs.run_pending(ids=[chunk[0]]) == 1, (
+        sql("SELECT status, run_at, now(), locked_by, attempts FROM jobs WHERE id = :j", j=chunk[0]),
+        sql("SELECT a.pid, a.state, left(a.query, 120) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid "
+            "WHERE l.relation = 'jobs'::regclass AND a.pid <> pg_backend_pid()"))
     assert run_state(w["run"])[0] == "REVIEW_REQUIRED"
     chunk = [j for j in jobs_of(w["run"]) if j[1] == calculation.CALCULATE_CHUNK_JOB][0]
     assert chunk[2] == "SUCCEEDED" and chunk[4] == 2
@@ -516,6 +519,15 @@ def test_calculate_guards_key_state_selection_and_versions(calc_world):
     assert calculate(w["acme"], w["run"], expect=404, employee_ids=[w["beta"]["employee"]["id"]])  # other tenant
 
 
+def test_ec_run_20_no_included_employee_cannot_be_calculated(calc_world):
+    w = calc_world
+    sql("UPDATE payroll_run_employees SET status = 'EXCLUDED', exclusion_reason = 'NO_SALARY' WHERE run_id = :r",
+        r=w["run"])
+    assert calculate(w["acme"], w["run"], expect=409)["code"] == "EMPTY_POPULATION"
+    assert run_state(w["run"])[0] == "READY" and jobs_of(w["run"]) == []
+    assert w["standin"].calls == []                          # nothing was locked
+
+
 def test_calculation_running_refuses_a_second_calculation(calc_world):
     w = calc_world
     force_status(w["run"], "CALCULATING")
@@ -607,3 +619,74 @@ def test_ec_sec_01_calculation_rows_are_isolated_across_three_tenants(calc_world
         stage = conn.execute(text("SELECT stage_outputs->>'calc_hash' = calc_hash FROM payroll_run_employees "
                                   "WHERE id = :e"), {"e": w["emma_row"]}).scalar()
         assert stage is True
+
+
+# ---------------------------------------------------------------------------
+# The real chain end to end (no stand-ins): create -> precheck -> calculation job -> review -> submit ->
+# approve by another user -> finalize with step-up -> payroll.run.finalized drained -> obligations + payslips
+# ---------------------------------------------------------------------------
+def test_end_to_end_real_chain_from_calculation_job_to_obligations_and_payslips(app, runs_world):
+    """Seeded tenant, real snapshot builder, real calculation job, real approval and finalization services and
+    the real subscribers of payroll.run.finalized (drained inline after commit).
+
+    By hand (3.3 §11 Example A, CTC 12,00,000, no country pack, attendance OFF): BASIC 50,000.00, HRA
+    20,000.00, FIXED_ALLOWANCE 30,000.00; gross = net = 1,00,000.00 for Emma and for Ivan; the run owes
+    2,00,000.00 in INR, one obligation of 1,00,000.00 per employee and one payslip each."""
+    from app.payroll.services import documents
+    from tests.payroll.test_compensation import login_as
+    from tests.payroll.test_payment_obligations import NUMBERS, add_bank_account
+    from tests.payroll.test_run_finalize import ATTESTATIONS, approve, confirm_countries, finalize, step_up, submit
+    from tests.payroll.test_run_finalize import user_id_of
+
+    w = runs_world
+    acme, cid = w["acme"], w["cid"]
+    emma, ivan = w["emp"]["Emma"]["id"], w["emp"]["Ivan"]["id"]
+    no_pack_country(w)
+    confirm_countries(cid)
+    set_setting(cid, "payroll.attendance.enabled", False)
+    for name in ("Emma", "Ivan"):
+        add_bank_account(cid, w["emp"][name]["id"], NUMBERS[name], holder=f"{name} Test")
+    # No verified pack covers GB: statutory obligations are attested as handled outside (I-15, maker-checker).
+    from tests.helpers import create_employee
+
+    attestation = acme.post(ATTESTATIONS, json={"legal_entity_id": w["le01"], "effective_from": "2020-01-01",
+                                                "reason": "Statutory filings handled by our UK bureau"})
+    assert attestation.status_code == 201, attestation.text
+    checker = login_as(app, acme, create_employee(acme, "Chen", "Checker"), ["payroll_manager"])
+    ok(checker.post(f"{ATTESTATIONS}/{attestation.json()['id']}/approve"))
+
+    run = new_run(acme, w["group"], w["period"]["id"])
+    precheck_ready(acme, run["id"])
+    started = calculate(acme, run["id"])
+    assert started["action"] == "CALCULATE" and started["job"]["id"]
+    assert run_state(run["id"])[0] == "REVIEW_REQUIRED", findings(run["id"])
+
+    summary = ok(acme.get(f"{RUNS}/{run['id']}/summary"))
+    assert summary["totals"]["INR"]["net"] == "200000.00" and summary["totals"]["INR"]["employees"] == 2
+    assert summary["reconciles"] and summary["calculation"]["calculated_by_user_id"] == user_id_of(acme)
+    listed = ok(acme.get(f"{RUNS}/{run['id']}/employees", params={"filter": "calculated"}))
+    assert {i["employee_id"]: i["net"]["amount"] for i in listed["items"]} == {emma: "100000.00", ivan: "100000.00"}
+    emma_row = next(i["id"] for i in listed["items"] if i["employee_id"] == emma)
+    detail = ok(acme.get(f"{RUNS}/{run['id']}/employees/{emma_row}"))
+    assert {l["component"]: l["amount"]["amount"] for l in detail["lines"] if l["kind"] == "EARNING"} == {
+        "BASIC": "50000.00", "HRA": "20000.00", "FIXED_ALLOWANCE": "30000.00"}
+    assert all(l["explanation"] for l in detail["lines"])
+
+    submit(acme, run["id"])
+    approve(w["approver"], run["id"])                         # another user (separation of duties)
+    assert run_state(run["id"])[0] == "APPROVED"
+    step_up(acme)
+    finalize(acme, run["id"], key=key())
+    assert run_state(run["id"])[0] in ("FINALIZED", "PAYMENT_READY")
+
+    event = sql("SELECT dispatched_at IS NOT NULL FROM outbox_events WHERE company_id = :c AND topic = "
+                "'payroll.run.finalized' AND payload->>'run_id' = :r", c=cid, r=str(run["id"]))
+    assert event == [(True,)]
+    owed = dict(sql("SELECT employee_id, amount FROM payment_obligations WHERE run_id = :r", r=run["id"]))
+    assert owed == {emma: D("100000.00"), ivan: D("100000.00")}
+    payslips = sql("SELECT employee_id FROM documents WHERE company_id = :c AND run_id = :r AND doc_type = :t "
+                   "ORDER BY employee_id", c=cid, r=run["id"], t=documents.PAYSLIP)
+    assert sorted(e for (e,) in payslips) == sorted([emma, ivan])
+    # The finalized results are what the engine calculated from the frozen snapshots (EC-STA-04).
+    replayed = ok(acme.post(f"{RUNS}/{run['id']}/replay"))
+    assert replayed["matched"] == 2 and replayed["mismatched"] == 0

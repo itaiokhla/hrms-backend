@@ -531,7 +531,28 @@ class IndiaFixturePack(BasePack):
         ctx.scratch["IN.recurring_taxable"] = sum(
             (line.amount for line in lines if "TAXABLE_INCOME" in line.tags and line.kind == "EARNING"
              and line.category in RECURRING_CATEGORIES), ZERO)
+        self._taxable_base_check(lines, ctx)
         return super().taxable_income(lines, ctx)
+
+    def _taxable_base_check(self, lines: Sequence[Line], ctx: PackContext) -> None:
+        """Withholding ON, positive gross earnings and no earning tagged TAXABLE_INCOME: the taxable income is 0
+        only because no component is in the tax base, so the run review must show it (never a silent zero).
+
+        The fixture does not decide which components are taxable (3.3 §2.3: the TAXABLE_INCOME tag is chosen by
+        the company; the seeded country-neutral components of 3.3 §2.4 do not carry it), so nothing is tagged
+        or withheld here.
+        """
+        if not ctx.scheme_on(TDS):
+            return
+        earnings = [line for line in lines if line.kind in ("EARNING", "BENEFIT_IN_KIND")]
+        gross = sum((line.amount for line in earnings if line.kind == "EARNING"), ZERO)
+        if gross <= 0 or any("TAXABLE_INCOME" in line.tags for line in earnings):
+            return
+        ctx.issue("TAXABLE_BASE_EMPTY", "WARNING",
+                  f"Income-tax withholding is ON but no earning is tagged TAXABLE_INCOME (gross earnings "
+                  f"{fmt(gross)}), so the taxable income of this period is 0. Tag the taxable pay components with "
+                  "TAXABLE_INCOME (Settings › Payroll › Components) and recalculate.", component="IN_TDS",
+                  gross=str(gross), components=sorted({line.component for line in earnings if line.kind == "EARNING"}))
 
 
 def _whole(value: Decimal) -> Decimal:

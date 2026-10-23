@@ -12,6 +12,7 @@ from decimal import Decimal
 
 from sqlalchemy import text
 
+from app.payroll.money import amount_str
 from app.payroll.services import accounting
 from tests.payroll.test_reports import (  # noqa: F401  (rc_world is a fixture)
     csv_rows,
@@ -21,6 +22,7 @@ from tests.payroll.test_reports import (  # noqa: F401  (rc_world is a fixture)
     rc_world,
     with_roles,
 )
+from tests.payroll.test_runs_lifecycle import runs_world  # noqa: F401  (a fixture)
 from tests.payroll.test_wage_inputs import (
     CHECK,
     DENIED,
@@ -224,6 +226,105 @@ def test_disabled_accounting_and_post_on_payment_settled(rc_world):
     # Unfinalized runs never have journals.
     assert handle(cid, w["runs"]["AE_SEP"]["id"]) == {"skipped": "RUN_NOT_FINALIZED"}
     assert acme.post(f"{PAY}/runs/{w['runs']['AE_SEP']['id']}/journal").status_code == 409
+
+
+def test_payment_settled_posts_when_the_payments_milestone_moves_the_run_to_paid(rc_world):
+    """post_on = PAYMENT_SETTLED: the commit that makes a run PAID queues the journal once; a rolled-back
+    settlement queues nothing; a return and a second settlement never post a second journal."""
+    from app.models.pay_runs import PayrollRun
+    from app.payroll.services import runs
+
+    w = rc_world
+    acme, cid = w["acme"], w["cid"]
+    run = w["runs"]["ZZ_SEP"]["id"]
+    enable(cid, post_on="PAYMENT_SETTLED")
+    map_codes(acme, ZZ_ACCOUNTS)
+    sql("UPDATE payroll_runs SET status = 'SUBMITTED' WHERE id = :r", r=run)
+
+    def settle(action="RECORD_FULL_SETTLEMENT", *, commit=True, **guards):
+        with session(cid) as (db, _):
+            row = db.query(PayrollRun).filter(PayrollRun.company_id == cid, PayrollRun.id == run).one()
+            runs.transition(db, None, row, action, system=True, **(guards or {"SETTLEMENT_EVIDENCE": True}))
+            if commit:
+                db.commit()
+            else:
+                db.rollback()
+
+    settle(commit=False)
+    assert journals_of(acme, run) == []
+    assert sql("SELECT status FROM payroll_runs WHERE id = :r", r=run)[0][0] == "SUBMITTED"
+    settle()
+    [journal] = journals_of(acme, run)
+    assert (journal["status"], journal["trigger"], journal["line_count"]) == ("POSTED", "PAYMENT_SETTLED", 8)
+    assert journal["totals"]["EUR"]["debit"] == journal["totals"]["EUR"]["credit"] == "8340.00"
+    settle("RECORD_RETURN", RETURN_EVIDENCE=True)
+    settle()
+    assert [j["id"] for j in journals_of(acme, run)] == [journal["id"]]
+    assert sql("SELECT count(*), max(attempts) FROM accounting_journals WHERE company_id = :c", c=cid)[0] == (1, 1)
+
+
+def test_end_to_end_a_really_finalized_run_feeds_the_journal_statutory_report_and_overview(app, runs_world,
+                                                                                         monkeypatch):
+    """The real path (engine calculation, approval, step-up finalization, outbox): the finalized event posts
+    the journal; the statutory report and the overview read the same finalized figures."""
+    from datetime import date as day
+
+    from app.payroll.services import outbox
+    from tests.payroll.test_run_finalize import (
+        FINALIZED_TOPIC,
+        approve,
+        calculate,
+        confirm_countries,
+        finalize,
+        new_run,
+        step_up,
+        submit,
+        user_id_of,
+        zz_entity,
+    )
+
+    # Only the journal subscriber runs here (documents, payments and corrections have their own tests).
+    monkeypatch.setitem(outbox.SUBSCRIBERS, FINALIZED_TOPIC, (accounting.FINALIZED_JOB,))
+    w = runs_world
+    acme, cid = w["acme"], w["cid"]
+    user_id_of(acme)
+    step_up(acme)
+    confirm_countries(cid)
+    zz = zz_entity(w)
+    run = new_run(acme, zz["group"], zz["period"]["id"])["id"]
+    calculate(acme, run, kind="ZZ", store_outputs=True)
+    submit(acme, run)
+    approve(w["approver"], run)
+    enable(cid)
+    codes = [c for (c,) in sql("SELECT DISTINCT component_code FROM payroll_lines WHERE run_id = :r", r=run)]
+    map_codes(acme, {code: (f"6{i:03d}", f"2{i:03d}") for i, code in enumerate(sorted(codes))})
+    finalize(acme, run, key="e2e-finalize")
+
+    [journal] = journals_of(acme, run)
+    assert (journal["status"], journal["trigger"], journal["fixture"]) == ("POSTED", "FINALIZE", False)
+    moved = sql("SELECT coalesce(sum(abs(amount)), 0) FROM payroll_lines WHERE run_id = :r AND kind IN "
+                "('EARNING', 'DEDUCTION', 'EMPLOYER_CONTRIBUTION', 'REIMBURSEMENT', 'ROUNDING')", r=run)[0][0]
+    assert Decimal(journal["totals"]["EUR"]["debit"]) == Decimal(journal["totals"]["EUR"]["credit"]) == moved
+
+    pay_date = sql("SELECT pay_date FROM pay_periods WHERE id = :p", p=zz["period"]["id"])[0][0]
+    report = ok(acme.post(f"{PAY}/statutory-reports", json={
+        "legal_entity_id": zz["entity"], "report_code": "ZZ_PENSION_RETURN",
+        "period_start": day(pay_date.year, pay_date.month, 1).isoformat()}), 201)["id"]
+    ok(acme.post(f"{PAY}/statutory-reports/{report}/generate", json={}))
+    generated = ok(acme.get(f"{PAY}/statutory-reports/{report}"))
+    assert generated["run_ids"] == [run] and generated["is_fixture"] is False
+    pension = dict(sql("SELECT component_code, sum(amount)::text FROM payroll_lines WHERE run_id = :r "
+                       "AND component_code IN ('ZZ_PENSION_EE', 'ZZ_PENSION_ER') GROUP BY component_code", r=run))
+    assert pension and generated["totals"]["components"] == {
+        code: {"EUR": amount_str(Decimal(amount), "EUR")} for code, amount in pension.items()}
+
+    period = {"period_from": zz["period"]["start"], "period_to": zz["period"]["end"], "pay_group_id": zz["group"]}
+    overview = ok(acme.get(f"{PAY}/overview", params=period))
+    assert (overview["kpis"]["eligible"], overview["kpis"]["processed"], overview["kpis"]["paid"]) == (1, 1, 0)
+    net = sql("SELECT net::text FROM payroll_run_employees WHERE run_id = :r AND status = 'CALCULATED'", r=run)[0][0]
+    assert [(m["currency"], m["stage"], m["net"]) for m in overview["money"]] == [
+        ("EUR", "Final", amount_str(Decimal(net), "EUR"))]
+    assert [s["legal_entity_id"] for s in overview["statutory"]] == [zz["entity"]]
 
 
 def test_posted_journals_and_lines_are_immutable(rc_world):

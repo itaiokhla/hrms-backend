@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from sqlalchemy import and_, func, or_, text, update
+from sqlalchemy import and_, false, func, or_, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -221,6 +221,56 @@ def employee_scope_clause(db: Session, principal: Principal, permission: str, ru
     period = period_of(db, run)
     return access.payroll_employee_scope(db, principal, permission, period.period_start,
                                          period.period_end).clause(column)
+
+
+def sees_whole_run(db: Session, principal: Principal, run: PayrollRun, permission: str = READ) -> bool:
+    """Whether every employee of the run lies inside the caller's employee scope for the run's period. When
+    not, run-level totals, counts and stale reasons are recomputed over the visible employees (EC-SEC-05)."""
+    if access.target_scope(principal, permission).all_company:
+        return True
+    visible = employee_scope_clause(db, principal, permission, run, PayrollRunEmployee.employee_id)
+    total, seen = (db.query(func.count(PayrollRunEmployee.id), func.count(PayrollRunEmployee.id).filter(visible))
+                   .filter(PayrollRunEmployee.company_id == run.company_id, PayrollRunEmployee.run_id == run.id)
+                   .one())
+    return total == seen
+
+
+def visible_stale_reasons(reasons: Iterable[Mapping[str, Any]], visible_ids: Optional[set]) -> List[dict]:
+    """Stale reasons without employees outside the caller's scope (``visible_ids`` None: no restriction).
+    A reason about one hidden employee keeps only its time; lists and counts are reduced to visible ones."""
+    if visible_ids is None:
+        return [dict(r) for r in reasons or []]
+    shown: List[dict] = []
+    for reason in reasons or []:
+        item = dict(reason)
+        if item.get("employee_id") is not None and item["employee_id"] not in visible_ids:
+            shown.append({"reason": "Inputs of an employee outside your scope changed after they were locked.",
+                          "at": item.get("at"), "restricted": True})
+            continue
+        if isinstance(item.get("employee_ids"), list):
+            item["employee_ids"] = [e for e in item["employee_ids"] if e in visible_ids]
+        if isinstance(item.get("changes"), list):
+            kept = [c for c in item["changes"] if isinstance(c, Mapping) and c.get("employee_id") in visible_ids]
+            if len(kept) != len(item["changes"]):
+                item["reason"] = ("Inputs changed after they were locked; recalculate the affected employees or "
+                                  "defer the change to retro.")
+            item["changes"] = kept
+        item.pop("employees", None)
+        shown.append(item)
+    return shown
+
+
+def visible_run_figures(db: Session, principal: Principal, run: PayrollRun) -> Tuple[dict, dict, set]:
+    """(totals per currency, population counts, visible employee ids) over the employees inside the caller's
+    scope, in the shapes the run stores (``calculation.run_totals`` / ``calculation.population``)."""
+    from app.payroll.services import calculation
+
+    rows = db.query(PayrollRunEmployee).filter(
+        PayrollRunEmployee.company_id == run.company_id, PayrollRunEmployee.run_id == run.id,
+        employee_scope_clause(db, principal, READ, run, PayrollRunEmployee.employee_id)).all()
+    totals = calculation.run_totals(rows) if run.totals else {}
+    population = calculation.population(rows) if "calculated" in (run.population or {}) else _summary(rows)
+    return totals, population, {r.employee_id for r in rows}
 
 
 def get_run_employee_for(db: Session, principal: Principal, run: PayrollRun, run_employee_id: int, permission: str,
@@ -565,6 +615,21 @@ def _refresh_summary(db: Session, run: PayrollRun) -> None:
     run.population = _summary(rows)
 
 
+def _refresh_totals(db: Session, run: PayrollRun) -> None:
+    """A FULL hold placed or released after calculation moves the employee out of (or back into) the run
+    totals (``calculation.in_totals``: a FULL hold is never paid in this run); totals stay per currency."""
+    if sm.is_run_finalized(run.status) or run.calculated_at is None:
+        return
+    from app.payroll.services import calculation
+
+    rows = db.query(PayrollRunEmployee).filter(PayrollRunEmployee.company_id == run.company_id,
+                                               PayrollRunEmployee.run_id == run.id).all()
+    totals = calculation.run_totals(rows)
+    if totals != dict(run.totals or {}):
+        run.totals = totals
+        run.row_version += 1
+
+
 def _sync_population(db: Session, run: PayrollRun, period: PayPeriod, group: PayGroup) -> List[Candidate]:
     """Add new eligible employees, follow a changed primary placement, re-include employees whose automatic
     exclusion no longer applies, and report included employees that are no longer eligible
@@ -691,6 +756,10 @@ def create_run(db: Session, principal: Principal, data: RunRequest, *, allow_rev
     if period.pay_group_id != group.id:
         raise not_found("Pay period")
     entity = db.query(LegalEntity).filter(LegalEntity.company_id == cid, LegalEntity.id == group.legal_entity_id).one()
+    # payroll.enabled OFF: "Payroll menus are hidden and no runs can be created" (registry). Existing runs,
+    # documents and payments are untouched (EC-RUN-18). Resolved for today: the switch is about availability now.
+    if not settings_engine.resolve(db, cid, "payroll.enabled", on=clock.company_today(db, cid)).value:
+        raise conflict("Payroll is switched off for this company; no run can be created.", "PAYROLL_DISABLED")
 
     existing = [sm.RunRef(id=r.id, run_type=sm.RunType(r.run_type), status=r.status, pay_group_id=r.pay_group_id,
                           period_id=r.pay_period_id, reverses_run_id=r.reverses_run_id)
@@ -709,6 +778,10 @@ def create_run(db: Session, principal: Principal, data: RunRequest, *, allow_rev
         employee = db.query(Employee).filter(Employee.company_id == cid, Employee.id == data.employee_ids[0]).first()
         if employee is None:
             raise not_found("Employee")
+        # Outside the caller's employee scope the employee does not exist for this request: no 409 below may
+        # reveal its employment dates (EC-SEC-02). The window reaches back to the last working day.
+        window_start = min(period.period_start, employee.termination_date or period.period_start)
+        access.ensure_employee_in_scope(db, principal, CREATE, employee.id, window_start, period.period_end)
         if employee.termination_date is None or employee.hire_date is None:
             raise conflict("The employee has no complete employment period (hire and end dates) recorded.",
                            "EMPLOYMENT_NOT_ENDED")
@@ -1050,11 +1123,17 @@ def _pending_findings(ctx: _Ctx) -> List[Finding]:
                   "WAGE_INPUT": pending_wage.get(employee_id, 0)}
         for kind, count in others.items():
             if count:
+                # A final settlement is the employee's last pay: its confirmed settlement items are wage inputs, so
+                # one still awaiting approval would be silently left out of a run that settles the case.
+                final = kind == "WAGE_INPUT" and ctx.run.run_type == sm.RunType.FINAL_SETTLEMENT.value
                 findings.append(Finding(
-                    "PENDING_INPUTS", "WARNING", f"{count} {kind.lower().replace('_', ' ')} item(s) awaiting approval; "
-                    "they are not paid in this run unless approved before calculation.",
+                    "PENDING_INPUTS", "BLOCKING" if final else "WARNING",
+                    f"{count} {kind.lower().replace('_', ' ')} item(s) awaiting approval; "
+                    + ("a final settlement is calculated only once they are approved or rejected." if final else
+                       "they are not paid in this run unless approved before calculation."),
                     f"PENDING_INPUTS:{kind}:{row.id}", run_employee_id=row.id, employee_id=employee_id,
-                    details={"kind": kind, "count": count}, waivable=True, resolutions=("FIX", "WAIVE", "DEFER")))
+                    details={"kind": kind, "count": count}, waivable=not final,
+                    resolutions=("FIX",) if final else ("FIX", "WAIVE", "DEFER")))
     return findings
 
 
@@ -1371,6 +1450,7 @@ def hold_employee(db: Session, principal: Principal, run_id: int, run_employee_i
     row.row_version += 1
     db.flush()
     _refresh_summary(db, run)
+    _refresh_totals(db, run)
     db.flush()
     _audit(db, principal, EMPLOYEE_HELD, f"{hold_type.title()} hold on employee #{row.employee_id} in run "
            f"{run.number} ({reason_code})", "payroll_run_employee", row.id, run.company_id, run_id=run.id,
@@ -1410,6 +1490,10 @@ def release_employee(db: Session, principal: Principal, run_id: int, run_employe
     if row.hold_type == "FULL" and sm.is_run_finalized(run.status):
         raise transition_error(sm.InvalidTransition("RUN", run.status, "RELEASE_HOLD", code="RUN_FINALIZED",
                                                     hint="CREATE_CORRECTION"))
+    if row.hold_type == "FULL" and run.status not in FULL_HOLD_STATES:
+        # The approvers approved the run without this employee: releasing now would pay an unapproved amount.
+        raise conflict(f"The run is {run.status}: a full hold is released before submission (reject or reopen "
+                       "the run first, or pay the employee off-cycle).", "RUN_BUSY")
     text_note = _reason(note)
     hold = dict(row.hold or {})
     intent = None
@@ -1423,6 +1507,7 @@ def release_employee(db: Session, principal: Principal, run_id: int, run_employe
     row.row_version += 1
     db.flush()
     _refresh_summary(db, run)
+    _refresh_totals(db, run)
     db.flush()
     _audit(db, principal, EMPLOYEE_RELEASED, f"Released the {released_type.lower()} hold on employee "
            f"#{row.employee_id} in run {run.number}", "payroll_run_employee", row.id, run.company_id, run_id=run.id,
@@ -1600,16 +1685,17 @@ def _period_brief(period: Optional[PayPeriod]) -> Optional[dict]:
             "approval_deadline": period.approval_deadline_on.isoformat()}
 
 
-def _exception_counts(db: Session, company_id: int, run_ids: Sequence[int]) -> Dict[int, dict]:
+def _exception_counts(db: Session, company_id: int, run_ids: Sequence[int], scope=None) -> Dict[int, dict]:
+    """Open and blocking exception counts per run; ``scope`` limits them to the caller's employees."""
     result: Dict[int, dict] = {rid: {"open": 0, "blocking": 0} for rid in run_ids}
     if not run_ids:
         return result
-    for run_id, severity, count in (db.query(PayrollException.run_id, PayrollException.severity,
-                                             func.count(PayrollException.id))
-                                    .filter(PayrollException.company_id == company_id,
-                                            PayrollException.run_id.in_(list(run_ids)),
-                                            PayrollException.status == "OPEN")
-                                    .group_by(PayrollException.run_id, PayrollException.severity)):
+    query = db.query(PayrollException.run_id, PayrollException.severity, func.count(PayrollException.id)).filter(
+        PayrollException.company_id == company_id, PayrollException.run_id.in_(list(run_ids)),
+        PayrollException.status == "OPEN")
+    if scope is not None:
+        query = query.filter(scope)
+    for run_id, severity, count in query.group_by(PayrollException.run_id, PayrollException.severity):
         result[run_id]["open"] += count
         if severity == "BLOCKING":
             result[run_id]["blocking"] += count
@@ -1624,13 +1710,22 @@ def run_json(db: Session, principal: Optional[Principal], run: PayrollRun, *, pe
     actions = [spec.action for spec in sm.RUN.available(run.status, held)
                if access.target_scope(principal, spec.permission).covers(run.legal_entity_id, run.pay_group_id)] \
         if principal is not None else []
+    totals, population = dict(run.totals or {}), dict(run.population or {})
+    reasons = list(run.stale_reasons or [])
+    if principal is not None and not sees_whole_run(db, principal, run):
+        # Totals, counts and stale reasons never reveal employees outside the caller's scope (EC-SEC-05).
+        totals, population, visible = visible_run_figures(db, principal, run)
+        reasons = visible_stale_reasons(reasons, visible)
+        counts = _exception_counts(db, run.company_id, [run.id], scope=or_(
+            PayrollException.employee_id.is_(None),
+            employee_scope_clause(db, principal, READ, run, PayrollException.employee_id)))[run.id]
     data = {
         "id": run.id, "number": run.number, "label": run.label, "run_type": run.run_type, "status": run.status,
         "stage": sm.ui_stage(run.status), "legal_entity_id": run.legal_entity_id,
         "pay_group": {"id": group.id, "code": group.code, "name": group.name},
         "period": _period_brief(period), "currency": run.currency, "stale": run.stale,
-        "stale_reasons": list(run.stale_reasons or []), "population": dict(run.population or {}),
-        "totals": dict(run.totals or {}), "reverses_run_id": run.reverses_run_id, "environment": run.environment,
+        "stale_reasons": reasons, "population": population,
+        "totals": totals, "reverses_run_id": run.reverses_run_id, "environment": run.environment,
         "row_version": run.row_version, "created_at": run.created_at.isoformat() if run.created_at else None,
         "available_actions": actions, "exceptions": counts or _exception_counts(db, run.company_id, [run.id])[run.id],
     }
@@ -1653,15 +1748,65 @@ def run_json(db: Session, principal: Optional[Principal], run: PayrollRun, *, pe
     return data
 
 
+# The step that moves a run forward from each state ("needs my action", 3.8 §5.3). Exits (CANCEL, REOPEN,
+# REVERSE) and system moves are never a pending step; approval steps count only for the current approver
+# of the run's approval request (approvals.subjects_awaiting: the step's approvers and their delegates,
+# never a barred preparer). A finalized run waiting for payments is the payment users' step, not CLOSE.
+NEXT_STEPS: Dict[str, Tuple[str, ...]] = {
+    "DRAFT": ("PRECHECK_PASSED", "PRECHECK_BLOCKED"),
+    "INPUTS_PENDING": ("PRECHECK_PASSED", "PRECHECK_BLOCKED"),
+    "READY": ("CALCULATE",),
+    "VALIDATION_FAILED": ("RECALCULATE",),
+    "REVIEW_REQUIRED": ("SUBMIT_FOR_APPROVAL",),
+    "APPROVAL_PENDING": ("APPROVE_STEP", "APPROVE_FINAL", "REJECT"),
+    "REJECTED": ("REWORK", "RECALCULATE"),
+    "REOPENED_FOR_CORRECTION": ("RESUME_REVIEW", "RETURN_TO_DRAFT"),
+    "APPROVED": ("FINALIZE",),
+    "FINALIZED": ("APPROVE_PAYMENTS",),
+    "PAYMENT_READY": ("SUBMIT_PAYMENTS",),
+    "PAID": ("RECONCILE",),
+    "PARTIALLY_PAID": ("RECONCILE",),
+    "RECONCILED": ("CLOSE",),
+}
+APPROVAL_STEP_STATES = ("APPROVAL_PENDING",)
+
+
+def next_step_permissions(status: str) -> Tuple[str, ...]:
+    """The permissions of the user actions that move a run on from ``status`` (from the state machine)."""
+    return tuple(dict.fromkeys(sm.RUN.spec(status, action).permission for action in NEXT_STEPS.get(status, ())
+                               if sm.RUN.spec(status, action).permission is not None))
+
+
+def needs_action_clause(db: Session, principal: Principal):
+    """SQL filter: runs whose next step the caller can take now, inside the scope of that step's permission
+    (the same rule as ``available_actions``) and, for approval steps, only as the current approver."""
+    clauses = []
+    for status in NEXT_STEPS:
+        for permission in next_step_permissions(status):
+            if not principal.has(permission):
+                continue
+            scope = access.run_scope_clause(principal, permission, PayrollRun.legal_entity_id, PayrollRun.pay_group_id)
+            if status in APPROVAL_STEP_STATES:
+                awaiting = approvals.subjects_awaiting(db, principal, APPROVAL_MODULE, APPROVAL_SUBJECT)
+                if not awaiting:
+                    continue
+                clauses.append(and_(PayrollRun.status == status, PayrollRun.id.in_(sorted(set(awaiting))), scope))
+            else:
+                clauses.append(and_(PayrollRun.status == status, scope))
+    return or_(*clauses) if clauses else false()
+
+
 def list_runs(db: Session, principal: Principal, *, pay_period_id: Optional[int] = None,
               legal_entity_id: Optional[int] = None, pay_group_id: Optional[int] = None,
-              run_type: Optional[str] = None, status: Optional[str] = None, skip: int = 0,
-              limit: int = 50) -> Tuple[int, List[dict]]:
+              run_type: Optional[str] = None, status: Optional[str] = None, needs_my_action: bool = False,
+              skip: int = 0, limit: int = 50) -> Tuple[int, List[dict]]:
     if not principal.has(READ):
         raise forbidden()
     query = db.query(PayrollRun).filter(
         PayrollRun.company_id == principal.company_id,
         access.run_scope_clause(principal, READ, PayrollRun.legal_entity_id, PayrollRun.pay_group_id))
+    if needs_my_action:
+        query = query.filter(needs_action_clause(db, principal))
     for column, value in ((PayrollRun.pay_period_id, pay_period_id), (PayrollRun.legal_entity_id, legal_entity_id),
                           (PayrollRun.pay_group_id, pay_group_id), (PayrollRun.run_type, run_type),
                           (PayrollRun.status, status)):
@@ -1724,6 +1869,32 @@ def exception_json(row: PayrollException) -> dict:
     }
 
 
+HR_ONLY_FINDING = "A component only HR may see needs review."
+
+
+def restrict_hr_only(item: dict, hidden_components: Iterable[str]) -> dict:
+    """A finding about a component only HR may see (EC-UX-08: its line is hidden from this viewer) keeps
+    its code and status but neither the component nor its amounts."""
+    component = (item.get("details") or {}).get("component")
+    if component and component in set(hidden_components):
+        return {**item, "message": HR_ONLY_FINDING, "details": {"restricted": True}}
+    return item
+
+
+def hr_only_components(db: Session, principal: Principal, run: PayrollRun, run_employee_ids: Iterable[int]
+                       ) -> Dict[int, set]:
+    """{run employee id: components hidden from the viewer}; empty for viewers who see HR_ONLY lines."""
+    from app.payroll.services import review
+
+    ids = sorted({i for i in run_employee_ids if i is not None})
+    if not ids or review.sees_hr_only(principal, run):
+        return {}
+    return {rid: set(codes or []) for rid, codes in db.query(
+        PayrollRunEmployee.id, PayrollRunEmployee.stage_outputs["hr_only"]).filter(
+        PayrollRunEmployee.company_id == run.company_id, PayrollRunEmployee.run_id == run.id,
+        PayrollRunEmployee.id.in_(ids))}
+
+
 def list_exceptions(db: Session, principal: Principal, run_id: int, *, status: Optional[str] = None,
                     severity: Optional[str] = None, code: Optional[str] = None, skip: int = 0,
                     limit: int = 200) -> Tuple[int, List[dict]]:
@@ -1738,4 +1909,5 @@ def list_exceptions(db: Session, principal: Principal, run_id: int, *, status: O
             query = query.filter(column == value)
     total = query.count()
     rows = query.order_by(PayrollException.id).offset(skip).limit(limit).all()
-    return total, [exception_json(r) for r in rows]
+    hidden = hr_only_components(db, principal, run, [r.run_employee_id for r in rows])
+    return total, [restrict_hr_only(exception_json(r), hidden.get(r.run_employee_id, ())) for r in rows]

@@ -115,16 +115,20 @@ def _next_version(db: Session, company_id: int, doc_type: str, source_key: str) 
     return 1 if latest is None else latest.version + 1
 
 
-def _issue(db: Session, principal: Principal, content: dict, *, doc_type: str, legal_entity_id: int,
+def _issue(db: Session, principal: Optional[Principal], content: dict, *, doc_type: str, legal_entity_id: int,
            subject_type: str, subject_id: int, source_key: str, title: str, file_stem: str, version: int = 1,
-           publish: Optional[str] = None, **extra: Any) -> PayDocument:
-    """Issue a generic document for the caller's tenant; employee-facing ones published on issue are notified."""
+           publish: Optional[str] = None, company_id: Optional[int] = None, **extra: Any) -> PayDocument:
+    """Issue a generic document for the caller's tenant (or ``company_id`` for a system job); employee-facing
+    ones published on issue are notified."""
     from app.payroll.services import publication
 
+    cid = principal.company_id if principal is not None else company_id
+    if cid is None:
+        raise ValueError("a system issue needs the company")
     doc = documents.issue(
-        db, principal, company_id=principal.company_id, doc_type=doc_type, legal_entity_id=legal_entity_id,
+        db, principal, company_id=cid, doc_type=doc_type, legal_entity_id=legal_entity_id,
         subject_type=subject_type, subject_id=subject_id, source_key=source_key, content=content, title=title,
-        file_stem=file_stem, version=version, issue_date=_today(db, principal.company_id),
+        file_stem=file_stem, version=version, issue_date=_today(db, cid),
         template_version=f"{doc_type}:1", locale=content.get("locale") or "en",
         languages=content.get("languages") or ["en"], labels=content.get("labels") or [], publish=publish, **extra,
     )
@@ -147,26 +151,39 @@ def register_content(db: Session, run: PayrollRun, *, draft: bool) -> dict:
     period = _period(db, run)
     content = base_content(db, run.company_id, run.legal_entity_id, "Payroll register",
                            subtitle=f"{run.label} · {run.number}")
+    # A FULL hold (ON_HOLD) keeps the employee out of finalization: a finalized register lists and totals the
+    # finalized employees only; a draft lists held employees too but never counts them in the totals.
+    statuses = ("CALCULATED",) if sm.is_run_finalized(run.status) else ("CALCULATED", "ON_HOLD")
     rows = (db.query(PayrollRunEmployee)
             .filter(PayrollRunEmployee.company_id == run.company_id, PayrollRunEmployee.run_id == run.id,
-                    PayrollRunEmployee.status.in_(("CALCULATED", "ON_HOLD")))
+                    PayrollRunEmployee.status.in_(statuses))
             .order_by(PayrollRunEmployee.id).all())
     employees = _employees(db, run.company_id, [r.employee_id for r in rows])
     by_currency: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
     table_rows = []
+    held = 0
     for row in rows:
         employee = employees.get(row.employee_id)
-        table_rows.append([employee.employee_code if employee else "", employee.full_name if employee else "",
+        name = employee.full_name if employee else ""
+        if row.status != "CALCULATED":
+            held += 1
+            name = f"{name} (on hold — not in totals)"
+        table_rows.append([employee.employee_code if employee else "", name,
                            row.currency, _money(row.gross, row.currency), _money(row.deductions, row.currency),
                            _money(row.reimbursements, row.currency), _money(row.net, row.currency),
                            _money(row.employer_cost, row.currency)])
+        if row.status != "CALCULATED":
+            continue
         bucket = by_currency[row.currency]
-        for name in ("gross", "deductions", "reimbursements", "net", "employer_cost"):
-            bucket[name] += Decimal(getattr(row, name) or 0)
+        for figure in ("gross", "deductions", "reimbursements", "net", "employer_cost"):
+            bucket[figure] += Decimal(getattr(row, figure) or 0)
     components: dict[tuple[str, str, str], Decimal] = defaultdict(Decimal)
     for code, kind, currency, total in (
         db.query(PayrollLine.component_code, PayrollLine.kind, PayrollLine.currency, func.sum(PayrollLine.amount))
-        .filter(PayrollLine.company_id == run.company_id, PayrollLine.run_id == run.id)
+        .join(PayrollRunEmployee, (PayrollRunEmployee.company_id == PayrollLine.company_id)
+              & (PayrollRunEmployee.id == PayrollLine.run_employee_id))
+        .filter(PayrollLine.company_id == run.company_id, PayrollLine.run_id == run.id,
+                PayrollRunEmployee.status == "CALCULATED")
         .group_by(PayrollLine.component_code, PayrollLine.kind, PayrollLine.currency)
     ):
         components[(code, kind, currency)] += Decimal(total)
@@ -193,7 +210,8 @@ def register_content(db: Session, run: PayrollRun, *, draft: bool) -> dict:
                       for (code, kind, cur), total in sorted(components.items())]},
         ],
         "labels": run_labels(db, run),
-        "notes": ["Draft: figures may still change until the run is finalized."] if draft else [],
+        "notes": (["Draft: figures may still change until the run is finalized."] if draft else [])
+        + ([f"{held} employee(s) on a full hold are listed but not included in the totals."] if held else []),
     })
     return content
 
@@ -403,16 +421,41 @@ def issue_payment_advice(db: Session, principal: Principal, instruction_id: int,
 
 def issue_final_settlement(db: Session, principal: Principal, run_id: int) -> list[PayDocument]:
     run = _staff_run(db, principal, run_id, PUBLISH)
+    return final_settlement_documents(db, principal, run)
+
+
+def _settlement_cases(db: Session, run: PayrollRun) -> dict[int, Any]:
+    """employee id -> the final settlement case settled by ``run`` (corrections milestone), when one exists."""
+    from app.models.corrections import FinalSettlementCase
+
+    return {case.employee_id: case for case in db.query(FinalSettlementCase).filter(
+        FinalSettlementCase.company_id == run.company_id, FinalSettlementCase.run_id == run.id)}
+
+
+SETTLEMENT_KINDS = ("EARNING", "DEDUCTION", "REIMBURSEMENT", "ROUNDING")
+
+
+def final_settlement_documents(db: Session, principal: Optional[Principal], run: PayrollRun,
+                               *, employee_ids: Optional[Iterable[int]] = None) -> list[PayDocument]:
+    """The full-and-final statement of every settled employee of a finalized FINAL_SETTLEMENT run (idempotent).
+
+    Called by HR (``issue_final_settlement``) or by the ``payroll.final_settlement.finalized`` event (system,
+    ``principal`` None). Last working day and payment due date come from the settlement case when the
+    corrections milestone created one; otherwise from the employee record and the run's pay date.
+    """
     if run.run_type != "FINAL_SETTLEMENT" or not sm.is_run_finalized(run.status):
         raise conflict("Final settlement statements come from finalized final-settlement runs.",
                        "NOT_A_FINALIZED_SETTLEMENT")
     period = _period(db, run)
     issued = []
-    rows = (db.query(PayrollRunEmployee).filter(PayrollRunEmployee.company_id == run.company_id,
-                                                PayrollRunEmployee.run_id == run.id,
-                                                PayrollRunEmployee.status == "CALCULATED")
-            .order_by(PayrollRunEmployee.id).all())
+    query = (db.query(PayrollRunEmployee).filter(PayrollRunEmployee.company_id == run.company_id,
+                                                 PayrollRunEmployee.run_id == run.id,
+                                                 PayrollRunEmployee.status == "CALCULATED"))
+    if employee_ids is not None:
+        query = query.filter(PayrollRunEmployee.employee_id.in_(list(employee_ids)))
+    rows = query.order_by(PayrollRunEmployee.id).all()
     employees = _employees(db, run.company_id, [r.employee_id for r in rows])
+    cases = _settlement_cases(db, run)
     for row in rows:
         key = f"run_employee:{row.id}"
         existing = documents.find_version(db, run.company_id, "FINAL_SETTLEMENT_STATEMENT", key, 1)
@@ -420,29 +463,46 @@ def issue_final_settlement(db: Session, principal: Principal, run_id: int) -> li
             issued.append(existing)
             continue
         employee = employees[row.employee_id]
+        case = cases.get(row.employee_id)
+        last_day = case.last_working_day if case is not None else employee.termination_date
+        due = (case.due_date if case is not None and case.due_date else None) or period.pay_date
         lines = (db.query(PayrollLine).filter(PayrollLine.company_id == run.company_id,
                                               PayrollLine.run_employee_id == row.id,
                                               PayrollLine.visibility == "EMPLOYEE_VISIBLE")
                  .order_by(PayrollLine.sort_order, PayrollLine.id).all())
         content = base_content(db, run.company_id, run.legal_entity_id, "Final settlement statement")
+        # Settlement items in the payee's perspective (paid +, recovered −) so they add up to the net settlement;
+        # employer contributions are shown apart, never as part of the settlement (3.6 §3, payslip rule).
+        items = [line for line in lines if line.kind in SETTLEMENT_KINDS]
+        employer = [line for line in lines if line.kind == "EMPLOYER_CONTRIBUTION"]
+        tables = [{"title": "Settlement items", "columns": ["Item", "Type", "Calculation", f"Amount ({row.currency})"],
+                   "numeric": [False, False, False, True], "widths": [1.6, 1, 3, 1.3],
+                   "rows": [[line.component_code, line.kind.replace("_", " ").title(), line.explanation or "",
+                             _money(-Decimal(line.amount) if line.kind == "DEDUCTION" else line.amount,
+                                    line.currency)] for line in items],
+                   "total_row": ["Net settlement", "", "", _money(row.net, row.currency)]}]
+        if employer:
+            tables.append({"title": payslips.EMPLOYER_NOTE, "columns": ["Item", f"Amount ({row.currency})"],
+                           "numeric": [False, True], "widths": [4.6, 1.3],
+                           "rows": [[line.component_code, _money(line.amount, line.currency)] for line in employer]})
         content.update({
             "info": [["Employee", employee.full_name], ["Employee ID", employee.employee_code],
-                     ["Last working day", employee.termination_date.isoformat() if employee.termination_date else "—"],
-                     ["Payment due date", period.pay_date.isoformat()], ["Run", run.number]],
-            "tables": [{"title": "Settlement items", "columns": ["Item", "Type", "Calculation", f"Amount ({row.currency})"],
-                        "numeric": [False, False, False, True], "widths": [1.6, 1, 3, 1.3],
-                        "rows": [[line.component_code, line.kind.replace("_", " ").title(), line.explanation or "",
-                                  _money(line.amount, line.currency)] for line in lines],
-                        "total_row": ["Net settlement", "", "", _money(row.net, row.currency)]}],
+                     ["Last working day", last_day.isoformat() if last_day else "—"],
+                     ["Payment due date", due.isoformat()], ["Run", run.number]],
+            "tables": tables,
             "labels": run_labels(db, run),
         })
+        if case is not None and case.due_note:
+            content["notes"] = [f"Payment due: {case.due_note}"]
         issued.append(_issue(db, principal, content, doc_type="FINAL_SETTLEMENT_STATEMENT",
                              legal_entity_id=run.legal_entity_id, subject_type="EMPLOYEE", subject_id=employee.id,
                              source_key=key, title="Final settlement statement",
                              file_stem=f"final-settlement-{employee.employee_code}", employee_id=employee.id,
                              pay_group_id=run.pay_group_id, run_id=run.id, run_employee_id=row.id,
                              period=(period.period_start, period.period_end), publish="ON_ISSUE",
-                             source_refs={"run_id": run.id, "run_employee_id": row.id}))
+                             company_id=run.company_id,
+                             source_refs={"run_id": run.id, "run_employee_id": row.id,
+                                          "case_id": case.id if case is not None else None}))
     return issued
 
 
@@ -742,7 +802,7 @@ def decide_request(db: Session, principal: Principal, request_id: int, *, approv
 
 __all__ = [
     "ADVICE_KINDS", "base_content", "create_request", "decide_request", "draft_register_pdf",
-    "issue_bank_transfer_report", "issue_final_settlement", "issue_funding_request", "issue_increment_letter",
+    "final_settlement_documents", "issue_bank_transfer_report", "issue_final_settlement", "issue_funding_request", "issue_increment_letter",
     "issue_loan_statement", "issue_payment_advice", "issue_register", "issue_reimbursement_statement",
     "list_own_requests", "list_requests", "register_content", "request_json",
 ]

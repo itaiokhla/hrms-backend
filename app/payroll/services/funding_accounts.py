@@ -9,8 +9,11 @@ here (provider secrets live in the server's secrets manager, contract §22.3).
 
 Permissions: payroll:funding_accounts:manage at COMPANY or the account's LEGAL_ENTITY; changing bank
 details also needs a fresh step-up. Revealing the full number needs payroll:bank_details:read_full for
-the entity, a reason and a step-up, and is audited as BANK_DETAILS_REVEALED. Accounts are never deleted:
+the entity, a reason and a step-up, and is audited as BANK_DETAILS_REVEALED. Changing the signatories or the
+provider profile (who may release, where payouts go) also needs a step-up. Accounts are never deleted:
 they are deactivated. Concurrent edits use row_version (409 on conflict).
+
+``list_options`` is a masked, read-only list for holders of any payment permission (or manage).
 
 Read API for payments: ``funding_snapshot`` (masked display data plus the sealed parts),
 ``require_signatory`` and ``funding_plaintext`` (bank files only).
@@ -19,6 +22,7 @@ Read API for payments: ``funding_snapshot`` (masked display data plus the sealed
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -52,6 +56,9 @@ AUDIT_MODULE = payroll_audit.PAYMENTS
 TABLE = "funding_accounts"
 MAX_SIGNATORIES = 20
 PROVIDER_PROFILES = ("SANDBOX",)
+# Payment users who choose or recognise funding accounts without managing them (masked list only).
+OPTION_PERMISSIONS = ("payroll:payment:prepare", "payroll:payment:approve", "payroll:payment:submit",
+                      "payroll:payment:reconcile", MANAGE)
 
 
 @dataclass(frozen=True)
@@ -218,6 +225,10 @@ def update(db: Session, principal: Principal, account_id: int, data: FundingData
         raise conflict("An inactive funding account cannot be changed.", "FUNDING_ACCOUNT_INACTIVE")
     before = serialize(row)
     changed: List[str] = []
+    if data.signatory_user_ids is not None or data.provider_profile is not None:
+        # Who may release this account's batches, and where its payouts go, are payment-diversion controls
+        # (3.7 §8.4, §12): changed only after a fresh step-up, like the bank details.
+        step_up.ensure_step_up(db, principal)
     if data.name is not None:
         name = _clean(data.name, 100)
         if not name:
@@ -289,6 +300,41 @@ def list_accounts(db: Session, principal: Principal, *, legal_entity_id: Optiona
     if purpose:
         query = query.filter(FundingAccount.purpose == purpose)
     return [serialize(r) for r in query.order_by(FundingAccount.legal_entity_id, FundingAccount.id).all()]
+
+
+def option_json(row: FundingAccount, entity: Optional[LegalEntity], user_id: Optional[int]) -> dict:
+    """What payment users need to pick and recognise an account: masked, no signatories, routing or profile."""
+    return {
+        "id": row.id, "name": row.name, "currency": row.currency, "purpose": row.purpose,
+        "legal_entity": {"id": row.legal_entity_id, "name": entity.legal_name if entity is not None else None,
+                         "code": entity.code if entity is not None else None},
+        "account_masked": masked_number(row), "bank_name": row.bank_name, "status": row.status,
+        "active": row.status == "ACTIVE", "sandbox": row.provider_profile == "SANDBOX",
+        "is_signatory": user_id is not None and user_id in (row.signatory_user_ids or []),
+    }
+
+
+def list_options(db: Session, principal: Principal, *, legal_entity_id: Optional[int] = None,
+                 currency: Optional[str] = None, include_inactive: bool = False) -> List[dict]:
+    """A masked, read-only list for payment users (OPTION_PERMISSIONS): the accounts of every legal entity in
+    the scope of any payment permission the caller holds (403 with none; an entity filter outside that
+    scope simply returns nothing, so no entity's existence is revealed)."""
+    held = [p for p in OPTION_PERMISSIONS if principal.has(p)]
+    if not held:
+        raise forbidden()
+    clauses = [access.run_scope_clause(principal, p, FundingAccount.legal_entity_id) for p in held]
+    query = db.query(FundingAccount).filter(FundingAccount.company_id == principal.company_id, or_(*clauses))
+    if legal_entity_id is not None:
+        query = query.filter(FundingAccount.legal_entity_id == legal_entity_id)
+    if currency:
+        query = query.filter(FundingAccount.currency == currency)
+    if not include_inactive:
+        query = query.filter(FundingAccount.status == "ACTIVE")
+    rows = query.order_by(FundingAccount.legal_entity_id, FundingAccount.name, FundingAccount.id).all()
+    entities = {e.id: e for e in db.query(LegalEntity).filter(
+        LegalEntity.company_id == principal.company_id,
+        LegalEntity.id.in_(sorted({r.legal_entity_id for r in rows}) or [0]))}
+    return [option_json(r, entities.get(r.legal_entity_id), principal.user_id) for r in rows]
 
 
 def get(db: Session, principal: Principal, account_id: int) -> dict:

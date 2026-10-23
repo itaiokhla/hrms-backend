@@ -64,6 +64,10 @@ from app.payroll import settings_registry as reg
 from app.payroll import state_machines as sm
 from app.payroll.money import CALC_CONTEXT, amount_str
 from app.payroll.services import access, jobs, runs
+# Imported for its hooks: policies.policy_in_use (EC-CFG-16), settings.pack_constraints (F-14) and the loans
+# pay-figures provider (F-36) must be installed in every process that serves the API, not only after the
+# first inputs were locked there (the route modules import this module at startup).
+from app.payroll.services import snapshot as _snapshot_hooks  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -371,7 +375,11 @@ def _period_ref(value: Optional[str]) -> Optional[dict]:
     return {"ref": value, "start": start or None, "end": end or None}
 
 
-def _source_rows(line: Mapping[str, Any]) -> List[Tuple[str, int, str]]:
+def _source_rows(line: Mapping[str, Any], employee_id: int) -> List[Tuple[str, int, str]]:
+    """(source_type, source_id, source_key) of the consumable records a line pays; the keys match
+    finalization.parse_sources (a task shared by assignees is paid once per assignee: 'employee:<id>',
+    EC-TSK-*, EC-VAR-01). Ids are parsed like finalization's: ``12``, ``"12"`` or prefixed (``"task:12"``,
+    ``"overtime:12"``, as the engine writes them)."""
     found = []
     for source in line.get("sources") or []:
         kind = CONSUMABLE_SOURCES.get(str(source.get("type") or ""))
@@ -379,12 +387,16 @@ def _source_rows(line: Mapping[str, Any]) -> List[Tuple[str, int, str]]:
         if kind is None or ident is None:
             continue
         try:
-            source_id = int(str(ident))
+            source_id = int(str(ident).strip().rsplit(":", 1)[-1])
         except ValueError:
+            continue
+        if source_id <= 0:
             continue
         key = ""
         if source.get("instalment_number") is not None:
             key = f"instalment:{source['instalment_number']}"
+        elif kind == "TASK":
+            key = f"employee:{employee_id}"
         found.append((kind, source_id, key[:80]))
     return sorted(set(found))
 
@@ -413,7 +425,7 @@ def _write_lines(db: Session, run: PayrollRun, row: PayrollRunEmployee, result: 
         created.append((record, data))
     db.flush()
     for record, data in created:
-        for kind, source_id, key in _source_rows(data):
+        for kind, source_id, key in _source_rows(data, row.employee_id):
             db.add(PayrollLineSource(company_id=run.company_id, line_id=record.id, run_id=run.id,
                                      run_employee_id=row.id, source_type=kind, source_id=source_id, source_key=key,
                                      consumed=False))
@@ -490,6 +502,21 @@ def component_amounts(lines: Iterable[Any]) -> Dict[str, Decimal]:
     return found
 
 
+def _not_compared(content: Mapping[str, Any], result: Any) -> set:
+    """Component codes outside the compared kinds (employer contributions, rounding ...): the previous period's
+    figures in the snapshot cover every line kind, the variance view only the employee's pay."""
+    codes = {str(c.get("code")) for c in content.get("components") or []
+             if isinstance(c, Mapping) and c.get("kind") not in VARIANCE_KINDS}
+    return codes | {line.component for line in result.lines if line.kind not in VARIANCE_KINDS}
+
+
+def previous_components(content: Mapping[str, Any], result: Any) -> Dict[str, Decimal]:
+    """The previous finalized period's amounts per compared component (frozen in the snapshot)."""
+    previous = content.get("previous") or {}
+    skip = _not_compared(content, result)
+    return {str(k): Decimal(str(v)) for k, v in (previous.get("components") or {}).items() if str(k) not in skip}
+
+
 def _component_variance(content: Mapping[str, Any], result: Any) -> List[dict]:
     """COMPONENT_VARIANCE findings: a component changed by more than the threshold against the previous
     finalized period frozen in the snapshot (3.5 §5.5 variance per component)."""
@@ -499,7 +526,7 @@ def _component_variance(content: Mapping[str, Any], result: Any) -> List[dict]:
     threshold = _threshold(content)
     if threshold is None:
         return []
-    before = {str(k): Decimal(str(v)) for k, v in (previous.get("components") or {}).items()}
+    before = previous_components(content, result)
     now = component_amounts(result.lines)
     found = []
     for code in sorted(set(before) | set(now)):
@@ -527,8 +554,10 @@ def _stage_outputs(content: Mapping[str, Any], result: Any) -> dict:
         "payments": [p.to_json() for p in result.payments],
         "ledger": result.ledger,
         "rates": {k: format(v, "f") for k, v in sorted((result.rates or {}).items())},
-        "previous": {k: previous.get(k) for k in ("period_ref", "currency", "gross", "net", "components")
-                     if previous.get(k) is not None},
+        "previous": {**{k: previous.get(k) for k in ("period_ref", "currency", "gross", "net")
+                        if previous.get(k) is not None},
+                     **({"components": {k: format(v, "f") for k, v in previous_components(content, result).items()}}
+                        if previous.get("components") else {})},
         "variance_threshold_percent": None if _threshold(content) is None else format(_threshold(content), "f"),
         "pack": content.get("pack"), "fx_snapshot_id": (content.get("fx") or {}).get("snapshot_id"),
         # Components only HR may see (their previous figures are hidden from other viewers too).
@@ -632,14 +661,21 @@ def calculate_employee(db: Session, run: PayrollRun, row: PayrollRunEmployee, ca
 # ---------------------------------------------------------------------------
 # Completing the run
 # ---------------------------------------------------------------------------
+def in_totals(row: PayrollRunEmployee) -> bool:
+    """A run employee counted in the run's totals: calculated with a result and finalized with the run. A FULL
+    hold (ON_HOLD) is calculated but never finalized or paid in this run (3.5 §9), so it stays out of the totals
+    the approvers approve, like an excluded or failed employee (run totals = Σ finalized employees)."""
+    return row.status == "CALCULATED" and row.calc_hash is not None
+
+
 def run_totals(rows: Iterable[PayrollRunEmployee]) -> Dict[str, dict]:
-    """{currency: {gross, deductions, reimbursements, net, employer_cost, employees}} over calculated employees;
-    never summed across currencies (EC-RUN-19)."""
+    """{currency: {gross, deductions, reimbursements, net, employer_cost, employees}} over the employees
+    ``in_totals``; never summed across currencies (EC-RUN-19)."""
     sums: Dict[str, Dict[str, Decimal]] = {}
     counts: Counter = Counter()
     with localcontext(CALC_CONTEXT):
         for row in rows:
-            if row.status == "EXCLUDED" or row.calc_hash is None:
+            if not in_totals(row):
                 continue
             bucket = sums.setdefault(row.currency, {name: ZERO for name in FIGURES})
             for name in FIGURES:
@@ -659,29 +695,46 @@ def population(rows: Sequence[PayrollRunEmployee]) -> dict:
 
 
 def _reconcile_lines(db: Session, run: PayrollRun, rows: Sequence[PayrollRunEmployee]) -> List[str]:
-    """EC-RUN-24: the stored lines add up to the stored employee totals, per currency."""
-    sums: Dict[Tuple[str, str], Decimal] = {}
-    for currency, kind, total in (db.query(PayrollLine.currency, PayrollLine.kind, func.sum(PayrollLine.amount))
-                                  .join(PayrollRunEmployee, and_(PayrollRunEmployee.company_id == PayrollLine.company_id,
-                                                                 PayrollRunEmployee.id == PayrollLine.run_employee_id))
-                                  .filter(PayrollLine.company_id == run.company_id, PayrollLine.run_id == run.id,
-                                          PayrollRunEmployee.status != "EXCLUDED",
-                                          PayrollRunEmployee.calc_hash.isnot(None))
-                                  .group_by(PayrollLine.currency, PayrollLine.kind)):
-        sums[(currency, kind)] = Decimal(total)
+    """EC-RUN-24: the stored lines add up to the stored figures of EVERY employee in the totals (in the
+    employee's currency; net = gross + reimbursements − deductions + rounding), and the employees add up to the
+    run totals per currency. Checked per employee, so two errors that cancel out in a sum are still found."""
+    counted = {r.id: r for r in rows if in_totals(r)}
+    sums: Dict[Tuple[int, str, str], Decimal] = {}
+    for row_id, currency, kind, total in (
+            db.query(PayrollLine.run_employee_id, PayrollLine.currency, PayrollLine.kind, func.sum(PayrollLine.amount))
+            .filter(PayrollLine.company_id == run.company_id, PayrollLine.run_id == run.id,
+                    PayrollLine.run_employee_id.in_(sorted(counted) or [0]))
+            .group_by(PayrollLine.run_employee_id, PayrollLine.currency, PayrollLine.kind)):
+        sums[(row_id, currency, kind)] = Decimal(total)
     problems = []
-    for currency, figures in run_totals(rows).items():
-        def line_sum(*kinds: str) -> Decimal:
-            return sum((sums.get((currency, k), ZERO) for k in kinds), ZERO)
+    for row_id, currency in sorted({(k[0], k[1]) for k in sums}):
+        if currency != counted[row_id].currency:
+            problems.append(f"run employee #{row_id}: a line in {currency}, the employee is paid in "
+                            f"{counted[row_id].currency}")
+    with localcontext(CALC_CONTEXT):
+        per_currency: Dict[str, Dict[str, Decimal]] = {}
+        for row_id, row in sorted(counted.items()):
+            def line_sum(*kinds: str) -> Decimal:
+                return sum((sums.get((row_id, row.currency, k), ZERO) for k in kinds), ZERO)
 
-        with localcontext(CALC_CONTEXT):
             expected = {"gross": line_sum("EARNING"), "deductions": line_sum("DEDUCTION"),
                         "reimbursements": line_sum("REIMBURSEMENT"),
                         "net": line_sum("EARNING", "REIMBURSEMENT", "ROUNDING") - line_sum("DEDUCTION"),
                         "employer_cost": line_sum("EARNING", "EMPLOYER_CONTRIBUTION")}
-        for name, value in expected.items():
-            if Decimal(figures[name]) != value:
-                problems.append(f"{currency} {name}: employees {figures[name]} vs lines {format(value, 'f')}")
+            bucket = per_currency.setdefault(row.currency, {name: ZERO for name in FIGURES})
+            for name, value in expected.items():
+                bucket[name] += value
+                stored = Decimal(getattr(row, name) or 0)
+                if stored != value:
+                    problems.append(f"run employee #{row_id} {name}: stored {format(stored, 'f')} vs lines "
+                                    f"{format(value, 'f')}")
+        totals = run_totals(rows)
+        for currency in sorted(set(totals) | set(per_currency)):
+            for name in FIGURES:
+                stored = Decimal((totals.get(currency) or {}).get(name) or 0)
+                value = (per_currency.get(currency) or {}).get(name, ZERO)
+                if stored != value:
+                    problems.append(f"{currency} {name}: employees {format(stored, 'f')} vs lines {format(value, 'f')}")
     return problems
 
 
@@ -720,6 +773,17 @@ def finish_calculation(db: Session, run: PayrollRun, round_ids: Sequence[int]) -
     run.engine_version = engine.ENGINE_VERSION
     run.calculated_at = _now()
     problems = _reconcile_lines(db, run, rows)
+    # The previous round's reconciliation finding is superseded by this one (it is never waivable: without
+    # this, a recalculation that fixed the defect could never pass, and one that did not would collide).
+    now = _now()
+    db.execute(
+        update(PayrollException)
+        .where(PayrollException.company_id == run.company_id, PayrollException.run_id == run.id,
+               PayrollException.run_employee_id.is_(None), PayrollException.code == "RUN_TOTALS_MISMATCH",
+               PayrollException.status == "OPEN")
+        .values(status="FIXED", resolved_at=now, resolution_note="Superseded by a new calculation.",
+                row_version=PayrollException.row_version + 1, updated_at=now)
+        .execution_options(synchronize_session=False))
     if problems:
         db.add(PayrollException(
             company_id=run.company_id, run_id=run.id, code="RUN_TOTALS_MISMATCH", severity="BLOCKING",
@@ -757,6 +821,6 @@ def progress(db: Session, run: PayrollRun) -> Optional[dict]:
 __all__ = [
     "CALCULATE_CHUNK_JOB", "CALCULATE_RUN_JOB", "CHUNK_SIZE", "COMMENT_REQUIRED_CODES", "VARIANCE_CODES", "calculable",
     "calculate", "calculate_employee", "carry_forwards_of", "change_percent", "component_amounts",
-    "finish_calculation", "liabilities_of", "pack_state_of", "payments_of", "population", "progress", "run_totals",
-    "stage_outputs_of", "ytd_increments_of",
+    "finish_calculation", "in_totals", "liabilities_of", "pack_state_of", "payments_of", "population", "progress",
+    "run_totals", "stage_outputs_of", "ytd_increments_of",
 ]

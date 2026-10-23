@@ -570,6 +570,13 @@ def put_assignments(db: Session, principal: Principal, policy_id: int, rules: Se
     db.flush()
     _audit(db, principal, POLICY_ASSIGNMENTS_CHANGED, policy, f"Changed the assignment rules of \"{policy.name}\"",
            {"old": [rule_json(r) for r in previous], "new": [rule_json(r) for r in created]})
+    # New rules move employees between policies like a new version does: locked, unfinalized runs whose
+    # period ends on or after the earliest changed rule date are stale (EC-CFG-14). A policy without an
+    # active version resolves for nobody, so its rules change nothing.
+    if db.query(PolicyVersion.id).filter(PolicyVersion.company_id == cid, PolicyVersion.policy_id == policy.id,
+                                         PolicyVersion.status == "ACTIVE").first() is not None:
+        changed = [r.effective_from for r in [*previous, *created] if r.effective_from is not None]
+        mark_runs_stale(db, cid, policy.id, min(changed, default=today))
     return {"policy_id": policy.id, "type": policy.type, "rules": [rule_json(r) for r in created]}
 
 

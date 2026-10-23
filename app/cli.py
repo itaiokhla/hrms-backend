@@ -43,6 +43,8 @@ def grant_app_role(connection, role: str) -> None:
     # append-only (0021: the same privileges, and triggers also refuse).
     connection.execute(text(f"REVOKE DELETE ON bank_accounts, bank_account_change_requests, funding_accounts FROM {role}"))
     connection.execute(text(f"REVOKE UPDATE, DELETE ON bank_verifications FROM {role}"))
+    # Payment events are append-only evidence (0022 grants SELECT, INSERT; a trigger also refuses changes).
+    connection.execute(text(f"REVOKE UPDATE, DELETE ON payment_events FROM {role}"))
     # Issued documents are immutable; only the stored-file pointer may be filled in later.
     connection.execute(text(f"REVOKE UPDATE, DELETE ON issued_documents FROM {role}"))
     connection.execute(text(f"GRANT UPDATE (sha256, storage_path, updated_at) ON issued_documents TO {role}"))

@@ -27,6 +27,8 @@ from tests.payroll.test_payslips_v2 import (  # noqa: F401  (docs_world is a fix
     payslip_of,
     pdf_text,
 )
+from tests.payroll.test_run_finalize import fin_world  # noqa: F401  (fixture)
+from tests.payroll.test_runs_lifecycle import runs_world  # noqa: F401  (fixture used by fin_world)
 from tests.payroll.test_wage_inputs import audit_actions, session, set_setting, sql
 
 
@@ -277,10 +279,11 @@ def test_ec_doc_05_one_notification_per_payslip_version(docs_world):
     doc_id = payslip_of(emma_row)[0]
     emma_user = w["logins"]["Emma"].user_id
     notes = sql("SELECT title, action_url FROM notifications WHERE user_id = :u", u=emma_user)
-    assert notes == [("Your payslip for September 2026 is ready", f"/payslips/{doc_id}")]
+    assert notes == [("Your payslip for September 2026 is ready", f"/me/payslips/{doc_id}")]
     assert sql("SELECT channel, status FROM document_notifications WHERE document_id = :d ORDER BY channel",
                d=doc_id) == [("EMAIL", "SENT"), ("IN_APP", "SENT")]
     assert doc_status(doc_id)[0] == "EMAIL_SENT"
+    assert sql("SELECT action, user_id FROM document_access_log WHERE document_id = :d", d=doc_id) == [("EMAIL", None)]
     emails = [m for m in payslip_emails(w["cid"]) if m["To"] == w["emp"]["Emma"]["email"]]
     assert len(emails) == 1
     text_ = body_text(emails[0])
@@ -435,6 +438,72 @@ def test_ec_doc_12_reversed_run_marks_payslips_reversed_and_issues_statements(do
         assert publication.apply_publication(db, w["cid"], run_id) == {"published": 0, "waiting": 0}
 
 
+def test_ec_doc_12_payroll_run_reversed_event_reverses_only_the_reversed_employees(docs_world):
+    """The corrections milestone emits ``payroll.run.reversed``; documents subscribe to it (outbox, exactly once)."""
+    from app.payroll.services import outbox
+
+    w = docs_world
+    run_id, rows = emma_run(w)
+    generate(w["cid"], run_id)
+    emma_row, ivan_row = rows[w["emp"]["Emma"]["id"]], rows[w["emp"]["Ivan"]["id"]]
+    emma_doc, ivan_doc = payslip_of(emma_row)[0], payslip_of(ivan_row)[0]
+    # A selective reversal of Emma only (the REVERSAL run holds just her).
+    reversal_id, _ = finalized_run(w["cid"], w["le01"], w["group"], date(2026, 9, 1), [w["emp"]["Emma"]["id"]],
+                                   run_type="REVERSAL", reverses=run_id)
+    with session(w["cid"]) as (db, _):
+        outbox.emit(db, "payroll.run.reversed", {"run_id": run_id, "reversal_run_id": reversal_id,
+                                                 "reversal_id": 1, "run_employee_ids": [emma_row]})
+        db.commit()
+    assert doc_status(emma_doc)[0] == "REVERSED" and doc_status(ivan_doc)[0] == "PUBLISHED"
+    statements = sql("SELECT employee_id, status FROM documents WHERE doc_type = 'REVERSAL_STATEMENT'")
+    assert statements == [(w["emp"]["Emma"]["id"], "PUBLISHED")]
+    assert sql("SELECT status FROM jobs WHERE type = 'documents.run_reversed'") == [("SUCCEEDED",)]
+    # The same reversal arriving through payroll.run.finalized of the REVERSAL run issues nothing new.
+    assert generate(w["cid"], reversal_id) == {"reversed": 0}
+    assert sql("SELECT count(*) FROM documents WHERE doc_type = 'REVERSAL_STATEMENT'")[0][0] == 1
+    # A forged payload naming another run is refused (never reverses unrelated payslips).
+    from app.payroll.services import jobs, publication
+
+    with session(w["cid"]) as (db, _):
+        try:
+            publication.handle_run_reversed(db, w["cid"], {"run_id": run_id + 999, "reversal_run_id": reversal_id})
+            raise AssertionError("expected PermanentJobError")
+        except jobs.PermanentJobError:
+            pass
+        db.rollback()
+    assert doc_status(ivan_doc)[0] == "PUBLISHED"
+
+
+def test_final_settlement_finalized_event_issues_the_full_and_final_statement(docs_world):
+    """``payroll.final_settlement.finalized`` (corrections) -> published F&F statement for that employee only."""
+    from app.payroll.services import outbox
+
+    w = docs_world
+    emma_id, ivan_id = w["emp"]["Emma"]["id"], w["emp"]["Ivan"]["id"]
+    settlement, rows = finalized_run(w["cid"], w["le01"], w["group"], date(2026, 10, 1), [emma_id, ivan_id],
+                                     run_type="FINAL_SETTLEMENT")
+    with session(w["cid"]) as (db, _):
+        outbox.emit(db, "payroll.final_settlement.finalized", {"case_id": 1, "run_id": settlement,
+                                                               "employee_id": emma_id})
+        db.commit()
+    found = sql("SELECT id, employee_id, status, number FROM documents WHERE doc_type = 'FINAL_SETTLEMENT_STATEMENT'")
+    assert len(found) == 1 and found[0][1:3] == (emma_id, "PUBLISHED") and found[0][3]
+    assert sql("SELECT status FROM jobs WHERE type = 'documents.final_settlement_statement'") == [("SUCCEEDED",)]
+    assert w["logins"]["Emma"].get(f"{ME}/documents/{found[0][0]}").status_code == 200
+    assert w["logins"]["Ivan"].get(f"{ME}/documents/{found[0][0]}").status_code == 404
+    # HR issuing afterwards returns the same statement for Emma (idempotent) and adds Ivan's.
+    r = w["acme"].post(f"{PAY}/runs/{settlement}/documents/final-settlement")
+    assert r.status_code == 201 and found[0][0] in [i["id"] for i in r.json()["items"]] and len(r.json()["items"]) == 2
+    # A regular run named in the event is never a settlement: the job fails permanently, nothing is issued.
+    regular, _ = emma_run(w, start=date(2026, 11, 1))
+    with session(w["cid"]) as (db, _):
+        outbox.emit(db, "payroll.final_settlement.finalized", {"case_id": 2, "run_id": regular, "employee_id": emma_id})
+        db.commit()
+    assert sql("SELECT count(*) FROM documents WHERE doc_type = 'FINAL_SETTLEMENT_STATEMENT'")[0][0] == 2
+    assert sql("SELECT status FROM jobs WHERE type = 'documents.final_settlement_statement' ORDER BY id")[-1] == (
+        "FAILED",)
+
+
 def test_zero_net_payslip_is_published_without_payment(docs_world):
     """Nothing to pay: the payslip follows ON_FINALIZE whatever the trigger (no payment evidence can ever come)."""
     w = docs_world
@@ -445,3 +514,35 @@ def test_zero_net_payslip_is_published_without_payment(docs_world):
     content = content_of(payslip_of(rows[w["emp"]["Emma"]["id"]])[0])
     assert content["totals"]["net"] == "0.00" and content["payment"]["key"] == "NO_PAYMENT"
     assert payslip_of(rows[w["emp"]["Emma"]["id"]])[1] == "PUBLISHED"
+
+
+# ---------------------------------------------------------------------------
+# End to end with the real run services (calculation, approval, finalization, outbox)
+# ---------------------------------------------------------------------------
+def test_ec_doc_04_real_finalization_generates_payslips_through_the_outbox(monkeypatch, fin_world):
+    """A run calculated by the real engine, approved and finalized by the real services: the one
+    ``payroll.run.finalized`` event generates and publishes one payslip per employee whose totals are the
+    finalized figures, with the I-07 fixture badge of the IN fixture pack."""
+    from app.payroll.services import outbox, publication
+    from tests.payroll.test_run_finalize import approved_run, finalize
+
+    w = fin_world
+    # fin_world silences every subscriber of payroll.run.finalized; documents are re-attached alone here.
+    monkeypatch.setitem(outbox.SUBSCRIBERS, "payroll.run.finalized", (publication.RUN_FINALIZED_JOB,))
+    run = approved_run(w, kind="IN_FIXTURE")
+    finalize(w["acme"], run["id"])
+    rows = sql("SELECT id, employee_id, net, gross, currency FROM payroll_run_employees WHERE run_id = :r "
+               "AND status = 'CALCULATED' ORDER BY id", r=run["id"])
+    assert rows
+    for row_id, employee_id, net, gross, currency in rows:
+        doc = payslip_of(row_id)
+        assert doc is not None and doc[1] in ("PUBLISHED", "EMAIL_SENT", "EMAIL_FAILED"), doc
+        content = content_of(doc[0])
+        assert content["currency"] == currency and content["employee"]["id"] == employee_id
+        assert content["totals"]["net"] == f"{net:.2f}" and content["totals"]["gross"] == f"{gross:.2f}"
+        assert "FIXTURE — not law" in content["labels"]
+    assert sql("SELECT status FROM jobs WHERE type = 'documents.run_finalized'") == [("SUCCEEDED",)]
+    # A second finalize call (idempotent replay) never issues a second set of payslips.
+    finalize(w["acme"], run["id"])
+    assert sql("SELECT count(*) FROM documents WHERE run_id = :r AND doc_type = 'PAYSLIP_V2'",
+               r=run["id"])[0][0] == len(rows)

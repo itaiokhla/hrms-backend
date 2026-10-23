@@ -34,7 +34,7 @@ from tests.payroll.test_runs_lifecycle import (  # noqa: F401  (runs_world is a 
     run_employees,
     runs_world,
 )
-from tests.payroll.test_wage_inputs import CHECK, audit_actions, expect_error, set_setting, sql, tenant
+from tests.payroll.test_wage_inputs import audit_actions, expect_error, set_setting, sql, tenant
 
 ATTESTATIONS = f"{PAY}/statutory-attestations"
 FINALIZED_TOPIC = "payroll.run.finalized"
@@ -776,3 +776,87 @@ def test_ec_run_08_concurrent_finalize_with_two_keys_finalizes_once(app, fin_wor
     assert [c for s, c in results if s == 409] == ["RUN_FINALIZED"]
     assert outbox_count(w["cid"], run["id"]) == 1
     assert audit_actions(w["cid"], "payroll_run", run["id"]).count("RUN_FINALIZED") == 1
+
+
+# ---------------------------------------------------------------------------
+# End to end through the real services (no stand-ins, every subscriber of payroll.run.finalized)
+# ---------------------------------------------------------------------------
+def test_ec_run_04_i15_real_chain_calculate_review_approve_finalize_drains_into_obligations_and_payslips(
+        app, runs_world):
+    """create -> precheck -> calculate job (the real snapshot builder and engine) -> review -> submit ->
+    approve by another user -> finalize with step-up (entity without a country pack: an ACTIVE maker-checker
+    attestation, I-15) -> the ONE payroll.run.finalized event is dispatched to its real subscribers -> payment
+    obligations equal the finalized nets and payslips carry the finalized figures. A retry replays."""
+    from app.payroll.services import outbox
+    from tests.payroll.test_payment_obligations import NUMBERS, add_bank_account
+    from tests.payroll.test_run_calculation import calculate as calculate_job
+    from tests.payroll.test_run_calculation import no_pack_country, precheck_ready
+
+    w = runs_world
+    acme, cid = w["acme"], w["cid"]
+    assert outbox.subscribers(FINALIZED_TOPIC), "the payments, documents, journals and corrections subscribers"
+    no_pack_country(w)
+    set_setting(cid, "payroll.attendance.enabled", False)
+    confirm_countries(cid)
+    user_id_of(acme)
+    emma, ivan = w["emp"]["Emma"]["id"], w["emp"]["Ivan"]["id"]
+    for name in ("Emma", "Ivan"):
+        add_bank_account(cid, w["emp"][name]["id"], NUMBERS[name], holder=f"{name} Test")
+
+    run = new_run(acme, w["group"], w["period"]["id"])
+    precheck_ready(acme, run["id"])
+    assert calculate_job(acme, run["id"])["action"] == "CALCULATE"
+    assert run_state(run["id"])["status"] == "REVIEW_REQUIRED"
+    rows = {e: (rid, status, net) for e, rid, status, net in sql(
+        "SELECT employee_id, id, status, net FROM payroll_run_employees WHERE run_id = :r", r=run["id"])}
+    assert rows[emma][1] == rows[ivan][1] == "CALCULATED" and rows[emma][2] == Decimal("100000")
+    assert sql("SELECT count(*) FROM payroll_input_snapshots s JOIN payroll_run_employees e "
+               "ON e.id = s.run_employee_id WHERE e.run_id = :r", r=run["id"])[0][0] >= 2
+
+    # Review: the summary and the variance list; every flag is acknowledged before submission.
+    assert ok(acme.get(f"{RUNS}/{run['id']}/summary"))
+    for item in ok(acme.get(f"{RUNS}/{run['id']}/variance", params={"only_flagged": True}))["items"]:
+        if item["pending"]:
+            ok(acme.post(f"{RUNS}/{run['id']}/variance/{item['run_employee_id']}/acknowledge",
+                         json={"comment": "Expected: first run of the year"}))
+    submit(acme, run["id"])
+    assert code_of(approve(acme, run["id"], expect=403)) == "FORBIDDEN"   # the preparer holds no approve right
+    approve(w["approver"], run["id"])
+    assert run_state(run["id"])["status"] == "APPROVED"
+
+    # Finalize: step-up first (403), then the statutory gate (no pack for the entity: I-15), then the effects.
+    sql("UPDATE user_sessions SET step_up_at = NULL WHERE user_id = :u", u=acme.user_id)
+    assert code_of(finalize(acme, run["id"], key="e2e-1", expect=403)) == "STEP_UP_REQUIRED"
+    step_up(acme)
+    assert code_of(finalize(acme, run["id"], key="e2e-2", expect=409)) == "STATUTORY_NOT_VERIFIED"
+    attestation = ok(acme.post(ATTESTATIONS, json={"legal_entity_id": w["le01"], "effective_from": "2020-01-01",
+                                                   "reason": "Statutory filings by our external provider"}), 201)
+    checker = login_as(app, acme, create_employee(acme, "Chen", "Checker"), ["payroll_manager"])
+    ok(checker.post(f"{ATTESTATIONS}/{attestation['id']}/approve"))
+    body = finalize(acme, run["id"], key="e2e-3").json()
+    assert body["status"] == "FINALIZED" and body["outbox_event_id"]
+
+    assert outbox_count(cid, run["id"]) == 1
+    dispatched = sql("SELECT dispatched_at IS NOT NULL, last_error FROM outbox_events WHERE id = :i",
+                     i=body["outbox_event_id"])
+    assert dispatched == [(True, None)]
+    handled = dict(sql("SELECT type, status FROM jobs WHERE company_id = :c AND (payload->>'run_id')::int = :r "
+                       "AND idempotency_key LIKE :k", c=cid, r=run["id"], k=f"outbox:{body['outbox_event_id']}:%"))
+    assert set(handled) == set(outbox.subscribers(FINALIZED_TOPIC)) and set(handled.values()) == {"SUCCEEDED"}, handled
+    nets = {e: n for e, n in sql("SELECT employee_id, net FROM payroll_run_employees WHERE run_id = :r "
+                                 "AND status = 'CALCULATED' AND net > 0", r=run["id"])}
+    assert set(nets) == {emma, ivan}
+    owed = {e: a for e, a in sql("SELECT employee_id, amount FROM payment_obligations WHERE run_id = :r", r=run["id"])}
+    assert owed == nets
+    payslips = sql("SELECT d.run_employee_id, d.content->'totals'->>'net' FROM documents d WHERE d.run_id = :r "
+                   "AND d.doc_type = 'PAYSLIP_V2' ORDER BY d.run_employee_id", r=run["id"])
+    assert payslips == sorted((rows[e][0], f"{nets[e]:.2f}") for e in (emma, ivan))
+    assert ytd(cid, emma, "TOTAL:NET") == nets[emma]
+
+    # EC-RUN-04: the retry replays; no second event, obligation or payslip.
+    again = finalize(acme, run["id"], key="e2e-3")
+    assert again.headers.get("Idempotent-Replayed") == "true" and again.json() == body
+    assert outbox_count(cid, run["id"]) == 1
+    assert sql("SELECT count(*) FROM payment_obligations WHERE run_id = :r", r=run["id"])[0][0] == 2
+    assert sql("SELECT count(*) FROM documents WHERE run_id = :r AND doc_type = 'PAYSLIP_V2'", r=run["id"])[0][0] == 2
+    assert ytd(cid, emma, "TOTAL:NET") == nets[emma]

@@ -160,7 +160,8 @@ def sanitize_sources(principal: Principal, value: Any) -> Any:
 def _scoped_totals(db: Session, principal: Principal, run: PayrollRun) -> Dict[str, dict]:
     figures = [func.sum(getattr(PayrollRunEmployee, name)) for name in calculation.FIGURES]
     found = (_visible_rows(db, principal, run)
-             .filter(PayrollRunEmployee.status != "EXCLUDED", PayrollRunEmployee.calc_hash.isnot(None))
+             # The employees in the run totals (``calculation.in_totals``): a FULL hold is never paid in this run.
+             .filter(PayrollRunEmployee.status == "CALCULATED", PayrollRunEmployee.calc_hash.isnot(None))
              .with_entities(PayrollRunEmployee.currency, func.count(PayrollRunEmployee.id), *figures)
              .group_by(PayrollRunEmployee.currency).order_by(PayrollRunEmployee.currency).all())
     return {currency: {**{name: amount_str(Decimal(value or 0), currency)
@@ -464,7 +465,8 @@ def employee_detail(db: Session, principal: Principal, run_id: int, run_employee
         "hidden_lines": len(lines) - len(shown),
         "ledger": sanitize_sources(principal, outputs.get("ledger")) if outputs.get("ledger") else None,
         "flags": list(row.flags or []),
-        "exceptions": [runs.exception_json(f) for f in findings],
+        "exceptions": [runs.restrict_hr_only(runs.exception_json(f), () if hr else outputs.get("hr_only") or ())
+                       for f in findings],
         "snapshot": None if snapshot is None else {"id": snapshot.id, "version": snapshot.version,
                                                    "content_hash": snapshot.content_hash},
         "calc_hash": row.calc_hash, "content_hash": row.content_hash,
@@ -675,6 +677,10 @@ def stale(db: Session, principal: Principal, run_id: int) -> dict:
                                                             Employee.id.in_([r.employee_id for r in rows] or [0]))}
     can_recalculate = (run.status in calculation.RECALCULATION_STATES and principal.has(CALCULATE)
                        and access.target_scope(principal, CALCULATE).covers(run.legal_entity_id, run.pay_group_id))
+    if not runs.sees_whole_run(db, principal, run):
+        # Stale reasons name employees (a salary change, changed sources): only those in scope (EC-SEC-05).
+        visible = {e for (e,) in _visible_rows(db, principal, run).with_entities(PayrollRunEmployee.employee_id)}
+        reasons = runs.visible_stale_reasons(reasons, visible)
     return {
         "run_id": run.id, "stale": run.stale, "reasons": reasons, "all_employees": broad,
         "employees": [{"run_employee_id": r.id, "employee_id": r.employee_id,
@@ -725,6 +731,9 @@ def replay(db: Session, principal: Principal, run_id: int, *, employee_ids: Opti
                 "engine_version": stored_engine}
         if stored_engine != engine.ENGINE_VERSION:
             items.append({**item, "matches": False, "replayed_calc_hash": None, "problem": "ENGINE_VERSION_UNAVAILABLE"})
+            continue
+        if snap is None:
+            items.append({**item, "matches": False, "replayed_calc_hash": None, "problem": "SNAPSHOT_MISSING"})
             continue
         try:
             content_ok = snap is not None and engine.content_hash(snap.content) == snap.content_hash == row.content_hash

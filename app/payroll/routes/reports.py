@@ -4,7 +4,8 @@
 * ``GET /api/v1/payroll/reports/{code}/preview``: the first 50 rows, the full row count, per-currency
   totals (or a converted total labelled with its FX source, rate and date) and notes (suppressed groups).
 * ``POST /api/v1/payroll/reports/{code}/exports``: queue a CSV / XLSX / PDF export (202, background job);
-  ``GET /api/v1/payroll/report-exports[/{id}[/download]]``: the caller's own exports only.
+  ``GET /api/v1/payroll/report-exports[/{id}[/download]]``: the caller's own exports only;
+  ``POST /api/v1/payroll/report-exports/{id}/link``: a signed five-minute link (EC-DOC-06), like other exports.
 * ``/api/v1/payroll/accounting/journals``: posted or failed journals of runs in scope, their GENERIC_CSV
   file, and a manual post / retry of a run's journal; ``/api/v1/payroll/accounting/gl-mappings``: the GL
   accounts of components without their own ``gl`` (pack-owned statutory components).
@@ -127,14 +128,23 @@ def request_export(code: str, data: ExportIn, request: Request, principal: Princ
 
 
 @router.get("/report-exports")
-def list_exports(limit: int = Query(50, ge=1, le=200), principal: Principal = Depends(get_principal),
-                 db: Session = Depends(get_db)):
-    return {"items": service.list_exports(db, principal, limit=limit)}
+def list_exports(skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
+                 principal: Principal = Depends(get_principal), db: Session = Depends(get_db)):
+    return {"total": service.count_exports(db, principal),
+            "items": service.list_exports(db, principal, skip=skip, limit=limit)}
 
 
 @router.get("/report-exports/{export_id}")
 def get_export(export_id: int, principal: Principal = Depends(get_principal), db: Session = Depends(get_db)):
     return service.get_export(db, principal, export_id)
+
+
+@router.post("/report-exports/{export_id}/link")
+def export_download_link(export_id: int, principal: Principal = Depends(get_principal),
+                         db: Session = Depends(get_db)):
+    """A signed, user- and session-bound five-minute link to the caller's own READY export (EC-DOC-06),
+    served by ``GET /api/v1/payroll/downloads/{token}``."""
+    return service.export_link(db, principal, export_id)
 
 
 @router.get("/report-exports/{export_id}/download")

@@ -10,7 +10,8 @@
 * Employees: ``GET /api/v1/me/payroll/documents`` (own published documents), request a salary certificate
   or employment letter, generate their own loan / reimbursement statements.
 * Download center: ``GET/POST /api/v1/payroll/exports``, ``GET …/{id}``, ``POST …/{id}/download`` (the
-  requester only; signed link).
+  requester only; signed link); ``GET /api/v1/payroll/downloads/mine`` merges these with the caller's report
+  exports (one paging model, signed links for both).
 """
 
 from datetime import date
@@ -346,6 +347,18 @@ def my_reimbursement_statement(data: RangeIn, request: Request, principal: Princ
 # ---------------------------------------------------------------------------- download center
 
 
+@router.get("/payroll/downloads/mine")
+def my_downloads(source: Optional[Literal["EXPORT", "REPORT_EXPORT"]] = Query(None),
+                 skip: int = Query(0, ge=0, le=downloads.CENTER_MAX_WINDOW),
+                 limit: int = Query(50, ge=1, le=200),
+                 principal: Principal = Depends(get_principal), db: Session = Depends(get_db)):
+    """The caller's own payslip / register exports and report exports in one list (newest first), each READY
+    file with a signed five-minute link. Registered before payslips' ``/payroll/downloads/{token}``."""
+    result = downloads.download_center(db, principal, source=source, skip=skip, limit=limit)
+    db.commit()  # expired exports are marked EXPIRED
+    return result
+
+
 @router.get("/payroll/exports")
 def list_exports(skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
                  principal: Principal = Depends(get_principal), db: Session = Depends(get_db)):
@@ -373,6 +386,7 @@ def get_export(export_id: int, principal: Principal = Depends(get_principal), db
 def export_download_link(export_id: int, principal: Principal = Depends(get_principal),
                          db: Session = Depends(get_db)):
     job = downloads.own_export(db, principal, export_id)
+    downloads.recheck_export_access(db, principal, job)  # 403 once revoked, 404 once out of scope
     if job.status != "READY":
         from app.core.errors import conflict
 

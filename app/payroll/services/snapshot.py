@@ -39,7 +39,8 @@ What a snapshot holds and where it comes from (one employee, one run):
   switches is ON somewhere in the period), approved unpaid tasks of the period (attribution per
   TASK_PAY_POLICY) with the rate card;
 * approved wage inputs targeting the period, WITH_PAYROLL claims, loan and advance instalments due,
-  approved arrears instalments (``retro.arrears_for_snapshot``);
+  approved arrears instalments (``retro.arrears_for_snapshot``); a BONUS / CORRECTION off-cycle run keeps
+  only the structure lines and inputs of its selected components (``off_cycle.selected_components``);
 * YTD per legal entity, tax year and currency from ``ytd_balances`` (F-17, EC-STA-08/22); the previous
   finalized regular periods (variance and outliers); the country pack frozen for the period and the
   ``pack_state`` carried from the previous finalized run (its snapshot's state plus the determinations
@@ -132,6 +133,27 @@ MIN_PERIODS = {"WEEKLY": 52, "BI_WEEKLY": 26, "DAILY": 365}
 HISTORY_PERIODS = 6
 OVERRIDE_ACTIONS = ("TREAT_AS_PRESENT", "TREAT_AS_ABSENT", "TREAT_AS_HALF_DAY")
 FX_ROUNDING_NOTE = "converted at full precision; lines are rounded by the engine"
+# Off-cycle component selection (``off_cycle.selected_components``): the time-based inputs that produce
+# each engine time-pay component; an input list is kept only when one of its components is selected.
+TIME_PAY_INPUTS = {
+    "overtime_entries": frozenset({"OT_WORKDAY", "OT_WEEKLY_OFF", "OT_HOLIDAY"}),
+    "non_working_day_work": frozenset({"OT_WEEKLY_OFF", "OT_HOLIDAY", "HOLIDAY_PREMIUM", "WEEKLY_OFF_PREMIUM"}),
+    "shifts": frozenset({"SHIFT_ALLOWANCE"}),
+    "tasks": frozenset({"TASK_EARNING"}),
+}
+COMPONENT_INPUTS = ("wage_inputs", "arrears", "loans", "advances")
+REIMBURSEMENT_COMPONENT = "REIMBURSEMENT"
+# The source key each input list item was recorded under (``_Builder.source``): an item an off-cycle selection
+# leaves out has its source hash dropped too, so a later change of it never marks the run stale. Lists whose
+# items share sources with what stays (structure lines, attendance-derived work) keep every hash (fail closed).
+SELECTION_SOURCE_KEYS = {
+    "wage_inputs": lambda item: f"wage_input:{item.get('id')}",
+    "arrears": lambda item: f"arrears_instalment:{item.get('id')}",
+    "loans": lambda item: f"loan:{item.get('loan_id')}",
+    "advances": lambda item: f"loan:{item.get('loan_id')}",
+    "reimbursements": lambda item: f"claim:{item.get('id')}",
+    "overtime_entries": lambda item: str(item.get("entry_id")),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -1162,6 +1184,85 @@ class _Builder:
             self.source("exception", row.id, override)
         return result
 
+    # -- off-cycle selection --------------------------------------------------------------------
+    def apply_selection(self, data: Dict[str, Any]) -> None:
+        """A BONUS / CORRECTION off-cycle run pays only its selected components (``off_cycle.selected_components``,
+        EC-COR-06): structure lines and inputs of other components are left out of the snapshot, so they are
+        neither paid nor reserved by this run; the statutory stages still run on what remains.
+
+        The source hashes of the inputs left out are dropped as well (``drop_unselected_sources``): change
+        detection then ignores their changes instead of marking the run stale for an input it never pays."""
+        from app.payroll.services import off_cycle
+
+        selected = off_cycle.selected_components(self.run)
+        if selected is None:
+            return
+        chosen = frozenset(selected)
+        self.source("run_selection", self.run.id, sorted(chosen))
+        before = {name: list(data.get(name) or ()) for name in SELECTION_SOURCE_KEYS}
+        tasks_before = data.get("tasks")
+        for segment in data["segments"]:
+            compensation = segment.get("compensation")
+            if compensation is not None:
+                compensation["lines"] = [line for line in compensation.get("lines") or ()
+                                         if line.get("component") in chosen]
+        for name in COMPONENT_INPUTS:
+            data[name] = [item for item in data.get(name) or () if item.get("component") in chosen]
+        if REIMBURSEMENT_COMPONENT not in chosen:
+            data["reimbursements"] = []
+        for name, produces in TIME_PAY_INPUTS.items():
+            if produces & chosen:
+                continue
+            if name == "tasks":
+                data.pop("tasks", None)
+            else:
+                data[name] = []
+        self.drop_unselected_sources(data, before, tasks_before)
+
+    def drop_unselected_sources(self, data: Mapping[str, Any], before: Mapping[str, Sequence[dict]],
+                                tasks_before: Optional[Mapping[str, Any]]) -> None:
+        """Drop the source hashes of the input items ``apply_selection`` left out. Fail closed: a key is dropped
+        only when it is an input item's own key, no kept item of any list has the same key, and it was recorded
+        (a key the builder did not record is never invented)."""
+        dropped, kept = set(), set()
+        for name, key_of in SELECTION_SOURCE_KEYS.items():
+            remaining = data.get(name) or ()
+            dropped.update(key_of(item) for item in before.get(name) or () if item not in remaining)
+            kept.update(key_of(item) for item in remaining)
+        if tasks_before is not None and data.get("tasks") is None:
+            dropped.update(str(r.get("task_id")) for r in tasks_before.get("records") or ())
+            dropped.update(k for k in self.hashes if k.startswith("rate_card:"))   # recorded for tasks only
+        for key in sorted(dropped - kept):
+            self.hashes.pop(key, None)
+
+    def check_paid_in_period(self) -> None:
+        """An OFF_CYCLE run without a component selection pays the whole period (a missed joiner, 3.5 §13). For
+        an employee whom a regular run of the same period already pays (live or finalized, and not reversed),
+        that is the salary twice: a BLOCKING finding, waivable with a reason for a deliberate second payment.
+        Bonus, correction and payment-only off-cycle runs select what they pay and are not concerned."""
+        from app.payroll.services import off_cycle
+
+        if self.run.run_type != sm.RunType.OFF_CYCLE.value or off_cycle.selected_components(self.run) is not None:
+            return
+        reversed_runs = self.db.query(PayrollRun.reverses_run_id).filter(
+            PayrollRun.company_id == self.cid, PayrollRun.run_type == sm.RunType.REVERSAL.value,
+            PayrollRun.status.in_(sm.RUN_FINALIZED_STATES), PayrollRun.reverses_run_id.isnot(None))
+        paying = (self.db.query(PayrollRun.id, PayrollRun.number)
+                  .join(PayrollRunEmployee, and_(PayrollRunEmployee.company_id == PayrollRun.company_id,
+                                                 PayrollRunEmployee.run_id == PayrollRun.id))
+                  .filter(PayrollRun.company_id == self.cid, PayrollRun.id != self.run.id,
+                          PayrollRun.pay_period_id == self.run.pay_period_id,
+                          PayrollRun.run_type == sm.RunType.REGULAR.value,
+                          PayrollRun.status != sm.RunStatus.CANCELLED.value, PayrollRun.id.notin_(reversed_runs),
+                          PayrollRunEmployee.employee_id == self.eid, PayrollRunEmployee.status != "EXCLUDED")
+                  .order_by(PayrollRun.id).all())
+        if paying:
+            numbers = [number for _, number in paying]
+            self.issue("ALREADY_PAID_IN_PERIOD", "BLOCKING", f"The regular run {', '.join(numbers)} already pays "
+                       "this employee for the period: this off-cycle run would pay the salary a second time. Use a "
+                       "bonus or correction off-cycle run for the components to pay, or waive with a reason.",
+                       waivable=True, run_ids=[run_id for run_id, _ in paying], runs=numbers)
+
     # -- assemble -------------------------------------------------------------------------------
     def build(self) -> SnapshotBuild:
         self.load_placements()
@@ -1172,6 +1273,7 @@ class _Builder:
         self.settings, self.switch_ranges = self.resolve_settings()
         self.policies = self.resolve_policies()
         self.check_attendance_cycle()
+        self.check_paid_in_period()
         days = self.ledger_days()
         segments = self.build_segments(days)
         self.source("day_ledger", self.row.id, days)
@@ -1211,6 +1313,7 @@ class _Builder:
         if tasks is not None:
             data["tasks"] = tasks
         data["pack_state"] = self.pack_state_json()
+        self.apply_selection(data)
         if not self.probe:
             self.fx.freeze()
         if self.fx_used:

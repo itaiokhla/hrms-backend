@@ -80,14 +80,41 @@ def acme(app):
 
 
 # --------------------------------------------------------------------------- catalogue
+SEEDED_CODES = {"BASIC", "FIXED_ALLOWANCE", "BONUS", "COMMISSION", "INCENTIVE", "OT_WORKDAY", "OT_WEEKLY_OFF",
+                "OT_HOLIDAY", "HOLIDAY_PREMIUM", "WEEKLY_OFF_PREMIUM", "SHIFT_ALLOWANCE", "TASK_EARNING", "ARREARS",
+                "LEAVE_ENCASHMENT", "REIMBURSEMENT", "LOAN_RECOVERY", "ADVANCE_RECOVERY", "OTHER_DEDUCTION",
+                "NET_ROUNDING"}
+
+
 def test_seed_creates_the_country_neutral_set_once(app):
+    """Signup provisions the catalogue; POST /components/seed is an idempotent top-up of missing codes."""
     client = signup_company(app, "Seedco")
-    created = seed(client)["created"]
-    assert {"BASIC", "FIXED_ALLOWANCE", "BONUS", "COMMISSION", "INCENTIVE", "OT_WORKDAY", "OT_WEEKLY_OFF", "OT_HOLIDAY",
-            "HOLIDAY_PREMIUM", "WEEKLY_OFF_PREMIUM", "SHIFT_ALLOWANCE", "TASK_EARNING", "ARREARS", "LEAVE_ENCASHMENT",
-            "REIMBURSEMENT", "LOAN_RECOVERY", "ADVANCE_RECOVERY", "OTHER_DEDUCTION", "NET_ROUNDING"} == set(created)
-    assert seed(client)["created"] == []  # idempotent
+    cid = client.company_id
     items = {c["code"]: c for c in ok(client.get(COMPONENTS))}
+    assert set(items) == SEEDED_CODES  # exactly the country-neutral set, before anyone calls seed
+    assert all(c["current_version"]["version"] == 1 and c["owner"] == "COMPANY" for c in items.values())
+    seeded_audit = sql("SELECT details FROM audit_logs WHERE company_id = :c AND action = 'COMPONENTS_SEEDED'", c=cid)
+    assert len(seeded_audit) == 1 and set(seeded_audit[0][0]["codes"]) == SEEDED_CODES  # recorded once, by the system
+    assert seed(client)["created"] == []  # idempotent: nothing is missing
+    assert {c["code"] for c in ok(client.get(COMPONENTS))} == SEEDED_CODES
+
+    # A missing code (removed as the owner, unused) is topped up; the rest are left alone.
+    bonus_before = items["BONUS"]["id"]
+    sql("DELETE FROM pay_component_versions WHERE company_id = :c AND component_id = :p", c=cid, p=bonus_before)
+    sql("DELETE FROM pay_components WHERE company_id = :c AND id = :p", c=cid, p=bonus_before)
+    ids_before = dict(sql("SELECT code, id FROM pay_components WHERE company_id = :c", c=cid))
+    assert seed(client)["created"] == ["BONUS"]
+    after = {c["code"]: c for c in ok(client.get(COMPONENTS))}
+    assert set(after) == SEEDED_CODES and after["BONUS"]["id"] != bonus_before
+    assert after["BONUS"]["current_version"]["calc_method"] == "INPUT"
+    assert {code: after[code]["id"] for code in ids_before} == ids_before  # existing components untouched
+    assert seed(client)["created"] == []
+    # An archived code still exists: the tenant's decision stands, seeding never brings it back.
+    assert ok(client.patch(f"{COMPONENTS}/COMMISSION", json={"status": "ARCHIVED"}))["status"] == "ARCHIVED"
+    assert seed(client)["created"] == []
+    assert "COMMISSION" not in {c["code"] for c in ok(client.get(COMPONENTS))}
+    assert sql("SELECT count(*) FROM pay_components WHERE company_id = :c AND code = 'COMMISSION'", c=cid) == [(1,)]
+    items = after
     basic = items["BASIC"]["current_version"]
     assert set(basic["tags"]) == {"LOP_APPLICABLE", "OT_BASE", "ENCASHMENT_BASE", "PART_OF_CTC", "PART_OF_GROSS"}
     assert basic["totals_flags"] == {"in_gross": True, "in_net": True, "in_ctc": True, "in_employer_cost": True}

@@ -99,6 +99,10 @@ FUNCTIONS: dict[str, FunctionDef] = {
            "Current-run amounts of the components with the tag, after proration", 1, 1, {0: Quoted.TAG}),
         _f("SUM_TAG_RATE", "Components", 'SUM_TAG_RATE("TAG")',
            "Full-period rates of the components with the tag, before proration", 1, 1, {0: Quoted.TAG}),
+        _f("SUM_TAG_HOURLY", "Components", 'SUM_TAG_HOURLY("TAG")',
+           "Hourly rate from the components with the tag: period amounts ÷ period.basis_days ÷ "
+           "emp.standard_hours_per_day, per-day rates ÷ emp.standard_hours_per_day, per-hour rates as they are",
+           1, 1, {0: Quoted.TAG}),
         _f("RATE", "Components", 'RATE("CODE")', "Full-period rate of a component, before proration", 1, 1,
            {0: Quoted.CODE}),
         _f("PRORATE", "Components", "PRORATE(x)", "x prorated by the current component's proration", 1, 1),
@@ -124,9 +128,16 @@ FUNCTIONS: dict[str, FunctionDef] = {
 }
 
 #: Functions that read component amounts of the current run (dependencies for ordering).
-COMPONENT_READERS = frozenset({"SUM_TAG", "SUM_TAG_RATE", "RATE"})
+COMPONENT_READERS = frozenset({"SUM_TAG", "SUM_TAG_RATE", "SUM_TAG_HOURLY", "RATE"})
 #: Functions whose result is a reference shown with its value in the formula tester.
-REFERENCE_FUNCTIONS = frozenset({"SUM_TAG", "SUM_TAG_RATE", "RATE", "INPUT", "UNITS", "PREV", "YTD"})
+REFERENCE_FUNCTIONS = frozenset({"SUM_TAG", "SUM_TAG_RATE", "SUM_TAG_HOURLY", "RATE", "INPUT", "UNITS", "PREV",
+                                 "YTD"})
+
+#: Units of a full-period rate (``EvalContext.rate_units``) that ``SUM_TAG_HOURLY`` converts to an hourly rate:
+#: PERIOD (an amount for the whole pay period: FIXED, FORMULA, ... and the default), DAY (a RATE_X_UNITS rate per
+#: paid day) and HOUR (a RATE_X_UNITS rate per hour). Any other unit (pieces, unknown) cannot be converted.
+RATE_UNIT_PERIOD, RATE_UNIT_DAY, RATE_UNIT_HOUR = "PERIOD", "DAY", "HOUR"
+HOURLY_CONVERTIBLE_UNITS = frozenset({RATE_UNIT_PERIOD, RATE_UNIT_DAY, RATE_UNIT_HOUR})
 
 
 def round_to(number: Decimal, places: int, mode: str, context: Context) -> Decimal:

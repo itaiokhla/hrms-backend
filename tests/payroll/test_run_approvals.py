@@ -7,15 +7,13 @@ EC-RUN-05, EC-RUN-06, EC-RUN-07, EC-RUN-08, EC-RUN-09, EC-RUN-16, EC-RUN-17, EC-
 import threading
 from datetime import date
 
-import pytest
 from sqlalchemy import text
 
 from tests.helpers import create_employee
-from tests.payroll.test_compensation import assign_and_approve, login_as
+from tests.payroll.test_compensation import assign_and_approve
 from tests.payroll.test_components import ok
 from tests.payroll.test_run_finalize import (  # noqa: F401  (fixtures)
     approve,
-    approved_run,
     code_of,
     fin_world,
     finalize,
@@ -28,7 +26,6 @@ from tests.payroll.test_run_finalize import (  # noqa: F401  (fixtures)
 from tests.payroll.test_runs_lifecycle import (  # noqa: F401  (runs_world is a fixture)
     PAY,
     RUNS,
-    force_status,
     new_run,
     run_employees,
     runs_world,
@@ -250,6 +247,30 @@ def test_multi_step_chain_records_each_step_and_bars_the_earlier_approver(fin_wo
     assert [(d[0], d[1], d[2]) for d in decisions(run["id"])] == [
         (1, user_id_of(w["approver"]), "APPROVED"), (2, w["bob"].user_id, "APPROVED")]
     assert audit_actions(w["cid"], "payroll_run", run["id"]).count("RUN_STEP_APPROVED") == 2
+
+
+def test_ec_run_21_a_reroute_that_completes_the_chain_approves_the_run_as_the_last_approver(fin_world):
+    """The last step's only approver loses the right after step 1 was approved: the engine re-routes, the
+    remaining step has nobody eligible and the request completes without an actor. The run follows it,
+    attributed to the step-1 approver (re-checked as of now), instead of the re-route failing."""
+    w = fin_world
+    approver_role = sql("SELECT id FROM roles WHERE company_id = :c AND system_key = 'payroll_approver'",
+                        c=w["cid"])[0][0]
+    sql("INSERT INTO approval_chain_steps (company_id, module, step_order, approver_type, role_id, created_at, "
+        "updated_at) VALUES (:c, 'payroll_run', 1, 'role', :r, now(), now())", c=w["cid"], r=approver_role)
+    sql("INSERT INTO approval_chain_steps (company_id, module, step_order, approver_type, specific_user_id, "
+        "created_at, updated_at) VALUES (:c, 'payroll_run', 2, 'specific_user', :u, now(), now())",
+        c=w["cid"], u=user_id_of(w["bob"]))
+    run = reviewed_run(w)
+    submit(w["acme"], run["id"])
+    assert approve(w["approver"], run["id"], expected_step=1)["status"] == "APPROVAL_PENDING"
+    r = w["acme"].put(f"/api/v1/users/{w['bob'].user_id}/roles", json={"role_ids": []})
+    assert r.status_code == 200, r.text
+    assert request_status(run["id"]) == ["APPROVED"]
+    assert run_state(run["id"])["status"] == "APPROVED"
+    assert decisions(run["id"]) == [(1, user_id_of(w["approver"]), "APPROVED", "approver", None, False)]
+    finalize(w["acme"], run["id"], key="rerouted-1")
+    assert run_state(run["id"])["status"] == "FINALIZED"
 
 
 def test_a_decision_in_the_generic_inbox_moves_the_run_and_cancel_there_is_refused(fin_world):

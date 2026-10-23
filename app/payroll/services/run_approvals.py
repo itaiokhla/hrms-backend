@@ -130,12 +130,15 @@ def _chain_id(db: Session, run: PayrollRun) -> Any:
 
 
 def preparer_user_ids(db: Session, run: PayrollRun) -> Set[int]:
-    """Users who calculated or recalculated (every INPUTS_LOCKED of the run) or submitted it (EC-RUN-05)."""
+    """Users who calculated or recalculated (every INPUTS_LOCKED of the run) or submitted it in any round
+    (every RUN_SUBMITTED: a rework keeps the results, so an earlier round's submitter prepared what is
+    approved now) (EC-RUN-05)."""
     found = {uid for uid in (run.calculated_by_user_id, run.submitted_by_user_id) if uid is not None}
     found.update(uid for (uid,) in db.query(AuditLog.actor_id).filter(
         AuditLog.company_id == run.company_id, AuditLog.module == runs.AUDIT_MODULE,
         AuditLog.entity_type == "payroll_run", AuditLog.entity_id == str(run.id),
-        AuditLog.action == "INPUTS_LOCKED", AuditLog.actor_type == "user", AuditLog.actor_id.isnot(None)))
+        AuditLog.action.in_(("INPUTS_LOCKED", "RUN_SUBMITTED")), AuditLog.actor_type == "user",
+        AuditLog.actor_id.isnot(None)))
     return found
 
 
@@ -292,6 +295,8 @@ def _apply_terminal(db: Session, principal: Optional[Principal], run: PayrollRun
     if run.status != sm.RunStatus.APPROVAL_PENDING.value or run.approval_request_id not in (None, request.id):
         raise conflict(f"The run is {run.status}; this approval request no longer applies.", "APPROVAL_STALE")
     if principal is None:
+        principal = _last_approver(db, request)
+    if principal is None:
         raise forbidden("A pay run approval needs an approver.")
     if request.status == approvals.APPROVED:
         _ensure_not_stale(run)
@@ -310,6 +315,19 @@ def _apply_terminal(db: Session, principal: Optional[Principal], run: PayrollRun
                         details={"approval_request_id": request.id})
     else:
         raise conflict("A pay run approval is withdrawn by reopening or cancelling the run.", "USE_REOPEN")
+
+
+def _last_approver(db: Session, request: ApprovalRequest) -> Optional[Principal]:
+    """The live principal of the request's last approving step. The engine completes a request without an
+    actor when it re-routes (EC-RUN-21: the remaining steps lost every eligible approver after an earlier
+    approval); the run's approval is then attributed to that last approver, re-checked as of now."""
+    if request.status != approvals.APPROVED:
+        return None
+    decided = [s for s in request.steps if s.status == "approved" and s.acted_by_user_id is not None]
+    if not decided:
+        return None
+    last = max(decided, key=lambda s: s.step_order)
+    return approvals._Context(db, request.company_id).principal_for_user(last.acted_by_user_id)
 
 
 def _employee_of_user(db: Session, company_id: int, user_id: Optional[int]) -> Optional[int]:
@@ -339,6 +357,10 @@ def submit_run(db: Session, principal: Principal, run_id: int, *, comment: Optio
     if pending:
         raise AppError(409, f"{pending} variance item(s) must be acknowledged (with a comment) before submission.",
                        "VARIANCE_NOT_ACKNOWLEDGED")
+    # The full change-detection pass (claims, loans, bank accounts, YTD are not in the source change log): a
+    # change marks the run stale and raises 409 RUN_STALE (change_detection.gate_full_check).
+    from app.payroll.services import change_detection
+    change_detection.gate_full_check(db, run, "submission")
     cleared = runs._clear_approvals(db, principal, run, "Resubmitted for approval") \
         if db.query(PayrollApproval.id).filter(PayrollApproval.company_id == run.company_id,
                                                PayrollApproval.run_id == run.id,

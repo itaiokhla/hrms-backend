@@ -17,7 +17,9 @@ Sections (3.6 §3):
   ``calc_hash`` (otherwise "Not available", never a guess);
 * earnings, deductions, reimbursements (not wages) and employer contributions (only with
   ``payslip.show_employer_contributions``, titled "Paid by your employer — not part of your take-home
-  pay"); ``HR_ONLY`` lines are never included; arrears show their original period;
+  pay"); ``HR_ONLY`` lines are never included; arrears show their original period; each line carries the
+  engine's stored plain-language ``explanation`` ("Why this amount?" for payslip-only users), never its
+  trace or sources;
 * totals: the run employee's stored gross, deductions, reimbursements and net, net in words (locale-aware);
 * payment: method and status **from payment evidence only** (``state_machines.employee_label``):
   "Paid on …" needs a verified settlement; otherwise "Scheduled", "Processing" or "Submitted for manual
@@ -74,6 +76,7 @@ OPTIONAL_SECTION_SETTINGS = {
     "LEAVE_BALANCES": "payslip.show_leave_balances",
     "TAX_SUMMARY": "payslip.show_tax_projection",
 }
+EXPLANATION_MAX = 500
 SECTION_OF_KIND = {
     "EARNING": "earnings", "DEDUCTION": "deductions", "REIMBURSEMENT": "reimbursements",
     "EMPLOYER_CONTRIBUTION": "employer_contributions",
@@ -271,6 +274,18 @@ def _period_ref_label(ref: Any, locale: str) -> Optional[str]:
     return "Arrears"
 
 
+def employee_explanation(line: PayrollLine) -> Optional[str]:
+    """The stored plain-language explanation of an EMPLOYEE_VISIBLE line ("Why this amount?"), bounded.
+
+    Only the line's own ``explanation`` text written by the engine is used: never the trace, sources or
+    inputs behind it, and never anything of an HR_ONLY line.
+    """
+    if line.visibility != "EMPLOYEE_VISIBLE" or not line.explanation:
+        return None
+    text = " ".join(str(line.explanation).split())
+    return (text[:EXPLANATION_MAX - 1] + "…") if len(text) > EXPLANATION_MAX else (text or None)
+
+
 def _babel(locale: str) -> str:
     return (locale or "en").replace("-", "_")
 
@@ -292,6 +307,8 @@ def ytd_amounts(db: Session, run: PayrollRun, row: PayrollRunEmployee, period: P
         .join(PayPeriod, (PayPeriod.company_id == PayrollRun.company_id) & (PayPeriod.id == PayrollRun.pay_period_id))
         .filter(PayrollLine.company_id == run.company_id, PayrollRunEmployee.employee_id == row.employee_id,
                 PayrollRun.legal_entity_id == run.legal_entity_id, PayrollRun.status.in_(sm.RUN_FINALIZED_STATES),
+                # Only finalized pay: a FULL hold (ON_HOLD) or an error keeps the employee out of finalization.
+                PayrollRunEmployee.status == "CALCULATED",
                 PayPeriod.tax_year == period.tax_year, PayPeriod.period_end <= period.period_end,
                 PayrollLine.currency == row.currency, PayrollLine.visibility == "EMPLOYEE_VISIBLE")
         .group_by(PayrollLine.component_code, PayrollLine.kind)
@@ -464,6 +481,7 @@ def build(db: Session, run: PayrollRun, row: PayrollRunEmployee, *, version: int
             "units": format(Decimal(line.units).normalize(), "f") if line.units is not None else None,
             "period_ref_label": _period_ref_label(line.period_ref, locale),
             "statutory": bool(line.statutory), "fixture": bool(line.fixture),
+            "explanation": employee_explanation(line),
         }
         if show_ytd and section in ("earnings", "deductions"):
             total = ytd.get((line.component_code, line.kind))

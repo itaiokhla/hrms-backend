@@ -123,6 +123,20 @@ def placement(db: Session, company_id: int, employee_id: int, on: date) -> Place
     return Placement(employee, assignment.legal_entity_id, group)
 
 
+def placement_day(db: Session, company_id: int, employee_id: int, start: date, end: date) -> date:
+    """The day whose placement governs an input for the period ``start``..``end``: the period start, or for an
+    employee who joins (is first placed) during the period, the first placed day, so a mid-period joiner's
+    inputs for the joining period are accepted like the run that pays them."""
+    if settings_engine.primary_assignment(db, company_id, employee_id, start) is not None:
+        return start
+    first = (db.query(EmployeeAssignment.effective_from)
+             .filter(EmployeeAssignment.company_id == company_id, EmployeeAssignment.employee_id == employee_id,
+                     EmployeeAssignment.is_primary.is_(True), EmployeeAssignment.effective_from > start,
+                     EmployeeAssignment.effective_from <= end)
+             .order_by(EmployeeAssignment.effective_from).first())
+    return first[0] if first is not None else start
+
+
 def scoped_placement(db: Session, principal: Principal, permission: str, employee_id: int, on: date, *,
                      allow_self: bool = False) -> Placement:
     """``placement`` of an employee the caller may act on (404 otherwise, also when the employee is not
@@ -488,11 +502,15 @@ def _check_values(data: InputData, comp: ComponentRef, place: Placement) -> Tupl
 def check_input(db: Session, principal: Principal, data: InputData, *, permission: str = EDIT) -> Checked:
     """Every validation of one input (and its recurrence), without writing anything."""
     company_id = principal.company_id
-    place = scoped_placement(db, principal, permission, data.employee_id, data.period_start)
-    if not resolve_setting(db, company_id, "payroll.wage_inputs.enabled", on=data.period_start,
+    place = scoped_placement(db, principal, permission, data.employee_id,
+                             placement_day(db, company_id, data.employee_id, data.period_start, data.period_end))
+    # PERIOD-grain switch: the value in force on the period end applies to the whole period (3.1 §2.2, EC-CFG-02).
+    if not resolve_setting(db, company_id, "payroll.wage_inputs.enabled", on=data.period_end,
                            pay_group_id=place.pay_group_id):
         raise conflict("Wage inputs are switched off for this pay group.", "WAGE_INPUTS_DISABLED")
-    comp = component(db, company_id, data.component_code, data.period_start)
+    # The run pays inputs with the component catalogue in force on the period end (snapshot builder), so a
+    # component that starts during the period (e.g. a tenant provisioned mid-period) accepts inputs for it.
+    comp = component(db, company_id, data.component_code, data.period_end)
     currency, fx_rule = _check_values(data, comp, place)
     check_target_period(db, company_id, place.pay_group, data.period_start, data.period_end)
     periods = [(data.period_start, data.period_end)]
@@ -668,8 +686,9 @@ def update_input(db: Session, principal: Principal, input_id: int, changes: Mapp
         convert_currency=row.fx_rule is not None, reason=changes.get("reason", row.reason),
         external_ref=changes.get("external_ref", row.external_ref),
     )
-    place = placement(db, principal.company_id, row.employee_id, row.target_period_start)
-    comp = component(db, principal.company_id, row.component_code, row.target_period_start)
+    place = placement(db, principal.company_id, row.employee_id, placement_day(
+        db, principal.company_id, row.employee_id, row.target_period_start, row.target_period_end))
+    comp = component(db, principal.company_id, row.component_code, row.target_period_end)
     _check_values(data, comp, place)
     if data.external_ref and data.external_ref != row.external_ref and _external_ref_taken(
             db, principal.company_id, row.employee_id, row.component_id, row.target_period_start, data.external_ref,
@@ -693,7 +712,7 @@ def _threshold_ok(db: Session, row: WageInput, comp: Optional[ComponentRef]) -> 
     if row.amount is None or row.amount < 0 or row.fx_rule is not None:
         return False
     value = resolve_setting(db, row.company_id, "payroll.wage_inputs.require_approval_above",
-                            on=row.target_period_start, pay_group_id=row.pay_group_id)
+                            on=row.target_period_end, pay_group_id=row.pay_group_id)   # PERIOD grain (EC-CFG-02)
     if value is None:
         return False
     limit = Decimal(value.amount)
@@ -729,7 +748,7 @@ def submit_input(db: Session, principal: Principal, input_id: int) -> WageInput:
                               member.target_period_end):
             raise conflict(f"The period {_period_text((member.target_period_start, member.target_period_end))} "
                            "is closed.", "PERIOD_CLOSED")
-    comp = _component_resolver(db, row.company_id, row.component_code, row.target_period_start)
+    comp = _component_resolver(db, row.company_id, row.component_code, row.target_period_end)
     now = clock.utcnow()
     if _threshold_ok(db, row, comp):
         require_transition(principal, sm.WAGE_INPUT, row.status, "AUTO_APPROVE")
