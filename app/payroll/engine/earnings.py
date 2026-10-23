@@ -198,6 +198,22 @@ def period_basis(ctx: CalcContext, basis: str | None = None) -> Decimal | None:
         return None
 
 
+def payable_hours(ctx: CalcContext, totals: LedgerTotals) -> Decimal:
+    """``att.payable_hours`` of the period (or of the segment `totals` belongs to) without the overtime hours that
+    are paid from the same recorded worked time: an overtime multiplier is the total rate for the hour, workday
+    hours beyond the threshold go to the overtime bucket only (3.4 §9.4-§9.5), so an hourly worker's overtime
+    hour is never paid once at the hourly rate and again at the multiplier."""
+    ot, ledger = ctx.overtime, ctx.ledger
+    if ot is None or not ot.from_worked_time:
+        return totals.payable_hours
+    dates = None
+    if ledger is not None and totals is not ledger.totals:
+        key = next((k for k, t in ledger.segments.items() if t is totals), None)
+        dates = frozenset(d.date for d in ledger.days if d.segment == key)
+    minutes = ot.paid_minutes_from_worked_time(dates)
+    return max(ZERO, totals.payable_hours - Decimal(minutes) / 60) if minutes else totals.payable_hours
+
+
 def variables(ctx: CalcContext, totals: LedgerTotals, *, compensation: Compensation | None,
               task: tp.TaskPay | None = None) -> dict[str, Any]:
     """``period.*``, ``att.*``, ``ot.*``, ``task.*``, ``emp.*`` and ``ctc.*`` for a formula (NULL when the source is OFF)."""
@@ -219,7 +235,7 @@ def variables(ctx: CalcContext, totals: LedgerTotals, *, compensation: Compensat
         "att.leave_days_paid": totals.leave_days_paid if leave else None,
         "att.leave_days_unpaid": totals.leave_days_unpaid if leave else None,
         "att.holidays": totals.holidays, "att.weekly_offs": totals.weekly_offs,
-        "att.payable_hours": totals.payable_hours if attendance else None,
+        "att.payable_hours": payable_hours(ctx, totals) if attendance else None,
         "att.worked_hours": totals.worked_hours if attendance else None,
         "att.night_hours": totals.night_hours if attendance else None,
         "att.late_marks": totals.late_marks if attendance else None,

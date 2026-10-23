@@ -190,8 +190,10 @@ def match_run(db: Session, run: PayrollRun, *, full: bool = False, sourced_only:
         return summary
     period = _period(db, run)
     compact = [{"employee_id": e, **c} for e, items in sorted(changes.items()) for c in items][:MAX_REASON_ITEMS]
+    # Only this run: its own snapshots were compared (another run of the group, e.g. an off-cycle
+    # selection, may not have frozen the changed input at all; its own pass decides for it).
     runs.mark_stale(db, run.company_id, _reason(changes), pay_group_id=run.pay_group_id,
-                    employee_ids=sorted(changes), from_date=period.period_start,
+                    employee_ids=sorted(changes), from_date=period.period_start, run_ids=[run.id],
                     details={"source": "change_detection", "run_id": run.id, "changes": compact,
                              "employees": len(changes), "employee_ids": sorted(changes)})
     summary.update(marked=True, changes={str(k): v for k, v in sorted(changes.items())})

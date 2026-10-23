@@ -1528,11 +1528,15 @@ def cancel_run(db: Session, principal: Principal, run_id: int, reason: str, *,
 
 def mark_stale(db: Session, company_id: int, reason: str, *, legal_entity_id: Optional[int] = None,
                pay_group_id: Optional[int] = None, employee_ids: Optional[Iterable[int]] = None,
-               from_date: Optional[date] = None, details: Optional[Mapping[str, Any]] = None) -> int:
+               from_date: Optional[date] = None, details: Optional[Mapping[str, Any]] = None,
+               run_ids: Optional[Iterable[int]] = None) -> int:
     """Mark runs with locked, unfinalized inputs stale (EC-RUN-09, EC-CFG-14, EC-CMP-13): submit and
     finalize are then blocked until recalculation. The hooks in settings, policies and compensation
-    call this once wired; returns how many runs became (or stayed) stale with the new reason."""
+    call this once wired; returns how many runs became (or stayed) stale with the new reason.
+    ``run_ids`` limits the marking to runs whose own snapshots were compared (change detection)."""
     query = db.query(PayrollRun).filter(PayrollRun.company_id == company_id, PayrollRun.status.in_(LOCKED_STATES))
+    if run_ids is not None:
+        query = query.filter(PayrollRun.id.in_(sorted(set(run_ids)) or [0]))
     if legal_entity_id is not None:
         query = query.filter(PayrollRun.legal_entity_id == legal_entity_id)
     if pay_group_id is not None:

@@ -530,6 +530,16 @@ class OvertimeHours:
     recorded_only: Tuple[SkippedEntry, ...]  # approved but unpaid by rule (switch OFF, exempt); still reported
     excluded: Tuple[SkippedEntry, ...]
     issues: Tuple[Issue, ...]
+    # Entries whose minutes are recorded worked time (THRESHOLD, HOLIDAY_WORK, WEEKLY_OFF_WORK origins), so they
+    # are also in the ledger's worked/payable hours; a REQUEST's hours need not be in attendance.
+    from_worked_time: Tuple[str, ...] = ()
+
+    def paid_minutes_from_worked_time(self, dates: Optional[frozenset] = None) -> int:
+        """Paid overtime minutes taken from recorded worked time (on `dates` when given): payable hours exclude
+        them, because an overtime multiplier is the total rate for the hour (3.4 §9.4-§9.5)."""
+        ids = set(self.from_worked_time)
+        return sum(a.minutes for a in self.allocations
+                   if a.entry_id in ids and (dates is None or a.date in dates))
 
     def minutes_for(self, day_type: str) -> int:
         return sum(bucket.minutes for bucket in self.buckets if bucket.day_type == day_type)
@@ -785,8 +795,9 @@ def overtime_hours(
         for (day_type, after, multiplier), minutes in sorted(
             totals.items(), key=lambda item: (DAY_TYPES.index(item[0][0]), item[0][1]))
     )
+    worked_ids = tuple(sorted({e.entry_id for e in entries if e.origin != ORIGIN_REQUEST}))
     return OvertimeHours(rules.exempt, buckets, tuple(allocations), tuple(credits.values()), tuple(normalized),
-                         tuple(recorded), tuple(excluded), tuple(issues))
+                         tuple(recorded), tuple(excluded), tuple(issues), from_worked_time=worked_ids)
 
 
 # --------------------------------------------------------------------------- pay

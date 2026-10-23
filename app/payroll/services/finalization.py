@@ -720,6 +720,9 @@ payment_summary = _default_payment_summary
 
 
 CARRIED_HOLD_AUDIT_FIELDS = ("run_employee_id", "employee_id", "reason_code")
+# The payment summary keys the CLOSE audit keeps: counts and states only. ``payment_summary`` is a hook the
+# payments milestone may replace; an amount it adds never reaches the audit (no salary data in logs).
+PAYMENT_SUMMARY_AUDIT_FIELDS = ("status", "payable_employees", "open_items")
 
 
 def carried_holds(db: Session, run: PayrollRun) -> List[dict]:
@@ -753,8 +756,9 @@ def close_run(db: Session, principal: Principal, run_id: int, *, note: Optional[
     # The audit keeps ids and reason codes only: no salary data in logs or job payloads (the net amounts
     # stay in the run employees and the caller's response).
     audited = [{k: h.get(k) for k in CARRIED_HOLD_AUDIT_FIELDS} for h in holds]
+    audited_summary = {k: summary.get(k) for k in PAYMENT_SUMMARY_AUDIT_FIELDS}
     run = runs.transition(db, principal, run, "CLOSE", reason=(note or "").strip() or None,
-                          details={"carried_holds": audited, "payment_summary": summary}, **guards)
+                          details={"carried_holds": audited, "payment_summary": audited_summary}, **guards)
     return {"run": run, "carried_holds": holds}
 
 

@@ -1063,8 +1063,12 @@ def _mark_paid(db: Session, task: Task, assignees: Sequence[TaskAssignee], run_i
 
 
 def _locked_tasks(db: Session, company_id: int, ids: Sequence[int]) -> dict[int, Task]:
+    # populate_existing: a Task (and its assignees) this session loaded before the lock, e.g. by the snapshot
+    # rebuild of the finalize gate, is re-read under the lock, so a share another run paid meanwhile is seen
+    # (never paid twice, and the task turns PAID with the last share; EC-TSK-*, EC-VAR-01).
     rows = (db.query(Task).options(selectinload(Task.assignees))
-            .filter(Task.company_id == company_id, Task.id.in_(ids)).order_by(Task.id).with_for_update(of=Task).all())
+            .filter(Task.company_id == company_id, Task.id.in_(ids)).order_by(Task.id).with_for_update(of=Task)
+            .populate_existing().all())
     if len(rows) != len(ids):
         raise not_found("Task")
     return {t.id: t for t in rows}

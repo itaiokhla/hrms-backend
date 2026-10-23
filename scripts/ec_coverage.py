@@ -48,14 +48,11 @@ KNOWN_GAPS = {
     "EC-HOL-07": "Not implemented: comp-off expiry beyond the pure rules (FOLLOW-UPS F-40).",
     "EC-HOL-01": "Not implemented: holiday-on-weekly-off substitution beyond the pure rules (FOLLOW-UPS F-40).",
     # Critical-area gaps, checked against the code on 23 Oct 2026 (security verification agent).
-    "EC-PAY-22": "Related behaviour is asserted without naming the id: balanced entries per currency and a journal "
-                 "posted once per run (tests/payroll/test_accounting.py::test_entries_balance_per_currency_negative_"
-                 "lines_swap_and_mapping_precedence, ::test_journal_posts_on_the_finalized_event_balanced_and_never_"
-                 "double_posted); no test asserts that a reversal posts opposite entries.",
     "EC-BNK-15": "Partial: the NOMINEE payee type exists (app/models/payments.py PAYEE_TYPES) and a death case pays a "
                  "named nominee through final settlement (tests/payroll/test_final_settlement.py::test_ec_cor_07_"
-                 "death_pays_a_named_nominee_and_ec_cor_12_absconding_is_held); the payee change with documents and "
-                 "approval on the bank-account side is not asserted by a test that names the id.",
+                 "death_pays_a_named_nominee_and_ec_cor_12_absconding_is_held); on the bank-account side NOMINEE is "
+                 "reserved (app/payroll/services/bank_accounts.py docstring): a payee change to a nominee's own "
+                 "account with documents and approval is not implemented, so no test can name the id.",
     "EC-PAY-19": "UNCLAIMED exists only as an obligation status (app/models/payment_flows.py); no country pack defines "
                  "an unclaimed period and no job moves obligations to it (packs ship as DRAFT, decision I-07). "
                  "Manual/staging per 04-edge-cases.",

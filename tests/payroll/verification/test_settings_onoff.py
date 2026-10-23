@@ -399,6 +399,17 @@ def test_overtime_cycle_with_day_grain(settings_world):
     recalculated(w, run_id)
     assert amount(w, run_id, "Ben", "OT_WORKDAY") == D("500.00")    # 2 x 125.00 x 2.0
     assert amount(w, run_id, "Ann", "OT_WORKDAY") == D("250.00")    # 1 x 125.00 x 2.0
+    # The same policy without a rate formula falls back to the product default SUM_TAG_HOURLY("OT_BASE"): BASIC
+    # is a PERIOD amount (1,000.00 x N), so the hourly rate is 1,000.00 x N / N basis days / 8 h = 125.00 again
+    # and the amounts are unchanged (2 x 125.00 x 2.0 = 500.00; 1 x 125.00 x 2.0 = 250.00), with no unit warning.
+    default_formula = {k: v for k, v in ot_fields(workday="2.0").items() if k != "rate_formula"}
+    activate_policy(w["admin"], "OVERTIME_POLICY", default_formula)
+    recalculated(w, run_id)
+    assert amount(w, run_id, "Ben", "OT_WORKDAY") == D("500.00"), describe(w, run_id, "Ben")
+    assert amount(w, run_id, "Ann", "OT_WORKDAY") == D("250.00")
+    warnings = [f for f in open_findings(w["admin"], run_id) if f.get("code", "").startswith("OT_BASE_UNITS")]
+    assert warnings == [], warnings
+    activate_policy(w["admin"], "OVERTIME_POLICY", ot_fields(workday="2.0"))
     # DAY grain: ON only from the day after Ben's overtime -> Ben's hours are not paid, Ann's (wd[1]) are.
     put_setting(w["admin"], key, False, effective_from=w["start"], reason=REASON)
     put_setting(w["admin"], key, True, effective_from=wd[0] + timedelta(days=1), reason=REASON)
@@ -940,13 +951,25 @@ def test_payment_dual_control_cycle(app):
     # (5)-(6) ON: Pete prepared the batch and may not approve it.
     r = pete.post(f"{batches}/{first['id']}/approve")
     assert r.status_code == 403 and r.json()["code"] == "DUAL_CONTROL", r.text
-    # Maker-checker on the switch itself (the key requires approval when change approval is ON): turning the
-    # control OFF stays pending until another administrator approves it, and the control holds meanwhile.
+    # The starter profile LOCKS the control at TENANT (STARTER_V1 locks): no entity may switch it off while the
+    # lock holds, and the refusal names the lock.
+    refused = put_setting(admin, key, False, "LEGAL_ENTITY", le, reason=DC_REASON, expect=400)
+    assert refused["code"] == "SETTING_LOCKED", refused
+    assert resolve(admin, key, legal_entity_id=le)["value"] is True
+    # Maker-checker on the switch itself (the key requires approval when change approval is ON): lifting the
+    # tenant lock and turning the control OFF each stay pending until another administrator approves them, and
+    # the control holds meanwhile.
+    checker = login_as(app, admin, create_employee(admin, "Cleo", "Checker"), ["company_admin", "payroll_manager"])
     put_setting(admin, "settings.change_approval.enabled", True, reason=DC_REASON)
+    unlock = put_setting(admin, key, True, locked=False, reason=DC_REASON)["changes"][0]
+    assert unlock["status"] == "PENDING_APPROVAL", unlock
+    assert put_setting(admin, key, False, "LEGAL_ENTITY", le, reason=DC_REASON,
+                       expect=400)["code"] == "SETTING_LOCKED"            # the lock holds while the unlock is pending
+    ok(checker.post(f"/api/v1/payroll/settings/change-requests/{unlock['change_request_id']}/approve",
+                    json={"comment": "Entities decide"}))
     pending = put_setting(admin, key, False, "LEGAL_ENTITY", le, reason=DC_REASON)["changes"][0]
     assert pending["status"] == "PENDING_APPROVAL", pending
     assert pete.post(f"{batches}/{first['id']}/approve").status_code == 403
-    checker = login_as(app, admin, create_employee(admin, "Cleo", "Checker"), ["company_admin", "payroll_manager"])
     ok(checker.post(f"/api/v1/payroll/settings/change-requests/{pending['change_request_id']}/approve",
                     json={"comment": "Small team"}))
     # (7)-(9) OFF at the entity (overrides the TENANT ON): the preparer may approve his own batch.

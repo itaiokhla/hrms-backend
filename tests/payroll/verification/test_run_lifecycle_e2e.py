@@ -303,6 +303,11 @@ def test_reversal_negates_exactly_and_off_cycle_bonus_pays_only_the_selected_com
         "AND r.pay_period_id = :p AND e.status = 'CALCULATED'", e=emma, p=period_of(group, "2026-03-01")["id"]))
     assert net_after == D("0.00")
     assert sql("SELECT count(*) FROM payment_obligations WHERE run_id = :r", r=reversal)[0][0] == 0
+    # Reversals keep reconciliation (Goal 2 §9): the reversal run's own identities hold (net -30,000.00 =
+    # earnings -30,000.00), no obligation for a negative net, liabilities = Σ statutory lines (none here).
+    assert_run_reconciles(reversal)
+    assert_finalized_reconciles(reversal, expect_payslips=False)
+    assert_finalized_reconciles(march)
     statuses = {s for (s,) in sql("SELECT i.status FROM payment_instructions i JOIN payment_obligations o "
                                   "ON o.id = i.obligation_id WHERE o.run_employee_id = :r", r=emma_row)}
     assert statuses <= {"CANCELLED"}, statuses

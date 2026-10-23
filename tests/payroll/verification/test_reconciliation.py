@@ -320,6 +320,76 @@ def test_excluded_and_failed_employees_stay_out_of_totals_and_obligations(world)
     assert asha in rows
 
 
+def test_gl_journal_balances_and_net_payable_equals_the_finalized_nets(world):
+    """Goal 2 §9 "GL balances". October 2026 (31 days), FLAT, net pay rounded to a multiple of 10 (HALF_UP) at
+    PAY_GROUP scope; payroll.accounting.enabled ON, post_on FINALIZE (the journal is posted by the finalized event).
+    Emma: BASIC 30,000.00 + BONUS 1,234.56 - OTHER_DEDUCTION 500.00 + REIMBURSEMENT 100.00 = 30,834.56
+          -> rounded to 10: 30,830.00, NET_ROUNDING = -4.56.  Ivan: BASIC 30,000.00 = net 30,000.00.
+    Mapping (debit / credit): BASIC, BONUS 6000 / 2100 (2100 = net pay payable); OTHER_DEDUCTION 2100 / 2400;
+    REIMBURSEMENT 6500 / 2100; NET_ROUNDING 6900 / 2100 (a negative line swaps the sides: Dr 2100 / Cr 6900 4.56).
+      6000 debit  = 30,000 + 1,234.56 + 30,000 = 61,234.56 = Σ gross
+      2100 credit = 61,234.56 + 100.00 = 61,334.56; 2100 debit = 500.00 + 4.56 = 504.56
+      2100 balance (credit - debit) = 60,830.00 = 30,830.00 + 30,000.00 = Σ finalized nets = Σ obligations
+      total debit = 61,234.56 + 100.00 + 500.00 + 4.56 = 61,839.12 = total credit."""
+    from tests.payroll.test_accounting import MAPPINGS
+    from tests.payroll.test_wage_inputs import set_setting
+    from tests.payroll.verification.test_golden_calculations import calculated_run, gold_group, hire, wage_input
+    from tests.payroll.verification.test_run_lifecycle_e2e import attest, finalize_run, submit_and_approve
+
+    w = world
+    cid, acme = w["cid"], w["acme"]
+    group = gold_group(w, "PG-RC-GL", settings={"payroll.rounding.net_pay_increment": "10"})
+    emma = hire(w, "Emma", group, "360000")
+    ivan = hire(w, "Ivan", group, "360000")
+    for key, value in (("payroll.reimbursements.enabled", True), ("payroll.deductions.min_net_pay_percent", "50"),
+                       ("payroll.accounting.enabled", True), ("payroll.accounting.post_on", "FINALIZE")):
+        set_setting(cid, key, value)
+    october = group["periods"]["2026-10-01"]
+    wage_input(w, emma, "BONUS", "1234.56", october)
+    wage_input(w, emma, "OTHER_DEDUCTION", "500.00", october)
+    wage_input(w, emma, "REIMBURSEMENT", "100.00", october)
+    accounts = {"BASIC": ("6000", "2100"), "BONUS": ("6000", "2100"), "OTHER_DEDUCTION": ("2100", "2400"),
+                "REIMBURSEMENT": ("6500", "2100"), "NET_ROUNDING": ("6900", "2100")}
+    for code, (debit, credit) in accounts.items():
+        r = acme.put(MAPPINGS, json={"component_code": code, "debit_account": debit, "credit_account": credit,
+                                     "legal_entity_id": None, "allocate_by_cost_center": False})
+        assert r.status_code == 200, r.text
+    attest(w)
+    run_id = calculated_run(w, group, "2026-10-01")
+    emma_lines = dict(sql("SELECT l.component_code, l.amount FROM payroll_lines l JOIN payroll_run_employees e "
+                          "ON e.id = l.run_employee_id WHERE l.run_id = :r AND e.employee_id = :e", r=run_id, e=emma))
+    assert emma_lines == {"BASIC": D("30000.00"), "BONUS": D("1234.56"), "OTHER_DEDUCTION": D("500.00"),
+                          "REIMBURSEMENT": D("100.00"), "NET_ROUNDING": D("-4.56")}, emma_lines
+    submit_and_approve(w, run_id)
+    finalize_run(w, run_id, key=f"gl-{run_id}")
+    nets = {emma: D("30834.56") - D("4.56"), ivan: D("30000.00")}
+    assert nets[emma] == D("30830.00")
+    assert dict(sql("SELECT employee_id, net FROM payroll_run_employees WHERE run_id = :r", r=run_id)) == nets
+    assert_finalized_reconciles(run_id)
+
+    journals = acme.get("/api/v1/payroll/accounting/journals", params={"run_id": run_id})
+    assert journals.status_code == 200, journals.text
+    [journal] = journals.json()["items"]
+    assert (journal["status"], journal["trigger"]) == ("POSTED", "FINALIZE"), journal
+    detail = acme.get(f"/api/v1/payroll/accounting/journals/{journal['id']}")
+    assert detail.status_code == 200, detail.text
+    balance = defaultdict(lambda: [ZERO, ZERO])
+    for line in detail.json()["lines"]:
+        assert line["amount"]["currency"] == "INR", line          # one currency, never mixed
+        balance[line["account"]][0 if line["side"] == "DEBIT" else 1] += D(line["amount"]["amount"])
+    assert balance["6000"] == [D("61234.56"), ZERO]
+    assert balance["2100"] == [D("504.56"), D("61334.56")]
+    assert balance["2100"][1] - balance["2100"][0] == sum(nets.values()) == D("60830.00")
+    assert balance["2400"] == [ZERO, D("500.00")] and balance["6500"] == [D("100.00"), ZERO]
+    assert balance["6900"] == [ZERO, D("4.56")]
+    debit = sum((d for d, _ in balance.values()), ZERO)
+    credit = sum((c for _, c in balance.values()), ZERO)
+    assert debit == credit == D("61839.12")
+    assert journal["totals"] == {"INR": {"debit": "61839.12", "credit": "61839.12", "lines": journal["line_count"]}}
+    owed = sum((a for (a,) in sql("SELECT amount FROM payment_obligations WHERE run_id = :r", r=run_id)), ZERO)
+    assert owed == D("60830.00")
+
+
 def test_payment_allocations_settlement_and_close_reconcile_to_the_finalized_nets(app, world):
     """July 2026 (31 days), FLAT: Emma annual 3,60,000 -> 30,000.00; Ivan the same + an approved BONUS of
     1,234.56 -> 31,234.56. After finalization: obligations = {Emma 30,000.00, Ivan 31,234.56} (= the nets);

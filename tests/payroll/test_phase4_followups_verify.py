@@ -363,10 +363,6 @@ def test_ec_cor_06_verify_excluded_tasks_carry_no_hash_and_a_moved_input_is_stil
     assert changes == {emma: [{"source": f"wage_input:{commission}", "type": "wage_input", "change": "ADDED"}]}
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="change_detection.match_run marks through runs.mark_stale(pay_group_id, employee_ids, "
-                          "from_date), which has no run filter: the regular run's pass marks the bonus run stale "
-                          "for an input the bonus run excluded (runs.py is not owned by this fix; FOLLOW-UP).")
 def test_ec_cor_06_verify_the_regular_runs_pass_does_not_mark_the_bonus_run_stale_for_an_excluded_input(
         runs_world):
     from app.payroll.services import change_detection
@@ -638,3 +634,176 @@ def test_ec_cor_06_verify_claims_left_out_of_a_bonus_run_are_neither_hashed_nor_
     sql("UPDATE wage_inputs SET amount = 2600, row_version = row_version + 1 WHERE id = :i", i=bonus)
     assert _detect(w, bonus_run, full=True) == {
         emma: [{"source": f"wage_input:{bonus}", "type": "wage_input", "change": "UPDATED"}]}
+
+
+# ===========================================================================
+# Third skeptic pass (key p4-verify)
+# ===========================================================================
+# 1. EC-TSK-* / EC-VAR-01 -----------------------------------------------------
+def test_ec_tsk_ec_var_01_verify_task_objects_held_by_the_paying_session_are_reread_under_the_lock(runs_world):
+    """The paying session still HOLDS the Task objects it loaded before another run paid Emma's shares (the
+    finalize gate's snapshot rebuild loads them; nothing guarantees they are garbage collected before the
+    lock). Under the task lock the shares must be re-read: by hand, task 2 (Emma 70 / Ivan 30) gets Ivan's
+    share from run 9002, the last one, so it turns PAID with 9002; task 1 (Emma 50 / Ivan 50) is refused for
+    Emma (409 TASK_SHARE_ALREADY_PAID) and keeps Emma = 9001, Ivan unpaid. Before the fix the stale identity
+    map left task 2 APPROVED with every share paid and silently overwrote Emma's 9001 with 9002."""
+    from sqlalchemy.orm import selectinload
+
+    from app.core.errors import AppError
+    from app.models.work_items import Task
+    from app.payroll.services import tasks
+
+    w = runs_world
+    cid = w["cid"]
+    emma, ivan = w["emp"]["Emma"]["id"], w["emp"]["Ivan"]["id"]
+    t1 = shared_task(w, [(emma, "50"), (ivan, "50")])
+    t2 = shared_task(w, [(emma, "70"), (ivan, "30")])
+    late = session_for(cid)
+    try:
+        held = (late.query(Task).options(selectinload(Task.assignees)).filter(Task.id.in_([t1, t2]))
+                .order_by(Task.id).all())
+        assert [[a.paid_in_run_id for a in t.assignees] for t in held] == [[None, None], [None, None]]
+        first = session_for(cid)
+        try:
+            assert tasks.mark_task_shares_paid(first, cid, [(t1, emma), (t2, emma)], 9001) == 2
+            first.commit()
+        finally:
+            first.close()
+        assert tasks.mark_task_shares_paid(late, cid, [(t2, ivan)], 9002) == 1
+        late.commit()
+        with pytest.raises(AppError) as info:
+            tasks.mark_task_shares_paid(late, cid, [(t1, emma)], 9002)
+        assert info.value.status_code == 409 and info.value.code == "TASK_SHARE_ALREADY_PAID"
+        late.rollback()
+        assert len(held) == 2                                   # the stale objects were held throughout
+    finally:
+        late.close()
+    assert shares_of(t2) == {emma: 9001, ivan: 9002}
+    assert task_state(t2) == ("PAID", 9002)
+    assert shares_of(t1) == {emma: 9001, ivan: None}
+    assert task_state(t1) == ("APPROVED", None)
+
+
+def test_ec_tsk_ec_var_01_verify_a_task_line_on_a_non_assignees_payslip_never_pays_the_assignees_share(fin_world):
+    """A TASK_EARNING line of 250.00 lands on Ivan's payslip for a task whose only assignee is Emma (a manual or
+    mis-attributed line). Finalization is refused with 409 TASK_SHARE_NOT_FOUND and nothing sticks: Emma's share
+    stays unpaid (her own run still pays it), no TASK source is consumed, the run stays APPROVED. The old
+    whole-task marker would have marked the task PAID through Ivan's run."""
+    w = fin_world
+    emma, ivan = w["emp"]["Emma"]["id"], w["emp"]["Ivan"]["id"]
+    task = shared_task(w, [(emma, "100")])
+    run = approved_run(w, prepared={ivan: [line("BASIC", "50000.00"), task_line(task, "250.00")]})
+    r = finalize(w["acme"], run["id"], key="verify-not-an-assignee", expect=409)
+    assert code_of(r) == "TASK_SHARE_NOT_FOUND"
+    assert shares_of(task) == {emma: None}
+    assert task_state(task) == ("APPROVED", None)
+    assert consumed_task_sources(task) == []
+    assert sql("SELECT status FROM payroll_runs WHERE id = :r", r=run["id"])[0][0] == "APPROVED"
+
+
+# 2. EC-RUN-09 (with EC-COR-06) ---------------------------------------------------
+def test_ec_run_09_ec_cor_06_verify_the_finalize_gate_of_a_bonus_run_ignores_only_excluded_inputs(runs_world):
+    """An APPROVED BONUS run selecting SPOT_BONUS (2,500.00). After approval the excluded commission is raised
+    800.00 -> 950.00 and a 300.00 claim appears (REIMBURSEMENT not selected): the full finalize gate passes
+    (checked, nothing marked). Raising the selected bonus to 2,600.00 trips it with exactly one change,
+    wage_input:<bonus> UPDATED; the service never commits, so the run is not stale after the rollback."""
+    from app.payroll.services import change_detection
+
+    w = runs_world
+    cid = w["cid"]
+    emma = emma_of(w)
+    _bonus_world(w)
+    bonus = _wage_input(w, emma, "SPOT_BONUS", "2500.00")
+    commission = _wage_input(w, emma, "SPOT_COMMISSION", "800.00")
+    bonus_run = _bonus_run(w, emma, ["SPOT_BONUS"])
+    force_status(bonus_run, "READY")
+    lock(cid, bonus_run, [emma])
+    force_status(bonus_run, "APPROVED")
+
+    sql("UPDATE wage_inputs SET amount = 950, row_version = row_version + 1 WHERE id = :i", i=commission)
+    _claim(w, emma, "300.00")
+    db = session_for(cid)
+    try:
+        found, _ = objects(db, bonus_run)
+        outcome = change_detection.gate_full_check(db, found, "finalization")
+        assert outcome["checked"] is True and outcome["marked"] is False and outcome["changes"] == {}
+        db.rollback()
+    finally:
+        db.close()
+    assert stale_of(bonus_run)[0] is False
+
+    sql("UPDATE wage_inputs SET amount = 2600, row_version = row_version + 1 WHERE id = :i", i=bonus)
+    db = session_for(cid)
+    try:
+        found, _ = objects(db, bonus_run)
+        with pytest.raises(change_detection.RunMarkedStale) as info:
+            change_detection.gate_full_check(db, found, "finalization")
+        assert info.value.status_code == 409 and info.value.code == "RUN_STALE"
+        assert info.value.summary["changes"] == {
+            str(emma): [{"source": f"wage_input:{bonus}", "type": "wage_input", "change": "UPDATED"}]}
+        db.rollback()
+    finally:
+        db.close()
+    assert stale_of(bonus_run)[0] is False
+
+
+# 3. CLOSE audit ----------------------------------------------------------------
+def test_close_verify_a_replaced_payment_summary_hook_never_puts_amounts_in_the_close_audit(fin_world, monkeypatch):
+    """``finalization.payment_summary`` is a hook the payments milestone may replace. A replacement that also
+    reports amounts (open 50,000.00, paid 12,34,567.89) must not carry them into the CLOSE audit: the audit
+    keeps status, payable_employees and open_items only (RECONCILED, 0, 0)."""
+    from app.payroll.services import finalization
+
+    w = fin_world
+    acme = w["acme"]
+    ivan = w["emp"]["Ivan"]["id"]
+    run = approved_run(w, prepared={})
+    ivan_row = run_employees(run["id"])[ivan][2]
+    r = acme.post(f"{RUNS}/{run['id']}/employees/{ivan_row}/hold",
+                  json={"hold_type": "PAYMENT", "reason_code": "BANK_ISSUE", "note": "Hold the transfer"})
+    assert r.status_code == 200, r.text
+    finalize(acme, run["id"], key="verify-close-hook")
+    force_status(run["id"], "RECONCILED")
+    monkeypatch.setattr(finalization, "payment_summary", lambda db, found: {
+        "status": found.status, "payable_employees": 0, "open_items": 0, "open_amount": "50000.00",
+        "paid_total": "1234567.89", "currency": "INR"})
+    closed = ok(acme.post(f"{RUNS}/{run['id']}/close", json={}))
+    assert closed["status"] == "CLOSED"
+    rows = sql("SELECT details FROM audit_logs WHERE company_id = :c AND entity_type = 'payroll_run' "
+               "AND entity_id = :r AND details::jsonb ? 'carried_holds'", c=w["cid"], r=str(run["id"]))
+    assert len(rows) == 1
+    details = rows[0][0]
+    assert details["payment_summary"] == {"status": "RECONCILED", "payable_employees": 0, "open_items": 0}
+    assert details["carried_holds"] == [{"run_employee_id": ivan_row, "employee_id": ivan,
+                                         "reason_code": "BANK_ISSUE"}]
+    text = json.dumps(details)
+    assert "50000" not in text and "1234567" not in text
+
+
+# 5. EC-COR-06 ------------------------------------------------------------------
+def test_ec_cor_06_verify_a_selected_time_pay_input_keeps_its_hash_and_is_still_watched(runs_world):
+    """Fail closed in the other direction: a BONUS run selecting SPOT_BONUS and TASK_EARNING keeps Emma's task
+    (and its hash) while the excluded commission has none. Raising the commission 800.00 -> 900.00 is ignored;
+    accepting 1 of the task's 2 units marks exactly task:<id> UPDATED."""
+    w = runs_world
+    cid = w["cid"]
+    emma = emma_of(w)
+    _bonus_world(w)
+    sql("UPDATE pay_component_versions v SET effective_from = DATE '2020-01-01' FROM pay_components p "
+        "WHERE p.company_id = v.company_id AND p.id = v.component_id AND p.company_id = :c "
+        "AND p.code = 'TASK_EARNING' AND v.version = 1", c=cid)
+    task = shared_task(w, [(emma, "100")])
+    commission = _wage_input(w, emma, "SPOT_COMMISSION", "800.00")
+    bonus_run = _bonus_run(w, emma, ["SPOT_BONUS", "TASK_EARNING"])
+    force_status(bonus_run, "READY")
+    [stored] = lock(cid, bonus_run, [emma]).snapshots.values()
+    force_status(bonus_run, "REVIEW_REQUIRED")
+    assert [r["task_id"] for r in stored.content["tasks"]["records"]] == [f"task:{task}"]
+    assert f"task:{task}" in stored.source_hashes
+    assert f"wage_input:{commission}" not in stored.source_hashes
+
+    sql("UPDATE wage_inputs SET amount = 900, row_version = row_version + 1 WHERE id = :i", i=commission)
+    assert _detect(w, bonus_run, full=True) == {}
+    sql("UPDATE tasks SET accepted_quantity = 1 WHERE id = :t", t=task)
+    assert _detect(w, bonus_run, full=True) == {
+        emma: [{"source": f"task:{task}", "type": "task", "change": "UPDATED"}]}

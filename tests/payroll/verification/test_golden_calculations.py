@@ -576,10 +576,9 @@ OT_POLICY = {
     "source": "ATTENDANCE_AUTO", "daily_threshold": "9", "weekly_threshold_hours": "48",
     "threshold_combination": "DAILY_THEN_WEEKLY", "min_minutes": 30,
     "rounding": {"increment_minutes": 15, "mode": "DOWN"},
-    # Explicit hourly base (not the registry default DEFAULT_OT_RATE_FORMULA, which another agent is correcting
-    # for hourly OT_BASE rates): the salaried full-period OT_BASE rate / basis days / standard hours a day.
-    "rate_formula": 'SUM_TAG_RATE("OT_BASE") / period.basis_days / emp.standard_hours_per_day',
-    "buckets": [{"day_type": "WORKDAY", "after_hours": "0", "multiplier": "1.5"},
+    # No rate_formula: the policy default SUM_TAG_HOURLY("OT_BASE") is exercised (3.4 §9.4: period rates / basis
+    # days / standard hours, day rates / standard hours, hourly rates unchanged).
+    "buckets":[{"day_type": "WORKDAY", "after_hours": "0", "multiplier": "1.5"},
                 {"day_type": "WEEKLY_OFF", "after_hours": "0", "multiplier": "2"},
                 {"day_type": "HOLIDAY", "after_hours": "0", "multiplier": "2"}],
 }
@@ -622,8 +621,19 @@ def test_overtime_daily_then_weekly_thresholds_and_hourly_pay_from_attendance(wo
       Regression (defect found here): the generated ATTENDANCE_AUTO entries were paid AND the engine derived the
       same threshold hours again from the ledger -> 16 h = 3,000.00. Fixed in engine/pipeline.overtime_stage
       (pure regression: tests/payroll_unit/test_overtime_auto_stored_entries.py).
-    Hana (HOURLY, 250.00 an hour): 8 h on every working day except Tue 1 Sep 09:00-15:00 (6 h):
-      payable hours = 25 x 8 + 6 = 206; pay = 206 x 250.00 = 51,500.00 (no hour above a threshold).
+    Hana (HOURLY, 250.00 an hour): 8 h on every working day except Tue 1 Sep 09:00-15:00 (6 h), Mon 14 Sep
+    09:00-19:00 (10 h) and Tue 15 Sep 09:00-16:00 (7 h).
+      week 14-19 Sep: 10, 7, 8, 8, 8, 8 -> daily overtime Mon 10 - 9 = 1 h; regular 9 + 7 + 4 x 8 = 48 -> no
+      weekly overtime. Other weeks: at most 6 x 8 = 48 h. Total overtime 1 h.
+      worked hours = 23 x 8 + 6 + 10 + 7 = 207
+      3.4 §9.4-§9.5: "an OT multiplier is the total rate for the hour, because overtime hours are not included
+      in salary"; workday hours beyond the threshold go to the WORKDAY bucket only -> the overtime hour is not
+      also a payable hour: payable hours = 207 - 1 = 206; BASIC = 206 x 250.00 = 51,500.00.
+      OT rate (default SUM_TAG_HOURLY, hourly rate unchanged) = 250.00; OT = 1 x 250.00 x 1.5 = 375.00.
+      Gross 51,500.00 + 375.00 = 51,875.00 (the overtime hour is paid 1.5x, not 1.0x + 1.5x = 2.5x).
+      Regression (defect found here, 23 Oct 2026): BASIC was 207 x 250.00 = 51,750.00 - the overtime hour was
+      also a payable hour. Fixed in engine/earnings.payable_hours (+ OvertimeHours.from_worked_time); pure
+      regression: tests/payroll_unit/test_overtime_hourly_payable_hours.py.
     """
     w = world
     cid = w["cid"]
@@ -641,14 +651,15 @@ def test_overtime_daily_then_weekly_thresholds_and_hourly_pay_from_attendance(wo
     hana = hire(w, "Hanna", group, "250", structure="hourly")
     week = {date(2026, 9, 7): "19:00", date(2026, 9, 8): "18:00", date(2026, 9, 9): "18:00",
             date(2026, 9, 10): "20:00", date(2026, 9, 11): "18:00", date(2026, 9, 12): "17:00"}
+    hana_days = {date(2026, 9, 1): "15:00", date(2026, 9, 14): "19:00", date(2026, 9, 15): "16:00"}
     for day in september_working_days():
         worked(cid, omar, day, "09:00", week.get(day, "17:00"))
-        worked(cid, hana, day, "09:00", "15:00" if day == date(2026, 9, 1) else "17:00")
+        worked(cid, hana, day, "09:00", hana_days.get(day, "17:00"))
     generated = ok(w["acme"].post("/api/v1/overtime/proposals/generate",
                                   json={"start": "2026-09-01", "end": "2026-09-30", "employee_ids": [omar, hana]}))
     proposed = sorted((c["employee_id"], c["date"], c["minutes"], c["status"]) for c in generated["created"])
-    assert proposed == [(omar, "2026-09-07", 60, "APPROVED"), (omar, "2026-09-10", 120, "APPROVED"),
-                        (omar, "2026-09-12", 300, "APPROVED")], proposed
+    assert proposed == sorted([(omar, "2026-09-07", 60, "APPROVED"), (omar, "2026-09-10", 120, "APPROVED"),
+                               (omar, "2026-09-12", 300, "APPROVED"), (hana, "2026-09-14", 60, "APPROVED")]), proposed
 
     run_id = calculated_run(w, group, "2026-09-01")
     rate = D("26000.00") / 26 / 8
@@ -657,9 +668,14 @@ def test_overtime_daily_then_weekly_thresholds_and_hourly_pay_from_attendance(wo
     amounts, _ = lines(run_id, omar)
     assert amounts == {"BASIC": D("26000.00"), "OT_WORKDAY": q(overtime)} == {
         "BASIC": D("26000.00"), "OT_WORKDAY": D("1500.00")}, amounts
-    hours = 25 * 8 + 6
+    worked_hours = 23 * 8 + 6 + 10 + 7
+    assert worked_hours == 207
+    overtime_hours = 10 - 9
+    payable = worked_hours - overtime_hours
     amounts, _ = lines(run_id, hana)
-    assert amounts == {"BASIC": q(D("250.00") * hours)} == {"BASIC": D("51500.00")}, amounts
+    assert amounts == {"BASIC": q(D("250.00") * payable), "OT_WORKDAY": q(overtime_hours * D("250.00") * D("1.5"))} \
+        == {"BASIC": D("51500.00"), "OT_WORKDAY": D("375.00")}, amounts
+    assert figures(run_id)[hana]["gross"] == D("51875.00")
     reconcile(run_id)
 
 

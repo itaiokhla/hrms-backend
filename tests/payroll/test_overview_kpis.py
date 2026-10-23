@@ -206,3 +206,35 @@ def test_ec_sec_01_three_tenants_and_empty_states(app, kpi_world):
     assert empty["kpis"]["eligible"] == 0 and empty["empty_state"] == "NO_EMPLOYEES"
     assert empty["money"] == [] and empty["statutory"] == [] and empty["deadlines"] == []
     assert overview(w["acme"])["kpis"]["eligible"] == 6 and overview(w["acme"])["empty_state"] is None
+
+
+def test_ec_run_23_salary_survives_an_effective_dated_assignment_change(kpi_world):
+    """Regression (payroll Chrome suite, Alpha's Priya Iyer): an FTE change / transfer starts a new
+    employee-assignment row while the approved compensation stays linked to the earlier row. The run pays the
+    employee from that compensation, so the overview must count her under "With salary", not "Without salary"
+    (3.8 §5.1: eligible employees with an active compensation assignment covering the period)."""
+    from tests.payroll.test_wage_inputs import place
+
+    w = kpi_world
+    emma = w["emp"]["Emma"]
+    old, branch = sql("SELECT id, branch_id FROM employee_assignments WHERE employee_id = :e ORDER BY id DESC LIMIT 1",
+                      e=emma["id"])[0]
+    # A real placement change (FTE 1 -> 0.5, same branch) so the API starts a new assignment row; the same
+    # placement again is refused (ORG_NO_CHANGE).
+    r = w["acme"].post(f"/api/v1/employees/{emma['id']}/assignments",
+                       json={"branch_id": branch, "fte": "0.5", "effective_from": "2026-08-20", "reason": "TRANSFER"})
+    assert r.status_code == 200, r.text
+    place(emma["id"], w["le01"], w["groups"]["IN"])
+    new = sql("SELECT id FROM employee_assignments WHERE employee_id = :e ORDER BY id DESC LIMIT 1", e=emma["id"])[0][0]
+    assert new != old
+    # The compensation is still linked to the earlier assignment row (the situation under test).
+    linked = {a for (a,) in sql("SELECT assignment_id FROM compensation_assignments WHERE employee_id = :e",
+                                e=emma["id"])}
+    assert linked == {old}
+    data = overview(w["acme"])
+    # Unchanged totals (Emma's September population row is now the new assignment): still 2 with salary.
+    assert data["kpis"]["eligible"] == 6
+    assert data["kpis"]["with_salary"] == 2 and data["kpis"]["without_salary"] == 4
+    assert names(w, drill(w["acme"], "with_salary")["items"]) == ["Emma", "Ivan"]
+    assert "Emma" not in names(w, drill(w["acme"], "without_salary")["items"])
+    assert_drilldowns_match(w["acme"], data)

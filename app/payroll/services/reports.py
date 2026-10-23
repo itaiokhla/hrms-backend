@@ -1866,8 +1866,12 @@ def overview_data(db: Session, principal: Principal, f: OverviewFilters) -> Over
     if not population:
         return OverviewData([], runs, [])
     assignment_ids = [a.id for a, _, _ in population]
-    with_salary = {aid for (aid,) in db.query(CompensationAssignment.assignment_id).filter(
-        CompensationAssignment.company_id == cid, CompensationAssignment.assignment_id.in_(assignment_ids),
+    # Compensation is in force per EMPLOYEE (as the run population and the calculation resolve it): an
+    # effective-dated change of the employee's assignment (transfer, FTE change) starts a new assignment row
+    # while the compensation stays linked to the earlier one, and must still count as "with salary".
+    with_salary = {eid for (eid,) in db.query(CompensationAssignment.employee_id).filter(
+        CompensationAssignment.company_id == cid,
+        CompensationAssignment.employee_id.in_(sorted({e.id for _, e, _ in population})),
         CompensationAssignment.status.in_(("ACTIVE", "SCHEDULED", "SUPERSEDED")),
         CompensationAssignment.effective_from <= f.period_to,
         or_(CompensationAssignment.effective_to.is_(None), CompensationAssignment.effective_to >= f.period_from))}
@@ -1892,7 +1896,7 @@ def overview_data(db: Session, principal: Principal, f: OverviewFilters) -> Over
             "employee_name": _employee_name(employee.first_name, employee.last_name),
             "legal_entity_id": assignment.legal_entity_id, "pay_group_id": assignment.pay_group_id,
             "pay_group": group.code, "branch_id": assignment.branch_id, "currency": group.currency,
-            "with_salary": assignment.id in with_salary,
+            "with_salary": employee.id in with_salary,
             "processed": bool(processed),
             "paid": bool(processed) and all(r.id in paid_members for r in processed),
             "on_hold": any(r.hold_type is not None or r.id in held_by_instruction for r in rems),

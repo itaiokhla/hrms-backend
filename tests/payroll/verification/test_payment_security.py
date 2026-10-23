@@ -508,3 +508,92 @@ def test_ec_run_18_switching_payroll_off_preserves_finalized_runs_documents_and_
     # Back ON, run creation works again (the off-cycle run for Emma is created in DRAFT).
     r = admin.post("/api/v1/payroll/runs", json=off_cycle)
     assert r.status_code == 201, r.text
+
+
+# ---------------------------------------------------------------------------
+# Accounting journals of a run and of its reversal (EC-PAY-22)
+# ---------------------------------------------------------------------------
+from tests.payroll.test_reversals import approve as approve_reversal  # noqa: E402
+from tests.payroll.test_reversals import reversal_world  # noqa: E402,F401  (fixture)
+from tests.payroll.test_reversals import reverse as request_reversal  # noqa: E402
+from tests.payroll.test_retro import finalize as finalize_run  # noqa: E402
+from tests.payroll.test_retro import retro_world, runs_world  # noqa: E402,F401  (fixtures)
+
+# Hand-picked GL accounts per line kind (fictitious chart of accounts).
+GL_BY_KIND = {"EARNING": ("6000", "2100"), "DEDUCTION": ("2100", "2200"), "EMPLOYER_CONTRIBUTION": ("6100", "2200"),
+              "REIMBURSEMENT": ("6200", "2100"), "ROUNDING": ("6900", "2100")}
+
+
+def _journal_entries(client, run_id):
+    listed = ok(client.get("/api/v1/payroll/accounting/journals", params={"run_id": run_id}))["items"]
+    assert len(listed) == 1, listed
+    detail = ok(client.get(f"/api/v1/payroll/accounting/journals/{listed[0]['id']}"))
+    entries = {}
+    for line in detail["lines"]:
+        key = (line["component_code"], line["side"], line["account"])
+        entries[key] = entries.get(key, Decimal("0")) + Decimal(line["amount"]["amount"])
+    return listed[0], entries
+
+
+def test_ec_pay_22_a_reversal_posts_the_exact_opposite_journal_balanced_and_only_once(reversal_world):
+    """EC-PAY-22 (accounting ON: journals always balance, generation is idempotent, reversals post opposite
+    entries). Emma and Ivan each have an approved annual CTC of 1200000 (runs_world), so per month:
+    1200000 / 12 = 100000.00; BASIC = 50% = 50000.00; HRA = 40% of BASIC = 20000.00 (EXAMPLE_A). With EARNING
+    lines mapped debit 6000 / credit 2100, the original run's journal holds BASIC debit 6000 = 50000.00 x 2 =
+    100000.00 and credit 2100 = 100000.00, HRA 20000.00 x 2 = 40000.00 on each side. The approved reversal of the
+    whole run, once finalized, posts its own journal where every entry of the original appears on the opposite
+    side of the same account for the same amount (BASIC debit 2100 = 100000.00, credit 6000 = 100000.00), both
+    journals balance per currency, and the finalized event delivered again never posts a second journal."""
+    from tests.payroll.test_wage_inputs import set_setting
+
+    w = reversal_world
+    acme, cid, run_id = w["acme"], w["cid"], w["run"]["id"]
+    set_setting(cid, "payroll.accounting.enabled", True)
+    set_setting(cid, "payroll.accounting.post_on", "FINALIZE")
+    kinds = sql("SELECT DISTINCT component_code, kind FROM payroll_lines WHERE run_id = :r AND kind IN "
+                "('EARNING', 'DEDUCTION', 'EMPLOYER_CONTRIBUTION', 'REIMBURSEMENT', 'ROUNDING')", r=run_id)
+    assert {"BASIC", "HRA"} <= {code for code, _ in kinds}, kinds
+    for code, kind in kinds:
+        debit, credit = GL_BY_KIND[kind]
+        ok(acme.put("/api/v1/payroll/accounting/gl-mappings", json={
+            "component_code": code, "debit_account": debit, "credit_account": credit}))
+
+    posted = ok(acme.post(f"/api/v1/payroll/runs/{run_id}/journal"))
+    assert posted["status"] == "POSTED", posted
+    original, original_entries = _journal_entries(acme, run_id)
+    assert original_entries[("BASIC", "DEBIT", "6000")] == Decimal("100000.00")
+    assert original_entries[("BASIC", "CREDIT", "2100")] == Decimal("100000.00")
+    assert original_entries[("HRA", "DEBIT", "6000")] == Decimal("40000.00")
+    assert original_entries[("HRA", "CREDIT", "2100")] == Decimal("40000.00")
+    for totals in original["totals"].values():
+        assert totals["debit"] == totals["credit"], original["totals"]
+
+    created = request_reversal(acme, run_id)
+    approve_reversal(w["approver"], created["id"])
+    reversal_run = approve_reversal(w["second"], created["id"])["reversal_run_id"]
+    finalize_run(w, reversal_run)  # emits payroll.run.finalized: the accounting subscriber posts the journal
+    reversal, reversal_entries = _journal_entries(acme, reversal_run)
+    assert reversal["status"] == "POSTED" and reversal["trigger"] == "FINALIZE", reversal
+    assert reversal_entries[("BASIC", "DEBIT", "2100")] == Decimal("100000.00")
+    assert reversal_entries[("BASIC", "CREDIT", "6000")] == Decimal("100000.00")
+    assert reversal_entries[("HRA", "DEBIT", "2100")] == Decimal("40000.00")
+    assert reversal_entries[("HRA", "CREDIT", "6000")] == Decimal("40000.00")
+    opposite = {(code, "CREDIT" if side == "DEBIT" else "DEBIT", account): amount
+                for (code, side, account), amount in original_entries.items()}
+    assert reversal_entries == opposite
+    assert {c: (t["debit"], t["credit"]) for c, t in reversal["totals"].items()} == {
+        c: (t["credit"], t["debit"]) for c, t in original["totals"].items()}
+    for totals in reversal["totals"].values():
+        assert totals["debit"] == totals["credit"], reversal["totals"]
+
+    # Idempotent: the finalized event again, and a manual post, return the same journal.
+    from app.payroll.services import outbox
+    from tests.payroll.test_wage_inputs import session
+
+    with session(cid) as (db, _):
+        outbox.emit(db, "payroll.run.finalized", {"run_id": reversal_run})
+        db.commit()
+    again = ok(acme.post(f"/api/v1/payroll/runs/{reversal_run}/journal"))
+    assert again["id"] == reversal["id"]
+    assert sql("SELECT count(*) FROM accounting_journals WHERE company_id = :c AND run_id IN (:a, :b)",
+               c=cid, a=run_id, b=reversal_run)[0][0] == 2
