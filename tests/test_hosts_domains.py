@@ -41,6 +41,7 @@ def _failed_count(email_address: str) -> int:
 # Tenant-restricted login (EC-WL-14, EC-WL-19, EC-WL-21)
 # ---------------------------------------------------------------------------
 def test_wrong_tenant_host_gets_generic_error_and_no_lockout(app, tenants):
+    """EC-WL-14: generic error, the other tenant's failed-login counter untouched."""
     browser = HostClient(app, ACME)
     for _ in range(7):  # more than MAX_FAILED_LOGINS
         r = browser.login("admin@beta.io")
@@ -55,6 +56,7 @@ def test_wrong_tenant_host_gets_generic_error_and_no_lockout(app, tenants):
 
 
 def test_unknown_host_cannot_sign_in_and_forged_host_is_platform(app, tenants):
+    """EC-WL-19 and EC-WL-21."""
     assert HostClient(app, "evil.example.com").login("admin@acme.io").status_code == 401
     # Without the proxy key the host header is ignored: the request counts as the platform host.
     forged = HostClient(app, BETA, proxy_key=None)
@@ -126,6 +128,7 @@ def test_reset_and_invitation_are_tenant_restricted(app, tenants):
 
 
 def test_forged_host_header_never_changes_links(app, tenants):
+    """EC-WL-19: links use only the verified primary host from the database."""
     a, _ = tenants
     emp = create_employee(a, "Victim")
     r = a.post("/api/v1/users/invite", headers={"Host": "evil.example.com", "X-Forwarded-Host": "evil.example.com",
@@ -144,6 +147,7 @@ def _domain_records(domain: dict, cname: str = "tenants.test.local") -> dict:
 
 
 def test_custom_domain_validation_and_entitlement(app, tenants):
+    """EC-WL-16: claimed, reserved, platform and public-suffix domains are rejected with the reason."""
     a, b = tenants
     assert a.post("/api/v1/domains", json={"hostname": "hr.acme.com"}).status_code == 403  # trial plan
     ops = platform_admin(app)
@@ -166,6 +170,7 @@ def test_custom_domain_validation_and_entitlement(app, tenants):
 
 
 def test_domain_lifecycle_dns_tls_broken_disabled(app, tenants):
+    """EC-WL-17: DNS_BROKEN, DISABLED after 14 days, sessions revoked, neutral page."""
     a, _ = tenants
     ops = platform_admin(app)
     set_plan(ops, a.company_id, "professional")
@@ -215,6 +220,7 @@ def test_domain_lifecycle_dns_tls_broken_disabled(app, tenants):
 
 
 def test_domain_removal_revokes_sessions_and_needs_fresh_verification(app, tenants):
+    """EC-WL-18: removal revokes the host's sessions; re-adding needs fresh verification."""
     a, b = tenants
     ops = platform_admin(app)
     set_plan(ops, a.company_id, "professional")
@@ -251,6 +257,7 @@ def test_pending_domain_fails_after_window(app, tenants):
 # Handoff to an enforced custom domain (EC-WL-15)
 # ---------------------------------------------------------------------------
 def test_login_handoff_single_use_bound_to_host_and_agent(app, tenants):
+    """EC-WL-15: handoff code exchanged on the primary host; replayed or expired codes are rejected."""
     a, _ = tenants
     ops = platform_admin(app)
     set_plan(ops, a.company_id, "professional")
@@ -322,6 +329,7 @@ def test_invitation_email_is_branded_with_safe_links(app, tenants):
 
 
 def test_template_overrides_are_sandboxed_and_allow_listed(app, tenants):
+    """EC-WL-24: an unknown placeholder blocks saving."""
     a, _ = tenants
     ops = platform_admin(app)
     assert a.put("/api/v1/email-templates/auth.invite", json={"intro": "Hi"}).status_code == 403  # trial plan
@@ -343,6 +351,7 @@ def test_template_overrides_are_sandboxed_and_allow_listed(app, tenants):
 
 
 def test_broken_override_at_send_time_falls_back(app, tenants):
+    """EC-WL-24: a render failure at send time uses the default template."""
     from app.services import email_templates
 
     brand = {"display_name": "Acme", "product_name": "HRMS", "show_powered_by": False}
@@ -352,6 +361,8 @@ def test_broken_override_at_send_time_falls_back(app, tenants):
 
 
 def test_payslip_email_never_contains_amounts():
+    """EC-WL-25: no amounts by default (the ON case of payslip.email_include_net_pay is asserted by
+    tests/payroll/test_publication.py::test_email_with_net_pay_and_ec_doc_14_attachment_only_with_pdf_protection)."""
     from app.services import email_templates
 
     template = email_templates.TEMPLATES["payroll.payslip_published"]
@@ -362,6 +373,7 @@ def test_payslip_email_never_contains_amounts():
 
 
 def test_domain_moved_to_another_tenant_never_shows_the_previous_brand(app, tenants):
+    """EC-WL-18: a removed domain shows the neutral page."""
     a, b = tenants
     ops = platform_admin(app)
     set_plan(ops, a.company_id, "professional")

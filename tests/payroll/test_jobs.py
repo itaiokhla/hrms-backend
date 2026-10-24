@@ -144,6 +144,37 @@ def test_inline_mode_runs_the_job_after_the_enqueuing_transaction_commits(three_
     assert (row.status, row.result, row.attempts, row.locked_by) == ("SUCCEEDED", {"echo": "hello"}, 1, None)
 
 
+def test_inline_jobs_queued_before_a_savepoint_run_after_the_outer_commit(three_companies):
+    """Regression (F-68): SQLAlchemy emits after_commit when a SAVEPOINT is released; the inline runner used to
+    claim then (the outer transaction still open, so nothing was visible) and dropped the job for good. A job
+    queued before a released savepoint, inside one, or after one runs once, after the outermost commit."""
+    company = three_companies["A"].company_id
+    with tenant(company) as db:
+        before = jobs.enqueue(db, company_id=company, type="testjobs.echo", payload={"value": "before"})
+        with db.begin_nested():
+            inside = jobs.enqueue(db, company_id=company, type="testjobs.echo", payload={"value": "inside"})
+        assert CALLS == []  # nothing runs when the savepoint is released
+        with db.begin_nested():
+            pass
+        after = jobs.enqueue(db, company_id=company, type="testjobs.echo", payload={"value": "after"})
+        assert CALLS == []
+        db.commit()
+    assert sorted(c[1] for c in CALLS) == sorted([before.id, inside.id, after.id])
+    assert {_job(j.id).status for j in (before, inside, after)} == {"SUCCEEDED"}
+
+
+def test_a_job_queued_in_a_rolled_back_savepoint_never_runs(three_companies):
+    company = three_companies["A"].company_id
+    with tenant(company) as db:
+        kept = jobs.enqueue(db, company_id=company, type="testjobs.echo", payload={"value": "kept"})
+        savepoint = db.begin_nested()
+        dropped = jobs.enqueue(db, company_id=company, type="testjobs.echo", payload={"value": "dropped"})
+        dropped_id = dropped.id
+        savepoint.rollback()
+        db.commit()
+    assert [c[1] for c in CALLS] == [kept.id] and _job(dropped_id) is None
+
+
 def test_a_rolled_back_enqueue_leaves_no_job_and_runs_nothing(three_companies):
     company = three_companies["A"].company_id
     with tenant(company) as db:

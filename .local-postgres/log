@@ -309,3 +309,21 @@
 2026-10-22 18:35:57.015 GMT [20780] LOG:  checkpoint complete: wrote 10 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.981 s, sync=0.001 s, total=0.992 s; sync files=0, longest=0.000 s, average=0.000 s; distance=20 kB, estimate=6090 kB; lsn=0/50C0FB0, redo lsn=0/50C0F78
 2026-10-23 11:42:53.598 GMT [20780] LOG:  checkpoint starting: time
 2026-10-23 11:42:55.551 GMT [20780] LOG:  checkpoint complete: wrote 18 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.894 s, sync=0.001 s, total=1.955 s; sync files=0, longest=0.000 s, average=0.000 s; distance=50 kB, estimate=5486 kB; lsn=0/50CDAE0, redo lsn=0/50CDAA8
+2026-10-23 18:00:02.079 GMT [8456] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-23 18:00:02.081 GMT [8456] LOG:  listening on IPv4 address "127.0.0.1", port 60063
+2026-10-23 18:00:02.165 GMT [19840] LOG:  database system was interrupted; last known up at 2026-10-23 11:42:55 GMT
+2026-10-23 18:00:02.170 GMT [19840] LOG:  database system was not properly shut down; automatic recovery in progress
+2026-10-23 18:00:02.200 GMT [19840] LOG:  redo starts at 0/50CDAA8
+2026-10-23 18:00:02.200 GMT [19840] LOG:  invalid record length at 0/50CDB90: expected at least 24, got 0
+2026-10-23 18:00:02.200 GMT [19840] LOG:  redo done at 0/50CDB58 system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+2026-10-23 18:00:02.225 GMT [18752] LOG:  checkpoint starting: end-of-recovery immediate wait
+2026-10-23 18:00:02.246 GMT [18752] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.008 s, sync=0.001 s, total=0.021 s; sync files=0, longest=0.000 s, average=0.000 s; distance=0 kB, estimate=0 kB; lsn=0/50CDB90, redo lsn=0/50CDB90
+2026-10-23 18:00:02.307 GMT [8456] LOG:  database system is ready to accept connections
+2026-10-23 18:00:02.560 GMT [8456] LOG:  received SIGHUP, reloading configuration files
+2026-10-23 18:00:41.901 GMT [20264] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-23 18:05:02.620 GMT [18752] LOG:  checkpoint starting: time
+2026-10-23 18:05:23.768 GMT [18752] LOG:  checkpoint complete: wrote 196 buffers (1.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=21.127 s, sync=0.001 s, total=21.150 s; sync files=0, longest=0.000 s, average=0.000 s; distance=1220 kB, estimate=1220 kB; lsn=0/51FEF88, redo lsn=0/51FEF50
+2026-10-23 23:00:07.292 GMT [8456] LOG:  could not reserve shared memory region (addr=000001BDB5D70000) for child 00000000000012B8: error code 487
+2026-10-24 12:51:51.561 GMT [18752] LOG:  checkpoint starting: time
+2026-10-24 12:51:51.685 GMT [18752] LOG:  checkpoint complete: wrote 1 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.110 s, sync=0.001 s, total=0.126 s; sync files=0, longest=0.000 s, average=0.000 s; distance=6 kB, estimate=1099 kB; lsn=0/5200A10, redo lsn=0/52009D8

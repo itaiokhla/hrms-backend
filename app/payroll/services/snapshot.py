@@ -38,6 +38,11 @@ What a snapshot holds and where it comes from (one employee, one run):
 * approved overtime of the attendance cycle, holiday/weekly-off work and shifts (only while one of their
   switches is ON somewhere in the period), approved unpaid tasks of the period (attribution per
   TASK_PAY_POLICY) with the rate card;
+* incentive plans (``payroll.incentives.enabled`` ON, decision I-22): in a period that ends a payout window of
+  the employee's INCENTIVE_PLAN the ``incentive`` block (window, the employee's target: own, else the grade's)
+  and the approved achievement measures (wage inputs with source INCENTIVE_PLAN) targeted inside the window;
+  in any other period of an ON plan the measures are left out (unreserved: they wait for the payout run). With
+  the switch OFF or no plan, the period's measures are frozen as they are and the engine reports them unpaid;
 * approved wage inputs targeting the period, WITH_PAYROLL claims, loan and advance instalments due,
   approved arrears instalments (``retro.arrears_for_snapshot``); a BONUS / CORRECTION off-cycle run keeps
   only the structure lines and inputs of its selected components (``off_cycle.selected_components``);
@@ -97,6 +102,7 @@ from app.models.payroll_config import (
 from app.models.time_inputs import EmployeeSuspension
 from app.models.variable_inputs import ReimbursementClaim
 from app.payroll import calendar as paycal
+from app.payroll import incentives
 from app.payroll import packs
 from app.payroll import policy_types as pt
 from app.payroll import settings_registry as reg
@@ -943,12 +949,50 @@ class _Builder:
                                  "rate": format(rate, "f"), "source": source, "note": FX_ROUNDING_NOTE})
         return converted, self.run.currency
 
+    def incentive_json(self) -> Optional[dict]:
+        """The payout window this run pays and the employee's target, or None (switch OFF, no plan, or a period
+        that ends no window). Sets ``self.incentive_window``: None means the period's measures are frozen as they
+        are, a date pair the window whose measures are paid, and ``False`` that measures wait for a later run."""
+        self.incentive_window: Any = None
+        policy = self.policies.get(incentives.POLICY_TYPE)
+        if self.settings.get(incentives.SWITCH) is not True or policy is None:
+            return None
+        fields = policy.get("fields") or {}
+        tax_year_start = self.period_json().get("tax_year_start")
+        try:
+            window = incentives.payout_window(str(fields.get("payout_frequency") or "MONTHLY"), self.start, self.end,
+                                              date.fromisoformat(tax_year_start) if tax_year_start else None)
+        except incentives.IncentiveError as error:
+            self.issue("CONFIG_INVALID", "BLOCKING", f"The incentive plan cannot be applied: {error.message}",
+                       key="INCENTIVE_PLAN", policy_type=incentives.POLICY_TYPE)
+            return None
+        if window is None:
+            self.incentive_window = False
+            return None
+        self.incentive_window = window
+        placement = self.facts_placement.row if self.facts_placement is not None else None
+        grade_id = placement.grade_id if placement is not None else None
+        target = incentives.resolve_target(fields.get("targets") or [], employee_id=self.eid, grade_id=grade_id)
+        return {"window_start": window[0].isoformat(), "window_end": window[1].isoformat(),
+                "target": _plain(target.value), "target_source": target.source, "grade_id": grade_id}
+
     def wage_inputs_json(self) -> List[dict]:
         from app.payroll.services import wage_inputs
 
         result = []
-        for item in wage_inputs.approved_inputs(self.db, self.cid, self.eid, self.start, self.end,
+        window = getattr(self, "incentive_window", None)
+        lower = min(self.start, window[0]) if window else self.start
+        for item in wage_inputs.approved_inputs(self.db, self.cid, self.eid, lower, self.end,
                                                 run_employee_id=self.row.id):
+            target_start = date.fromisoformat(item["target_period"]["start"])
+            target_end = date.fromisoformat(item["target_period"]["end"])
+            if item.get("source") == incentives.MEASURE_SOURCE and window is not None:
+                # An ON plan pays the measures of its window in the run that ends it; others wait unreserved.
+                if window is False or not incentives.measure_in_window(target_start, target_end, window[0],
+                                                                         self.end):
+                    continue
+            elif target_start < self.start:
+                continue
             amount, units, rate = _dec(item.get("amount")), _dec(item.get("units")), _dec(item.get("rate"))
             if amount is None and units is not None and rate is not None:
                 with localcontext(CALC_CONTEXT):
@@ -1295,6 +1339,7 @@ class _Builder:
             "overtime_entries": self.overtime_json(),
             "non_working_day_work": self.non_working_day_work(days),
             "shifts": self.shifts_json(days),
+            "incentive": self.incentive_json(),
             "wage_inputs": self.wage_inputs_json(),
             "arrears": self.arrears_json(),
             "reimbursements": self.claims_json(),
@@ -1312,6 +1357,8 @@ class _Builder:
         tasks = self.tasks_json()
         if tasks is not None:
             data["tasks"] = tasks
+        if data["incentive"] is None:
+            data.pop("incentive")
         data["pack_state"] = self.pack_state_json()
         self.apply_selection(data)
         if not self.probe:

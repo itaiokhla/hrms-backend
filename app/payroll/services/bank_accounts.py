@@ -778,6 +778,16 @@ def _message(db: Session, row: BankAccount, event: str, change: Optional[BankAcc
 
 
 def _notify(db: Session, row: BankAccount, event: str, change: Optional[BankAccountChangeRequest] = None) -> None:
+    from app.payroll.services import notifications as payroll_notifications
+
+    if event == "PAYMENT_FAILED":
+        # A payment status message (notify.payroll.payment_status_to_employee): OFF sends nothing; the account is
+        # FAILED either way and the employee's own page asks for new details.
+        if not payroll_notifications.payment_status_enabled(db, row.company_id, row.employee_id):
+            return
+    else:
+        # Bank change alerts are locked ON (notify.payroll.bank_change_alert): resolved, never silenced.
+        payroll_notifications.bank_change_alert_required(db, row.company_id)
     employee = None
     if row.employee_id is not None:
         employee = db.query(Employee).filter(Employee.company_id == row.company_id,

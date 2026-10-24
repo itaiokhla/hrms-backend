@@ -20,6 +20,13 @@
   mismatch, negative amount or units where not allowed, duplicates, formula-like text) and nothing is
   committed while any row is bad (EC-VAR-16); the commit runs as a background job. Cells are only
   ever read as text; the result file escapes formula-like cells.
+* Achievement measures of incentive plans (3.1 §5.9, decision I-22) are inputs with source INCENTIVE_PLAN:
+  ``units`` hold the measure (no amount, rate or recurrence) on the component of the employee's active
+  INCENTIVE_PLAN, entered only while payroll.incentives.enabled is ON (``payroll.wage_inputs.enabled`` does not
+  govern them). Like every units input they always go through the approvals engine; the engine turns the
+  approved measures of a payout window into the incentive line (``app.payroll.incentives``). A negative input
+  (clawback, EC-VAR-12) on the plan's component is accepted only within the plan's clawback_window_days of a
+  finalized incentive payout (pay date) and up to what those payouts paid, less the clawbacks already entered.
 * Exactly once: run lock reserves approved inputs (``reserve_inputs``), finalization consumes them
   (``consume_inputs``) and a cancelled or reopened run releases its reservations (``release_inputs``)
   (EC-VAR-01). ``approved_inputs`` is the read API of the snapshot builder.
@@ -54,6 +61,7 @@ from app.models.variable_inputs import LIVE_WAGE_INPUT_STATUSES, WageInput, Wage
 from app.payroll import audit as payroll_audit
 from app.payroll import calendar as paycal
 from app.payroll import currencies
+from app.payroll import incentives
 from app.payroll import state_machines as sm
 from app.payroll.money import amount_str, decimal_str, is_storable, to_decimal
 from app.payroll.money_errors import MoneyError
@@ -76,7 +84,7 @@ MAX_RECURRENCE = 24
 MAX_IMPORT_ROWS = 5000
 MAX_IMPORT_BYTES = 2 * 1024 * 1024
 IMPORT_COLUMNS = ("employee_code", "component_code", "amount", "units", "rate", "currency", "period_start",
-                  "period_end", "external_ref", "reason")
+                  "period_end", "external_ref", "reason", "measure")
 REQUIRED_COLUMNS = ("employee_code", "component_code", "period_start", "period_end")
 FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 POSSIBLE_DUPLICATE = "POSSIBLE_DUPLICATE"
@@ -499,11 +507,114 @@ def _check_values(data: InputData, comp: ComponentRef, place: Placement) -> Tupl
     return currency, fx_rule
 
 
+def _measure_value(data: InputData) -> None:
+    """An achievement measure is a positive number in ``units``: no amount, rate, currency conversion or recurrence."""
+    if data.units is None or data.amount is not None or data.rate is not None:
+        raise bad_request("An achievement measure is a number (measure); it has no amount or rate.",
+                          "MEASURE_REQUIRED")
+    if data.recurrence_until is not None:
+        raise bad_request("Achievement measures are entered per period; they do not recur.", "RECURRENCE_NOT_ALLOWED")
+    if data.convert_currency:
+        raise bad_request("An achievement measure is not money; it has no currency to convert.", "MEASURE_REQUIRED")
+    try:
+        incentives.check_measure(data.units)
+    except incentives.IncentiveError as error:
+        raise bad_request(error.message, error.code)
+
+
+def incentive_plan_fields(db: Session, company_id: int, employee_id: int, on: date) -> dict:
+    """The fields of the employee's active INCENTIVE_PLAN on ``on`` (409 INCENTIVE_PLAN_MISSING when none)."""
+    from app.payroll.services import policies as policy_service
+
+    found = policy_service.resolve_for_employee(db, company_id, incentives.POLICY_TYPE, employee_id, on)
+    if found.get("status") != "RESOLVED":
+        raise conflict(f"No active incentive plan applies to this employee on {on.isoformat()} "
+                       f"({str(found.get('status', '')).replace('_', ' ').lower()}).", "INCENTIVE_PLAN_MISSING")
+    return dict((found.get("version") or {}).get("fields") or {})
+
+
+def _check_measure(db: Session, company_id: int, data: InputData, place: Placement) -> Checked:
+    """An achievement measure of the employee's incentive plan (decision I-22)."""
+    if not resolve_setting(db, company_id, incentives.SWITCH, on=data.period_end, pay_group_id=place.pay_group_id):
+        raise conflict("Incentive plans are switched off for this pay group.", "INCENTIVES_DISABLED")
+    fields = incentive_plan_fields(db, company_id, data.employee_id, data.period_end)
+    source = fields.get("measure_source") or "IMPORT"
+    if source not in incentives.SUPPORTED_MEASURE_SOURCES:
+        raise conflict(f"The employee's incentive plan reads {source} measures, which are not supported.",
+                       "INCENTIVE_MEASURE_SOURCE_UNSUPPORTED")
+    plan_component = str(fields.get("component") or "INCENTIVE")
+    if data.component_code != plan_component:
+        raise bad_request(f"The employee's incentive plan pays {plan_component}; measures are entered on that "
+                          "component.", "INCENTIVE_COMPONENT_MISMATCH")
+    comp = component(db, company_id, data.component_code, data.period_end)
+    _measure_value(data)
+    check_target_period(db, company_id, place.pay_group, data.period_start, data.period_end)
+    if data.external_ref and _external_ref_taken(db, company_id, data.employee_id, comp.id, data.period_start,
+                                                 data.external_ref):
+        raise conflict(f"External reference {data.external_ref} is already used for this employee, component and "
+                       f"period ({data.period_start.isoformat()}).", "DUPLICATE_EXTERNAL_REF")
+    return Checked(data, place, comp, place.currency, None, [(data.period_start, data.period_end)])
+
+
+def _check_clawback(db: Session, company_id: int, data: InputData, comp: ComponentRef, place: Placement, *,
+                    exclude_id: Optional[int] = None) -> None:
+    """A negative input on the component of the employee's incentive plan claws back an incentive (3.1 §5.9
+    clawback_window_days, EC-VAR-12): only within the window after a finalized payout (its pay date), and never
+    more than the payouts of the window less the clawbacks already entered. Without an ON plan for that component
+    the component's own rules apply."""
+    from app.models.pay_runs import PayPeriod, PayrollLine, PayrollRun, PayrollRunEmployee
+    from app.payroll.services import policies as policy_service
+
+    if data.amount is None or data.amount >= 0:
+        return
+    if not resolve_setting(db, company_id, incentives.SWITCH, on=data.period_end, pay_group_id=place.pay_group_id):
+        return
+    found = policy_service.resolve_for_employee(db, company_id, incentives.POLICY_TYPE, data.employee_id,
+                                                data.period_end)
+    if found.get("status") != "RESOLVED":
+        return
+    fields = (found.get("version") or {}).get("fields") or {}
+    if str(fields.get("component") or "INCENTIVE") != comp.code:
+        return
+    days = int(fields.get("clawback_window_days") or 0)
+    if days <= 0:
+        raise conflict("The employee's incentive plan does not allow clawbacks (clawback window 0 days).",
+                       "CLAWBACK_NOT_ALLOWED")
+    since = data.period_end - timedelta(days=days)
+    paid = (db.query(PayrollLine.amount)
+            .join(PayrollRunEmployee, and_(PayrollRunEmployee.company_id == PayrollLine.company_id,
+                                           PayrollRunEmployee.id == PayrollLine.run_employee_id))
+            .join(PayrollRun, and_(PayrollRun.company_id == PayrollLine.company_id, PayrollRun.id == PayrollLine.run_id))
+            .join(PayPeriod, and_(PayPeriod.company_id == PayrollRun.company_id, PayPeriod.id == PayrollRun.pay_period_id))
+            .filter(PayrollLine.company_id == company_id, PayrollLine.component_code == comp.code,
+                    PayrollLine.trace["method"].astext == "INCENTIVE_PLAN", PayrollLine.currency == place.currency,
+                    PayrollRunEmployee.employee_id == data.employee_id,
+                    PayrollRun.status.in_(sm.RUN_FINALIZED_STATES),
+                    PayPeriod.pay_date >= since, PayPeriod.pay_date <= data.period_end)
+            .all())
+    total = sum((Decimal(a) for (a,) in paid), Decimal(0))
+    if total <= 0:
+        raise conflict(f"No incentive was paid in the {days} days before {data.period_end.isoformat()}; the "
+                       "clawback window of the plan is closed.", "CLAWBACK_WINDOW_CLOSED")
+    earlier = (db.query(WageInput.amount)
+               .filter(WageInput.company_id == company_id, WageInput.employee_id == data.employee_id,
+                       WageInput.component_id == comp.id, WageInput.amount < 0,
+                       WageInput.status.in_(LIVE_WAGE_INPUT_STATUSES), WageInput.target_period_end >= since,
+                       WageInput.id != (exclude_id or 0))
+               .all())
+    taken = sum((-Decimal(a) for (a,) in earlier), Decimal(0))
+    if -data.amount + taken > total:
+        raise conflict(f"The clawback exceeds the incentive paid in the window: {amount_str(total, place.currency)} "
+                       f"paid, {amount_str(taken, place.currency)} already clawed back.", "CLAWBACK_EXCEEDS_PAYOUT")
+
+
 def check_input(db: Session, principal: Principal, data: InputData, *, permission: str = EDIT) -> Checked:
     """Every validation of one input (and its recurrence), without writing anything."""
     company_id = principal.company_id
     place = scoped_placement(db, principal, permission, data.employee_id,
                              placement_day(db, company_id, data.employee_id, data.period_start, data.period_end))
+    if data.source == incentives.MEASURE_SOURCE:
+        return _check_measure(db, company_id, data, place)
     # PERIOD-grain switch: the value in force on the period end applies to the whole period (3.1 §2.2, EC-CFG-02).
     if not resolve_setting(db, company_id, "payroll.wage_inputs.enabled", on=data.period_end,
                            pay_group_id=place.pay_group_id):
@@ -512,6 +623,7 @@ def check_input(db: Session, principal: Principal, data: InputData, *, permissio
     # component that starts during the period (e.g. a tenant provisioned mid-period) accepts inputs for it.
     comp = component(db, company_id, data.component_code, data.period_end)
     currency, fx_rule = _check_values(data, comp, place)
+    _check_clawback(db, company_id, data, comp, place)
     check_target_period(db, company_id, place.pay_group, data.period_start, data.period_end)
     periods = [(data.period_start, data.period_end)]
     if data.recurrence_until is not None:
@@ -689,7 +801,11 @@ def update_input(db: Session, principal: Principal, input_id: int, changes: Mapp
     place = placement(db, principal.company_id, row.employee_id, placement_day(
         db, principal.company_id, row.employee_id, row.target_period_start, row.target_period_end))
     comp = component(db, principal.company_id, row.component_code, row.target_period_end)
-    _check_values(data, comp, place)
+    if row.source == incentives.MEASURE_SOURCE:
+        _measure_value(data)
+    else:
+        _check_values(data, comp, place)
+        _check_clawback(db, principal.company_id, data, comp, place, exclude_id=row.id)
     if data.external_ref and data.external_ref != row.external_ref and _external_ref_taken(
             db, principal.company_id, row.employee_id, row.component_id, row.target_period_start, data.external_ref,
             exclude_id=row.id):
@@ -1032,7 +1148,9 @@ def template_csv() -> str:
     writer = csv.writer(out)
     writer.writerow(IMPORT_COLUMNS)
     writer.writerow(["E0001", "BONUS", "5000.00", "", "", "INR", "2026-10-01", "2026-10-31", "BONUS-2026-10-E0001",
-                     "Festival bonus"])
+                     "Festival bonus", ""])
+    writer.writerow(["E0001", "INCENTIVE", "", "", "", "", "2026-10-01", "2026-10-31", "SALES-2026-10-E0001",
+                     "Achievement measure for the incentive plan", "118.5"])
     return out.getvalue()
 
 
@@ -1053,6 +1171,13 @@ def _validate_rows(db: Session, principal: Principal, records: Sequence[Dict[str
         amount = _decimal_cell(record.get("amount", ""), "amount", errors)
         units = _decimal_cell(record.get("units", ""), "units", errors)
         rate = _decimal_cell(record.get("rate", ""), "rate", errors)
+        measure = _decimal_cell(record.get("measure", ""), "measure", errors)
+        source = "IMPORT"
+        if measure is not None:
+            # An achievement measure of an incentive plan (decision I-22): the measure goes into units.
+            if amount is not None or units is not None or rate is not None:
+                errors.append("a measure row has no amount, units or rate")
+            units, source = measure, incentives.MEASURE_SOURCE
         start = _date_cell(record.get("period_start", ""), "period_start", errors)
         end = _date_cell(record.get("period_end", ""), "period_end", errors)
         if units is not None and units < 0:
@@ -1075,7 +1200,7 @@ def _validate_rows(db: Session, principal: Principal, records: Sequence[Dict[str
             data = InputData(employee_id=employee_id, component_code=record["component_code"], period_start=start,
                              period_end=end, amount=amount, units=units, rate=rate,
                              currency=record.get("currency") or None, reason=reason, external_ref=external_ref,
-                             source="IMPORT")
+                             source=source)
             try:
                 checked = check_input(db, principal, data, permission=permission)
             except AppError as exc:
@@ -1092,7 +1217,7 @@ def _validate_rows(db: Session, principal: Principal, records: Sequence[Dict[str
                           "amount": decimal_str(amount) if amount is not None else None,
                           "units": decimal_str(units) if units is not None else None,
                           "rate": decimal_str(rate) if rate is not None else None, "currency": checked.currency,
-                          "external_ref": external_ref, "reason": reason}
+                          "external_ref": external_ref, "reason": reason, "source": source}
         results.append({"row": number, "ok": not errors, "errors": errors, "values": values if not errors else None,
                         "employee_code": record.get("employee_code", "")})
     return results
@@ -1229,7 +1354,7 @@ def _run_import(ctx: jobs.JobContext) -> dict:
             amount=Decimal(values["amount"]) if values["amount"] is not None else None,
             units=Decimal(values["units"]) if values["units"] is not None else None,
             rate=Decimal(values["rate"]) if values["rate"] is not None else None, currency=values["currency"],
-            reason=values["reason"], external_ref=values["external_ref"], source="IMPORT",
+            reason=values["reason"], external_ref=values["external_ref"], source=values.get("source") or "IMPORT",
         )
         checked = check_input(db, principal, data_row, permission=IMPORT)
         inserted = _insert(db, principal, checked, company_id=ctx.company_id, import_id=row.id,

@@ -59,6 +59,7 @@ def doc_status(document_id):
 # Generation (EC-DOC-04, EC-DOC-16)
 # ---------------------------------------------------------------------------
 def test_ec_doc_04_generation_is_idempotent_per_run_employee_and_version(docs_world):
+    """EC-REL-03: a redelivered finalized event creates no duplicate document."""
     from app.payroll.services import outbox
 
     w = docs_world
@@ -95,6 +96,7 @@ def test_outbox_event_generates_and_publishes_payslips(docs_world):
 
 
 def test_ec_doc_16_storage_outage_retries_then_fails_and_never_leaves_partial_files(docs_world, monkeypatch):
+    """EC-REL-05: object storage unavailable, the job retries with backoff, FAILED is shown and Retry works."""
     from app.core import storage
     from app.models.pay_runs import PayrollRun
     from app.payroll.services import documents, publication

@@ -58,16 +58,104 @@ KNOWN_GAPS = {
                  "Manual/staging per 04-edge-cases.",
     "EC-SEC-16": "Not implemented: documents carry retention_until (app/models/pay_documents.py) but there is no "
                  "legal-hold flag and no retention-deletion job to conflict with it. Manual/staging per 04-edge-cases.",
+    # Checked against the code on 24 Oct 2026 (gate-ec): applicable but not implemented, or only partly.
+    "EC-WL-23": "Not implemented: there is no custom sending domain; every e-mail leaves from the platform sender "
+                "(settings.smtp_from) with the tenant's display name and Reply-To (app/services/email_service.py), so "
+                "there is no domain verification that could lapse.",
+    "EC-ORG-05": "Partial: redenomination is not supported. After the entity's first finalized run (legacy or v2) "
+                 "the base currency is locked (409 ORG_CURRENCY_LOCKED, tests/payroll/verification/test_edge_cases_gap"
+                 ".py::test_ec_org_04_a_finalized_v2_run_locks_the_entity_country_and_currency); an effective-dated "
+                 "currency change with new periods in the new currency does not exist.",
+    "EC-ORG-08": "Partial: org.allow_concurrent_assignments exists, but the ON behaviour (separate runs and payslips per "
+                 "assignment) is not implemented: change_placement always refuses a non-primary placement "
+                 "(ORG_CONCURRENT_DISABLED, asserted in tests/test_org_documents.py), whatever the setting.",
+    "EC-ORG-16": "Not implemented: partners have no operator access into a tenant (the partner console shows aggregate "
+                 "counts only, tests/test_partner_admins.py), so a partner cannot prepare or approve a run; the "
+                 "separation of duties for tenant users is EC-RUN-05.",
+    "EC-ORG-17": "Not implemented: there are no partner access grants into a tenant (no grant model, no expiry), so no "
+                 "grant can expire under a running job.",
+    "EC-ORG-18": "Not implemented: there are no partner access grants to revoke; the closest control (a suspended "
+                 "partner or a re-scoped partner account loses its session at once) is asserted in tests/"
+                 "test_partner_admins.py::test_suspended_partner_and_rescoped_accounts_lose_access_at_once.",
+    "EC-ORG-19": "Not implemented: there is no platform support-access grant (approval, time limit, masked payroll). "
+                 "Access without approval is impossible today because the platform principal reaches no tenant HR "
+                 "route at all (EC-ORG-20, tests/test_tenant_isolation.py::test_platform_admin_manages_tenants_without"
+                 "_hr_data).",
+    "EC-ORG-24": "Not implemented: a placement carries one cost center (employee_assignments.cost_center_id); "
+                 "percentage splits across cost centers do not exist, so there is no 100.00% total to validate.",
+    "EC-CFG-21": "Not implemented as specified: the impact preview of a past-dated change is the synchronous arrears "
+                 "detection with preview=true (POST /api/v1/payroll/arrears-proposals/detect); there is no background "
+                 "job with progress for a large tenant.",
+    "EC-STA-06": "Pack-defined: no verified country pack has tax regimes (the IN pack is a FIXTURE and AE/US are DRAFT, "
+                 "decision I-07; the fictional ZZ pack has none), so whether a mid-year regime change is allowed and how "
+                 "the projection is recomputed cannot be asserted without inventing a statutory rule.",
+    "EC-COR-10": "Pack-defined: which tax year arrears belong to and any relief come from the country pack; no verified "
+                 "pack defines them (decision I-07). The neutral part (arrears count in the YTD of the tax year of the "
+                 "paying period) is asserted by test_ec_sta_22 in tests/payroll/verification/test_edge_cases_gap.py.",
+    "EC-COR-16": "No single test walks one run through cancel, reverse, correct, reissue and partial settlement. Each "
+                 "link is asserted on its own: reversal links and history (tests/payroll/test_reversals.py), "
+                 "payment-only reissue referencing the original lines (tests/payroll/test_off_cycle.py), arrears runs "
+                 "(tests/payroll/test_retro.py), PARTIALLY_PAID settlement (tests/payroll/test_payment_batches.py).",
+    "EC-MIG-09": "The blank-location backfill (one 'Main' branch, country_confirmed = false) is migration 0005's "
+                 "upgrade step; the test database is created at head, where later guards (0008 pay-group guard) refuse "
+                 "its raw inserts, so it can only be exercised by a rehearsal from a pre-0005 database. The "
+                 "unconfirmed-country banner of new tenants is EC-ORG-23.",
+    "EC-MIG-11": "Not reached: the legacy payroll routes are deliberately still live for existing records (decisions "
+                 "I-03 and I-11; tests/test_route_shadowing.py keeps v2 routes ahead of them); the read-only stage and "
+                 "410 Gone have not been scheduled.",
+    "EC-REL-06": "Not implemented: payslip e-mail delivery is recorded per document (document_notifications SENT / "
+                 "FAILED, with retry), but there is no provider bounce feedback and no bouncing-address flag on users.",
+    "EC-REL-08": "Not implemented as specified: imports are capped (wage inputs 5,000 rows / 2 MB, "
+                 "app/payroll/services/wage_inputs.py MAX_IMPORT_ROWS) with per-row errors; a streamed 50,000-row "
+                 "import does not exist.",
+}
+
+# Browser-only checks (no backend assertion is possible), specified for the Chrome stage (gate-ec, 24 Oct 2026).
+CHROME_CHECKS = {
+    "EC-WL-02": "Tenant with only a light logo; switch to dark mode: the sidebar and top bar show the light logo on a "
+                "white rounded chip (container background white, border-radius > 0), no broken image.",
+    "EC-WL-13": "Display name of 120 characters with emoji and an Arabic company name: the sidebar truncates with an "
+                "ellipsis and shows the full name in a tooltip; the payslip PDF shows the full legal name; the "
+                "Arabic name renders right-to-left.",
+    "EC-UX-01": "User A on the pay runs page; an admin removes A's payroll role in another browser; on window focus "
+                "(or within the 5-minute poll) A's actions disappear or AccessDenied shows; an action clicked before "
+                "that gets 403 with a toast and changes nothing.",
+    "EC-UX-02": "Role without payroll:run:read opens /payroll/runs: AccessDenied page; forbidden buttons are absent "
+                "(not just disabled); a run id of another tenant in the URL shows the not-found view (API 404).",
+    "EC-UX-04": "Two tabs edit the same setting or structure; save in tab 1, then in tab 2: a 409 dialog with the "
+                "difference and Reload; Reload shows tab 1's value.",
+    "EC-UX-05": "Start a calculation (or a report export) and reload the page mid-way: the progress resumes from the "
+                "same job id and completes once.",
+    "EC-UX-06": "While a run is open, change one of its inputs from another session: a stale banner appears with a "
+                "one-click Refresh that reloads the figures.",
+    "EC-UX-09": "Tenant locale ar: html dir=rtl, sidebar on the right, layout mirrored; amounts and currency codes "
+                "stay left-to-right (money cells dir=ltr or bdi).",
+    "EC-UX-10": "375x812 viewport: run list, run review, My payslips and My bank account work end to end; tables "
+                "render as cards; no horizontal page scroll.",
+    "EC-UX-11": "Toggle 'Hide amounts': every amount including KPI cards is blurred; hover or keyboard focus reveals "
+                "one value; the toggle survives navigation.",
+    "EC-UX-12": "Keyboard only (Tab, Enter, Space, Esc): approve a run including the step-up dialog, and change a bank "
+                "account including its confirmation, with visible focus and focus trapped in dialogs.",
+    "EC-UX-13": "Tenant with no employees vs a tenant whose employees have no salary: two different empty states with "
+                "their next action; 'Create run' disabled with the reason.",
+    "EC-UX-14": "Run list, run review and payslips each show: loading skeleton, long-running progress, partial "
+                "failure with Retry, access denied and stale banner (force each with route interception).",
+    "EC-MIG-12": "Pages that used fmtMoney (dashboard, reports, legacy payslips, employee drawer) render amounts with "
+                 "the currency's decimals (JPY 0, BHD 3, INR 2), never NaN or a bare number.",
+    "EC-MIG-13": "Visit /salary-structure and /payslips: each lands on the new route and renders. Note: next.config "
+                 "sends /salary-structure to /payroll?tab=structures, which the '/payroll with ?tab' rule then sends to "
+                 "/payroll/legacy, and /payslips is still a (legacy) page; confirm the intended destinations.",
 }
 LEVEL_REASON = {
-    "E": "Chrome end-to-end milestone 16 has not run yet (CHECKLIST #16); no backend test names this id.",
+    "E": "Browser-only check, not in the Chrome suite of milestone 16 (29 tests, FOLLOW-UPS F-63); no backend "
+         "assertion is possible.",
     "M": "Manual or staging check (real DNS/e-mail/bank/provider); automation impossible in the test environment.",
 }
 AREA_REASON = {
-    "EC-WL": "White-label milestone tests (tests/test_white_label.py) predate EC ids for most cases.",
-    "EC-ORG": "Multi-level organisation tests (tests/test_hierarchy.py, org tests) predate EC ids for most cases.",
-    "EC-UX": "UI states are verified in Chrome (milestone 16, pending).",
-    "EC-COR": "Corrections (CHECKLIST #11) await their review and real-chain integration; no test names this id.",
+    "EC-WL": "No white-label test names this id yet.",
+    "EC-ORG": "No organisation test names this id yet.",
+    "EC-UX": "UI state: verified only in Chrome.",
+    "EC-COR": "No corrections test names this id yet.",
     "EC-STA": "Real country packs ship as DRAFT (decision I-07); only the fictional ZZ pack is verified, so "
               "pack-specific vectors wait for a qualified reviewer.",
     "EC-MIG": "Migration cases need the legacy-data rehearsal of the regression milestone (CHECKLIST #17).",
@@ -161,6 +249,8 @@ def _levels(raw: str) -> list:
 def _reason(case: dict) -> str:
     if case["id"] in KNOWN_GAPS:
         return KNOWN_GAPS[case["id"]]
+    if case["id"] in CHROME_CHECKS:
+        return "Browser-only check for the Chrome stage (no backend assertion possible): " + CHROME_CHECKS[case["id"]]
     levels = _levels(case["test"])
     if levels and all(lv in ("E", "M") for lv in levels):
         return " ".join(LEVEL_REASON[lv] for lv in dict.fromkeys(levels))

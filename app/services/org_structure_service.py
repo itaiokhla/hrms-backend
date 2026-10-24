@@ -36,11 +36,14 @@ from app.models.company import Company
 from app.models.employee import Department, Employee
 from app.models.holiday import Holiday
 from app.models.org import ASSIGNMENT_REASONS, Branch, EmployeeAssignment, LegalEntity
+from app.models.pay_runs import PayrollRun, PayrollRunEmployee
 from app.models.payroll import Payroll
 from app.payroll.services import org_dimensions
 from app.services.audit_log_service import AuditLogService
 
 FINALIZED_PAYROLL = ("approved", "processed")
+# Payroll v2 runs that are finalized or later (same states as accounting.FINALIZED_RUN_STATUSES).
+FINALIZED_RUNS = ("FINALIZED", "PAYMENT_READY", "SUBMITTED", "PARTIALLY_PAID", "PAID", "RECONCILED", "CLOSED")
 MANUAL_REASONS = tuple(r for r in ASSIGNMENT_REASONS if r not in ("MIGRATION", "HIRE", "TERMINATION", "REHIRE"))
 
 
@@ -170,8 +173,32 @@ def list_entities(db: Session, company_id: int) -> List[dict]:
 
 
 def has_finalized_payroll(db: Session, company_id: int, entity_id: int) -> bool:
-    return db.query(Payroll.id).filter(
+    """Whether the entity has approved legacy payroll or a finalized payroll v2 run (EC-ORG-04)."""
+    if db.query(Payroll.id).filter(
         Payroll.company_id == company_id, Payroll.legal_entity_id == entity_id, Payroll.status.in_(FINALIZED_PAYROLL)
+    ).first() is not None:
+        return True
+    return db.query(PayrollRun.id).filter(
+        PayrollRun.company_id == company_id, PayrollRun.legal_entity_id == entity_id,
+        PayrollRun.status.in_(FINALIZED_RUNS),
+    ).first() is not None
+
+
+def branch_has_finalized_payroll(db: Session, company_id: int, branch_id: int) -> bool:
+    """Whether approved legacy payroll or a finalized v2 run paid anyone placed in the branch (EC-ORG-09)."""
+    placed = select(EmployeeAssignment.employee_id).where(EmployeeAssignment.company_id == company_id,
+                                                          EmployeeAssignment.branch_id == branch_id)
+    if db.query(Payroll.id).filter(Payroll.company_id == company_id, Payroll.employee_id.in_(placed),
+                                   Payroll.status.in_(FINALIZED_PAYROLL)).first() is not None:
+        return True
+    return db.query(PayrollRunEmployee.id).join(
+        PayrollRun, and_(PayrollRun.company_id == PayrollRunEmployee.company_id, PayrollRun.id == PayrollRunEmployee.run_id)
+    ).join(
+        EmployeeAssignment, and_(EmployeeAssignment.company_id == PayrollRunEmployee.company_id,
+                                 EmployeeAssignment.id == PayrollRunEmployee.employee_assignment_id)
+    ).filter(
+        PayrollRunEmployee.company_id == company_id, EmployeeAssignment.branch_id == branch_id,
+        PayrollRun.status.in_(FINALIZED_RUNS),
     ).first() is not None
 
 
@@ -308,6 +335,10 @@ def save_branch(db: Session, principal: Principal, data: dict, branch_id: Option
     subdivision = valid_subdivision(country, data.get("subdivision_code")) if "subdivision_code" in data else (
         branch.subdivision_code if branch else None)
     tz = valid_timezone(data.get("timezone") or (branch.timezone if branch else entity.timezone))
+    if branch is not None and subdivision != branch.subdivision_code and branch_has_finalized_payroll(db, cid, branch.id):
+        # EC-ORG-09: the state decides statutory rules; approved payroll keeps the state it was paid under.
+        raise conflict("The state of a branch with approved payroll cannot change. Create a branch for the new state "
+                       "and transfer its people from the date of the move.", "ORG_BRANCH_STATE_LOCKED")
     created = branch is None
     if created:
         branch = Branch(company_id=cid, status="ACTIVE")

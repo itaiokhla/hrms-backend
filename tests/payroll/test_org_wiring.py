@@ -286,6 +286,7 @@ def test_shift_edited_on_the_employee_form_is_kept_by_the_next_placement(acme):
 # Termination (D-4) and rehire (EC-ORG-22)
 # ---------------------------------------------------------------------------
 def test_d4_termination_closes_the_active_placement_and_removes_future_ones(app, acme, gulf):
+    """EC-ORG-22: rehire opens a new placement, same code."""
     employee = create_employee(acme, "Leaver")
     future = (date.today() + timedelta(days=40)).isoformat()
     _move(acme, employee["id"], branch_id=gulf["dubai"]["id"], effective_from=future)

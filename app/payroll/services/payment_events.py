@@ -425,10 +425,12 @@ def on_failure(db: Session, principal: Optional[Principal], row: PaymentInstruct
 
 
 def on_settled(db: Session, row: PaymentInstruction) -> None:
-    """The first settled payment to an account is recorded on it (bank-accounts hook)."""
-    from app.payroll.services import obligations
+    """The first settled payment to an account is recorded on it (bank-accounts hook), and the employee is told
+    "Salary credited" once per instruction (notify.payroll.payment_status_to_employee)."""
+    from app.payroll.services import notifications, obligations
 
     obligations.mark_bank_account_settled(db, row)
+    notifications.payment_credited(db, row)
 
 
 # ---------------------------------------------------------------------------

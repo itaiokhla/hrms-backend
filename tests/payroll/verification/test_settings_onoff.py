@@ -50,8 +50,10 @@ from tests.payroll.verification.conftest import (
     recalc,
     resolve,
     run_detail,
+    second_admin,
     today_of,
 )
+from tests.payroll.test_bank_accounts import bank_world, world  # noqa: F401  (fixtures of the bank alert cycle)
 
 D = Decimal
 CENT = D("0.01")
@@ -744,6 +746,73 @@ def test_wage_input_settings_follow_the_period_grain(settings_world):
 
 
 # ---------------------------------------------------------------------------
+# Incentive plans (3.1 §5.9 INCENTIVE_PLAN, decision I-22): approved achievement measures -> INCENTIVE line
+# ---------------------------------------------------------------------------
+def measure(w, person, value, *, approve=True, component="INCENTIVE", expect=201):
+    """An achievement measure for the period (a wage input with source INCENTIVE_PLAN), approved by default."""
+    r = w["admin"].post(f"{PAY}/wage-inputs", json={
+        "employee_id": w["emp"][person], "component_code": component, "period_start": w["start"].isoformat(),
+        "period_end": w["end"].isoformat(), "measure": value, "reason": "Sales achievement"}, headers=idem())
+    if expect != 201:
+        assert r.status_code == expect, r.text
+        return r.json()
+    item = ok(r, 201)["items"][0]
+    assert item["status"] == "PENDING_APPROVAL", item                    # a measure is always approved by a person
+    if approve:
+        approve_request(w, item["approval_request_id"], deciders=("approver", "second_admin"))
+    return item
+
+
+INCENTIVE_TIERED = "IF(inc.achievement_pct >= 100, inc.measure * 4, inc.measure * 2)"
+
+
+def test_incentive_plan_cycle(settings_world):
+    w = settings_world["alpha"]
+    key = "payroll.incentives.enabled"
+    gbp = lambda a: {"amount": a, "currency": "GBP"}  # noqa: E731
+    # (1) registry default OFF; no measure can be entered while it is OFF.
+    assert resolve(w["admin"], key, employee_id=w["emp"]["Ann"], on=w["end"])["value"] is False
+    assert measure(w, "Ann", "60", expect=409)["code"] == "INCENTIVES_DISABLED"
+    # (2)-(3) ON with a plan: own targets Ann 100, Ben 200, Cal 100; cap 600.00 GBP per payout. The pay calendar has
+    # no tax-year rule, so the MONTHLY window is the calendar month = this period (the run pays it).
+    targets = [{"employee_id": w["emp"][p], "target": t} for p, t in (("Ann", "100"), ("Ben", "200"), ("Cal", "100"))]
+    activate_policy(w["admin"], "INCENTIVE_PLAN", {"formula": INCENTIVE_TIERED, "targets": targets,
+                                                    "cap": gbp("600.00")})
+    switch(w, key, True)
+    # (4) approved measures: Ann 60 + 50, Ben 150, Cal 300.
+    for person, value in (("Ann", "60"), ("Ann", "50"), ("Ben", "150"), ("Cal", "300")):
+        measure(w, person, value)
+    month = monthly_basic(w["period"])
+    run_id = fresh_run(w, "PG-A")
+    # (5)-(6) Ann: 110 against 100 = 110 % >= 100 -> 110 x 4 = 440.00. Ben: 150 against 200 = 75 % -> 150 x 2 = 300.00.
+    lines, detail = lines_of(w, run_id, "Ann")
+    assert lines == {"BASIC": month, "INCENTIVE": D("440.00")}, describe(w, run_id, "Ann")
+    assert D(detail["totals"]["gross"]["amount"]) == month + D("440.00")
+    assert D(detail["totals"]["net"]["amount"]) == month + D("440.00")
+    assert amount(w, run_id, "Ben", "INCENTIVE") == D("300.00")
+    # (7)-(9) OFF: the recalculated draft pays no incentive and says why; no new measure can be entered.
+    switch(w, key, False)
+    recalculated(w, run_id)
+    assert lines_of(w, run_id, "Ann")[0] == {"BASIC": month}
+    assert findings_of(w, run_id, "INCENTIVES_DISABLED"), open_findings(w["admin"], run_id)
+    assert measure(w, "Ann", "5", expect=409)["code"] == "INCENTIVES_DISABLED"
+    # (10)-(11) ON with another plan: 3 per unit, cap 400.00 GBP. Ann 110 x 3 = 330.00; Ben 150 x 3 = 450.00 -> 400.00.
+    activate_policy(w["admin"], "INCENTIVE_PLAN", {"formula": "inc.measure * 3", "targets": targets,
+                                                    "cap": gbp("400.00")})
+    switch(w, key, True)
+    recalculated(w, run_id)
+    assert amount(w, run_id, "Ann", "INCENTIVE") == D("330.00"), describe(w, run_id, "Ann")
+    assert amount(w, run_id, "Ben", "INCENTIVE") == D("400.00")
+    # (12)-(13) pay group PG-A OFF: Ann and Ben get nothing; Cal (PG-B follows the tenant) 300 x 3 = 900.00 -> 400.00.
+    switch(w, key, False, "PAY_GROUP", w["groups"]["PG-A"])
+    recalculated(w, run_id)
+    assert amount(w, run_id, "Ann", "INCENTIVE") is None and amount(w, run_id, "Ben", "INCENTIVE") is None
+    cal_run = fresh_run(w, "PG-B")
+    assert amount(w, cal_run, "Cal", "INCENTIVE") == D("400.00"), describe(w, cal_run, "Cal")
+    assert_bystander_unchanged(settings_world, (key, False))
+
+
+# ---------------------------------------------------------------------------
 # Reimbursements (3.1 §5.10)
 # ---------------------------------------------------------------------------
 GENERAL = {"code": "GENERAL", "name": "General expense"}
@@ -1249,6 +1318,413 @@ def test_automatic_arrears_cycle(settings_world):
 
 
 # ---------------------------------------------------------------------------
+# Payroll notifications (3.1 §5.17 notify.payroll.*, 3.8 §12, 3.7 §4 and §10; FOLLOW-UPS F-68)
+# ---------------------------------------------------------------------------
+# The five keys are TENANT-only (or fixed), so step (12) "override at another permitted level" is the product
+# refusing every other level (LEVEL_NOT_ALLOWED / FIXED_SETTING) and step (13) checks the bystander tenant. A
+# notification is counted in two independent places: the in-app ``notifications`` rows of each user and the
+# e-mails the test e-mail adapter wrote for the tenant. Amounts are seeded with distinctive digits so that a
+# leaked amount would be found in any message.
+NOTIFY_REASON = "Verification: notification cycle"
+
+
+def _sql(query, **params):
+    from tests.payroll.verification.test_settings_inheritance import sql
+
+    return sql(query, **params)
+
+
+def user_of(client):
+    """The user id of a signed-in client (the founder's client from signup carries none)."""
+    if getattr(client, "user_id", None):
+        return client.user_id
+    client.user_id = client.me()["user"]["id"]
+    return client.user_id
+
+
+def email_of(user_id):
+    return _sql("SELECT lower(email) FROM users WHERE id = :u", u=user_id)[0][0]
+
+
+def notes_of(user_id, title_like="%"):
+    """The user's in-app notifications whose title matches (oldest first)."""
+    return [{"title": t, "message": m, "url": u} for t, m, u in _sql(
+        "SELECT title, message, action_url FROM notifications WHERE user_id = :u AND title LIKE :t ORDER BY id",
+        u=user_id, t=title_like)]
+
+
+def tenant_notes(company_id, title_like):
+    return _sql("SELECT count(*) FROM notifications WHERE company_id = :c AND title LIKE :t", c=company_id,
+                t=title_like)[0][0]
+
+
+def mails_of(company_id, template):
+    """E-mails of one template written by the test e-mail adapter for the tenant: [{to, subject, text, html}]."""
+    from tests.payroll.test_bank_accounts import mails
+
+    return [{**m, "to": m["to"].lower()} for m in mails(company_id, template)]
+
+
+def clear_mails(company_id, *templates):
+    from tests.payroll.test_bank_accounts import outbox_files
+
+    for template in templates:
+        for path in outbox_files(company_id, template):
+            path.unlink()
+
+
+def refused_write(client, key, value, scope_type="TENANT", scope_id=None):
+    """A settings PUT the product must refuse (400); returns the error code."""
+    from tests.payroll.verification.conftest import VALUES
+
+    change = {"key": key, "value": value, "scope_type": scope_type, "row_version": 0}
+    if scope_id is not None:
+        change["scope_id"] = scope_id
+    r = client.put(VALUES, json={"changes": [change]})
+    assert r.status_code == 400, f"{key}={value!r} at {scope_type}: {r.status_code} {r.text}"
+    return r.json()["code"]
+
+
+def run_daily_job(company_id, job_type, day):
+    """Run one of the tenant's daily notification jobs for ``day`` through the jobs table. The scheduler queues it
+    at 08:00 company time (``notifications.schedule_daily``); here it is queued due now under its own key, and the
+    inline job mode runs it, then the events and e-mails it queues. Every notification job must succeed."""
+    from app.database.db import SessionLocal, bind_tenant
+    from app.payroll.services import jobs
+
+    db = SessionLocal()
+    try:
+        bind_tenant(db, company_id)
+        job_id = jobs.enqueue(db, company_id=company_id, type=job_type, payload={"run_date": day.isoformat()},
+                              idempotency_key=f"verify:{day.isoformat()}:{idem()['Idempotency-Key'][-10:]}").id
+        db.commit()
+    finally:
+        db.close()
+    failed = _sql("SELECT type, status, error FROM jobs WHERE company_id = :c AND type LIKE 'payroll.%' AND "
+                  "(type LIKE 'payroll.notify%' OR id = :j) AND status <> 'SUCCEEDED'", c=company_id, j=job_id)
+    assert failed == [], failed
+    return _sql("SELECT result FROM jobs WHERE id = :j", j=job_id)[0][0]
+
+
+def no_notify_job_failed(*company_ids):
+    failed = _sql("SELECT company_id, type, status, error FROM jobs WHERE company_id = ANY(:c) AND "
+                  "type LIKE 'payroll.notify%' AND status <> 'SUCCEEDED'", c=list(company_ids))
+    assert failed == [], failed
+
+
+def test_approval_requested_notification_cycle(settings_world):
+    """notify.payroll.approval_requested (channels IN_APP and EMAIL; an empty set is OFF). The subject is a bonus
+    waiting for approval (a payroll input): the founder enters it and, as its maker, may not approve it, so the only
+    eligible approver is the second administrator Sam (payroll_manager). Step (3) does not apply (no policy)."""
+    w, beta = settings_world["alpha"], settings_world["beta"]
+    key, template, waiting = "notify.payroll.approval_requested", "payroll.approval_requested", "%awaiting your approval"
+    for world in (w, beta):
+        clear_mails(world["cid"], template)
+    sam = second_admin(w)
+    sam_mail = email_of(sam.user_id)
+    # (1) starter value: both channels.
+    assert resolve(w["admin"], key, employee_id=w["emp"]["Ben"], on=w["end"])["value"] == ["IN_APP", "EMAIL"]
+    # (4)-(6) ON (both): Sam is told in the app and by e-mail, once, with the request number and no amount.
+    first = wage_input(w, "Ben", "BONUS", "4321.98", approve=False)
+    assert first["status"] == "PENDING_APPROVAL", first
+    rid = first["approval_request_id"]
+    [note] = notes_of(sam.user_id, waiting)
+    assert (note["title"], note["url"]) == ("Payroll input awaiting your approval", f"/payroll/approvals?id={rid}")
+    assert f"#{rid}" in note["message"] and "4321" not in note["message"] and "4,321" not in note["message"]
+    [mail] = mails_of(w["cid"], template)
+    assert (mail["to"], mail["subject"]) == (sam_mail, "Payroll input awaiting your approval"), mail
+    assert f"#{rid}" in mail["text"] and not any(s in mail["text"] + mail["html"] for s in ("4321", "4,321"))
+    # Nobody else may decide it, so nobody else hears of it (the founder is the maker; Ava and Max lack the right).
+    # (The world's setup sent Ava compensation approvals; only messages about this request count.)
+    for user_id in (w["approver"].user_id, w["manager"].user_id, user_of(w["admin"])):
+        assert [n for n in notes_of(user_id, waiting) if n["url"] == f"/payroll/approvals?id={rid}"] == []
+    approve_request(w, rid, deciders=("second_admin",))
+    # (7)-(9) OFF (no channel): the next input waits for Sam as before, but nobody is told on any channel.
+    put_setting(w["admin"], key, [], reason=NOTIFY_REASON)
+    assert resolve(w["admin"], key, employee_id=w["emp"]["Cal"], on=w["end"])["value"] == []
+    second = wage_input(w, "Cal", "BONUS", "1357.24", approve=False)
+    assert second["status"] == "PENDING_APPROVAL", second
+    assert len(notes_of(sam.user_id, waiting)) == 1 and len(mails_of(w["cid"], template)) == 1
+    approve_request(w, second["approval_request_id"], deciders=("second_admin",))   # the approval itself works
+    # (10)-(11) ON with another value: e-mail only.
+    put_setting(w["admin"], key, ["EMAIL"], reason=NOTIFY_REASON)
+    third = wage_input(w, "Ann", "BONUS", "2468.13", approve=False)
+    assert len(notes_of(sam.user_id, waiting)) == 1
+    mails = mails_of(w["cid"], template)
+    assert len(mails) == 2 and mails[-1]["to"] == sam_mail and f"#{third['approval_request_id']}" in mails[-1]["text"]
+    assert "2468" not in mails[-1]["text"] + mails[-1]["html"]
+    # (12) TENANT is the only level of this key.
+    for scope_type, scope_id in (("LEGAL_ENTITY", w["entities"]["VA1"]), ("PAY_GROUP", w["groups"]["PG-A"])):
+        assert refused_write(w["admin"], key, ["IN_APP"], scope_type, scope_id) == "LEVEL_NOT_ALLOWED"
+    # (13) Verity Beta: its value never moved and its users heard nothing of Alpha's requests.
+    assert tenant_notes(beta["cid"], "Payroll input awaiting%") == 0 and mails_of(beta["cid"], template) == []
+    no_notify_job_failed(w["cid"], beta["cid"])
+    assert_bystander_unchanged(settings_world, (key, ["IN_APP", "EMAIL"]))
+
+
+def test_input_cutoff_reminder_cycle(settings_world):
+    """notify.payroll.input_cutoff_reminder_days (0-31 days before the input cutoff; no OFF value exists in the
+    registry, so steps (7)-(9) use 0 = "on the cutoff day" and show that no reminder comes earlier). The three pay
+    groups share one monthly calendar, so each future period of PG-A has twins in PG-B and PG-C: one daily job
+    reminds about all three. Recipients by hand: the founder holds payroll:inputs:edit company-wide (staff
+    message, link to inputs); Max manages every placed employee (manager message, link to the approvals inbox);
+    Ava (payroll_approver) has no input right and manages nobody. Step (3) does not apply (no policy)."""
+    from datetime import date
+
+    from tests.payroll.verification.conftest import periods_of
+
+    w, beta = settings_world["alpha"], settings_world["beta"]
+    key, job, template = ("notify.payroll.input_cutoff_reminder_days", "payroll.input_cutoff_reminders",
+                          "payroll.input_cutoff_reminder")
+    for world in (w, beta):
+        clear_mails(world["cid"], template)
+
+    def cutoffs(world, code):
+        later = [p for p in periods_of(world["admin"], world["groups"][code]) if p["start"] > world["end"].isoformat()]
+        return [date.fromisoformat(p["input_cutoff"]) for p in later[:3]]
+
+    cut = cutoffs(w, "PG-A")
+    assert cutoffs(w, "PG-B") == cut and cutoffs(w, "PG-C") == cut
+    founder, boss, ava = user_of(w["admin"]), w["manager"].user_id, w["approver"].user_id
+    reminders = lambda uid: notes_of(uid, "Payroll inputs close on%")  # noqa: E731
+    # (1) default 2 days.
+    assert resolve(w["admin"], key, pay_group_id=w["groups"]["PG-A"], on=w["end"])["value"] == 2
+    # (5) three days before the first cutoff: nothing yet.
+    run_daily_job(w["cid"], job, cut[0] - timedelta(days=3))
+    assert reminders(founder) == [] and reminders(boss) == []
+    # (6) two days before: one reminder per pay group to the founder and to Max, and an e-mail each.
+    run_daily_job(w["cid"], job, cut[0] - timedelta(days=2))
+    title = f"Payroll inputs close on {cut[0]:%d %b %Y}"
+    staff, team = reminders(founder), reminders(boss)
+    assert [n["title"] for n in staff] == [title] * 3 and [n["title"] for n in team] == [title] * 3
+    assert {n["url"] for n in staff} == {"/payroll/inputs"} and {n["url"] for n in team} == {"/payroll/approvals"}
+    assert all(n["message"].startswith("Inputs for pay group") for n in staff)
+    assert all(n["message"].startswith("Payroll inputs for your team") for n in team)
+    assert reminders(ava) == []
+    mails = mails_of(w["cid"], template)
+    assert sorted(m["to"] for m in mails) == sorted([email_of(founder)] * 3 + [email_of(boss)] * 3)
+    assert {m["subject"] for m in mails} == {title}
+    # The window's next day: each period is reminded once (no duplicate).
+    run_daily_job(w["cid"], job, cut[0] - timedelta(days=1))
+    assert len(reminders(founder)) == 3 and len(reminders(boss)) == 3 and len(mails_of(w["cid"], template)) == 6
+    # (7)-(9) 0 days: nothing two days before the second cutoff, the reminder comes on the cutoff day.
+    put_setting(w["admin"], key, 0, reason=NOTIFY_REASON)
+    run_daily_job(w["cid"], job, cut[1] - timedelta(days=2))
+    assert len(reminders(founder)) == 3 and len(reminders(boss)) == 3
+    run_daily_job(w["cid"], job, cut[1])
+    second = f"Payroll inputs close on {cut[1]:%d %b %Y}"
+    assert [n["title"] for n in reminders(founder)[3:]] == [second] * 3
+    assert [n["title"] for n in reminders(boss)[3:]] == [second] * 3
+    # (10)-(11) 5 days: not six days before the third cutoff, five days before it.
+    put_setting(w["admin"], key, 5, reason=NOTIFY_REASON)
+    run_daily_job(w["cid"], job, cut[2] - timedelta(days=6))
+    assert len(reminders(founder)) == 6
+    run_daily_job(w["cid"], job, cut[2] - timedelta(days=5))
+    third = f"Payroll inputs close on {cut[2]:%d %b %Y}"
+    assert [n["title"] for n in reminders(founder)[6:]] == [third] * 3
+    assert [n["title"] for n in reminders(boss)[6:]] == [third] * 3 and len(mails_of(w["cid"], template)) == 18
+    # (12) TENANT is the only level of this key.
+    assert refused_write(w["admin"], key, 7, "PAY_GROUP", w["groups"]["PG-A"]) == "LEVEL_NOT_ALLOWED"
+    # (13) Verity Beta keeps 2 days: Alpha's jobs told it nothing; its own job reminds its own people only.
+    assert tenant_notes(beta["cid"], "Payroll inputs close on%") == 0 and mails_of(beta["cid"], template) == []
+    beta_cut = cutoffs(beta, "PG-Z")[0]
+    run_daily_job(beta["cid"], job, beta_cut - timedelta(days=5))
+    assert tenant_notes(beta["cid"], "Payroll inputs close on%") == 0
+    run_daily_job(beta["cid"], job, beta_cut - timedelta(days=2))
+    assert [n["title"] for n in reminders(user_of(beta["admin"]))] == [f"Payroll inputs close on {beta_cut:%d %b %Y}"]
+    assert [n["title"] for n in reminders(beta["manager"].user_id)] == [
+        f"Payroll inputs close on {beta_cut:%d %b %Y}"]
+    assert len(reminders(founder)) == 9                                   # Alpha unchanged by Beta's job
+    assert_bystander_unchanged(settings_world, (key, 2))
+
+
+def test_exceptions_digest_cycle(settings_world):
+    """notify.payroll.exceptions_digest (DAILY / OFF). Seed: Ann's only bank account is unverified, so the draft
+    PG-A run has open findings (UNVERIFIED_BANK, UNVERIFIED_ACCOUNT_ON_HOLD, ...). The digest must count exactly what
+    the exceptions API lists as OPEN, by severity, and name the run, never an amount or an exception text.
+    Recipients by hand: holders of payroll:run:create covering the run = the founder only (Ava approves, Max
+    manages). The enum has two values, so step (10) is DAILY again on a new date; step (3) does not apply."""
+    from tests.payroll.test_payment_obligations import add_bank_account
+
+    w, beta = settings_world["alpha"], settings_world["beta"]
+    key, job, template = "notify.payroll.exceptions_digest", "payroll.exceptions_digest", "payroll.exceptions_digest"
+    for world in (w, beta):
+        clear_mails(world["cid"], template)
+    founder = user_of(w["admin"])
+    digests = lambda uid: notes_of(uid, "Payroll exceptions:%")  # noqa: E731
+    # (1) default DAILY.
+    assert resolve(w["admin"], key, pay_group_id=w["groups"]["PG-A"], on=w["end"])["value"] == "DAILY"
+    # (4) seed open exceptions.
+    add_bank_account(w["cid"], w["emp"]["Ann"], "50000012345678", verified=False, holder="Ann Verify", currency="GBP")
+    run_id = fresh_run(w, "PG-A")
+    found = open_findings(w["admin"], run_id)
+    assert found and [f for f in found if f["code"] == "UNVERIFIED_BANK"], found
+    total, blocking = len(found), sum(1 for f in found if f["severity"] == "BLOCKING")
+    number = run_detail(w["admin"], run_id)["number"]
+    today = today_of(w["admin"])
+    days = [today + timedelta(days=n) for n in (1, 2, 3)]
+    # (5)-(6) DAILY: one digest for the founder, in the app and by e-mail.
+    run_daily_job(w["cid"], job, days[0])
+    [note] = digests(founder)
+    assert note["title"] == f"Payroll exceptions: {total} open", (note, found)
+    assert note["message"].startswith(f"{total} open exception{'s' if total != 1 else ''} ({blocking} blocking) in "
+                                      "1 payroll run."), note
+    assert number in note["message"] and note["url"] == f"/payroll/runs/{run_id}"
+    month = monthly_basic(w["period"])
+    for leaked in [f["message"] for f in found] + [str(month), f"{month:,}", "50000012345678", "5678"]:
+        assert leaked not in note["message"], leaked
+    [mail] = mails_of(w["cid"], template)
+    assert (mail["to"], mail["subject"]) == (email_of(founder), note["title"]) and number in mail["text"]
+    assert str(month) not in mail["text"] and "5678" not in mail["text"]
+    assert digests(w["approver"].user_id) == [] and digests(w["manager"].user_id) == []
+    # The same date again: no second digest.
+    run_daily_job(w["cid"], job, days[0])
+    assert len(digests(founder)) == 1 and len(mails_of(w["cid"], template)) == 1
+    # (7)-(9) OFF: the next day sends nothing although the exceptions are still open.
+    put_setting(w["admin"], key, "OFF", reason=NOTIFY_REASON)
+    run_daily_job(w["cid"], job, days[1])
+    assert len(digests(founder)) == 1 and len(mails_of(w["cid"], template)) == 1
+    # (10)-(11) DAILY again: the day after, a new digest with the counts of that day.
+    put_setting(w["admin"], key, "DAILY", reason=NOTIFY_REASON)
+    run_daily_job(w["cid"], job, days[2])
+    assert [n["title"] for n in digests(founder)] == [note["title"]] * 2 and len(mails_of(w["cid"], template)) == 2
+    # (12) TENANT is the only level of this key.
+    assert refused_write(w["admin"], key, "OFF", "PAY_GROUP", w["groups"]["PG-A"]) == "LEVEL_NOT_ALLOWED"
+    # (13) Verity Beta: Alpha's digests never reached it; its own digest counts only its own run.
+    assert tenant_notes(beta["cid"], "Payroll exceptions:%") == 0 and mails_of(beta["cid"], template) == []
+    beta_found = open_findings(beta["admin"], beta["run"])
+    run_daily_job(beta["cid"], job, days[0])
+    beta_digest = digests(user_of(beta["admin"]))
+    if beta_found:
+        assert [n["title"] for n in beta_digest] == [f"Payroll exceptions: {len(beta_found)} open"]
+        assert run_detail(beta["admin"], beta["run"])["number"] in beta_digest[0]["message"]
+    else:
+        assert beta_digest == []
+    assert len(digests(founder)) == 2
+    assert_bystander_unchanged(settings_world, (key, "DAILY"))
+
+
+def test_payment_status_to_employee_cycle(app):
+    """notify.payroll.payment_status_to_employee (bool). Payments go through the sandbox provider; the provider's
+    settlement and failure reports are applied with the evidence hook (``apply_evidence``), as a webhook would. The
+    bool has no second policy, so step (10) is ON again with new payments; step (3) does not apply. Account
+    numbers and amounts are seeded so that a leak would show: 1,234.56 to Emma's account ending 4567."""
+    from tests.payroll.test_bank_accounts import MASK
+    from tests.payroll.test_compensation import login_as
+    from tests.payroll.test_payment_events import evidence, sandbox_world
+    from tests.payroll.test_payment_obligations import NUMBERS, instructions_of, payments_world
+
+    key, template, alert = "notify.payroll.payment_status_to_employee", "payroll.payment_status", \
+        "payroll.bank_change_alert"
+    world = payments_world(app, "Status Pay")                              # Emma, Ivan, Zara, Nell
+    bystander = payments_world(app, "Status Bystander", employees=("Emma",))
+    admin, cid = world["admin"], world["cid"]
+    for c in (cid, bystander["cid"]):
+        clear_mails(c, template, alert)
+    users = {n: login_as(app, admin, e, ["employee"]).user_id for n, e in world["emp"].items()}
+    address = {n: e["email"].lower() for n, e in world["emp"].items()}
+    credited = lambda name: notes_of(users[name], "Salary credited")  # noqa: E731
+    failed = lambda name: notes_of(users[name], "Payment failed%")  # noqa: E731
+    # (1) default ON.
+    assert resolve(admin, key, employee_id=world["emp"]["Emma"]["id"])["value"] is True
+    # (4) a finalized run paid through the sandbox: four submitted payments.
+    run_id, _ = sandbox_world(world, {"Emma": "1234.56", "Ivan": "2345.67", "Zara": "3456.78", "Nell": "4567.89"})
+    rows = instructions_of(run_id)
+    ids = {n: rows[world["emp"][n]["id"]]["id"] for n in world["emp"]}
+    # (5)-(6) Emma's payment settles: "Salary credited" once, in the app and by e-mail, masked, without the amount.
+    assert evidence(cid, ids["Emma"], "SETTLED", source="WEBHOOK", event_id="ps-emma-1", sandbox=True)[0] == "APPLIED"
+    [note] = credited("Emma")
+    assert f"{MASK}{NUMBERS['Emma'][-4:]}" in note["message"] and note["url"] == "/me/payments"
+    for leaked in (NUMBERS["Emma"], "1234", "1,234"):
+        assert leaked not in note["message"], leaked
+    [mail] = mails_of(cid, template)
+    assert (mail["to"], mail["subject"]) == (address["Emma"], "Salary credited")
+    assert f"{MASK}{NUMBERS['Emma'][-4:]}" in mail["text"]
+    assert not any(s in mail["text"] + mail["html"] for s in (NUMBERS["Emma"], "1234", "1,234"))
+    # The provider reports the settlement again: no second message.
+    assert evidence(cid, ids["Emma"], "SETTLED", source="WEBHOOK", event_id="ps-emma-1", sandbox=True)[0] == "DUPLICATE"
+    evidence(cid, ids["Emma"], "SETTLED", source="WEBHOOK", event_id="ps-emma-2", sandbox=True)
+    assert len(credited("Emma")) == 1 and len(mails_of(cid, template)) == 1
+    # (7)-(9) OFF: Ivan's settlement and Zara's failure tell nobody; Zara's account still becomes FAILED.
+    put_setting(admin, key, False, reason=NOTIFY_REASON)
+    assert evidence(cid, ids["Ivan"], "SETTLED", source="WEBHOOK", event_id="ps-ivan-1", sandbox=True)[0] == "APPLIED"
+    assert evidence(cid, ids["Zara"], "FAILED", source="WEBHOOK", event_id="ps-zara-1", sandbox=True,
+                    reason_code="AC04")[0] == "APPLIED"
+    assert credited("Ivan") == [] and failed("Zara") == [] and mails_of(cid, template) == [mail]
+    assert [m for m in mails_of(cid, alert) if m["to"] == address["Zara"]] == []
+    assert _sql("SELECT verification_status FROM bank_accounts WHERE employee_id = :e",
+                e=world["emp"]["Zara"]["id"])[0][0] == "FAILED"
+    # (10)-(11) ON again: Nell's failed payment asks her (masked) to update her bank details.
+    put_setting(admin, key, True, reason=NOTIFY_REASON)
+    assert evidence(cid, ids["Nell"], "FAILED", source="WEBHOOK", event_id="ps-nell-1", sandbox=True,
+                    reason_code="AC04")[0] == "APPLIED"
+    [nell] = failed("Nell")
+    assert nell["title"] == "Payment failed — please update your bank details", nell
+    assert f"{MASK}{NUMBERS['Nell'][-4:]}" in nell["message"] and NUMBERS["Nell"] not in nell["message"]
+    assert "4567.89" not in nell["message"] and "4,567" not in nell["message"]
+    nell_mails = [m for m in mails_of(cid, alert) if m["to"] == address["Nell"]]
+    assert len(nell_mails) == 1 and nell_mails[0]["subject"].startswith("Payment failed"), nell_mails
+    assert NUMBERS["Nell"] not in nell_mails[0]["text"]
+    # (12) TENANT is the only level of this key.
+    assert refused_write(admin, key, False, "LEGAL_ENTITY", world["le"]) == "LEVEL_NOT_ALLOWED"
+    # (13) the bystander tenant: still ON, nothing of Alpha's payments reached it, its own settlement tells its
+    # own employee only.
+    assert resolve(bystander["admin"], key, employee_id=bystander["emp"]["Emma"]["id"])["value"] is True
+    assert tenant_notes(bystander["cid"], "Salary credited") == 0 and mails_of(bystander["cid"], template) == []
+    other = login_as(app, bystander["admin"], bystander["emp"]["Emma"], ["employee"]).user_id
+    other_run, _ = sandbox_world(bystander, {"Emma": "100.00"})
+    other_id = instructions_of(other_run)[bystander["emp"]["Emma"]["id"]]["id"]
+    evidence(bystander["cid"], other_id, "SETTLED", source="WEBHOOK", event_id="ps-by-1", sandbox=True)
+    assert len(notes_of(other, "Salary credited")) == 1 and len(credited("Emma")) == 1
+    assert [m["to"] for m in mails_of(bystander["cid"], template)] == [bystander["emp"]["Emma"]["email"].lower()]
+    no_notify_job_failed(cid, bystander["cid"])
+
+
+def test_bank_change_alert_is_locked_on_cycle(bank_world):
+    """notify.payroll.bank_change_alert is locked ON: the registry fixes it to True and allows no level, so steps
+    (2), (7), (10) and (12) are refused writes (FIXED_SETTING) and step (3) does not apply. Step (8) goes further
+    than the API allows: a FALSE row is written into setting_values directly, and the alert still goes to the old
+    and new contact details (the service reads the key fail-safe)."""
+    from tests.payroll.test_bank_accounts import IN_NUMBER, MASK, active_account, clear_outbox, in_account, mails
+    from tests.payroll.test_bank_accounts import step_up, submit
+
+    w = bank_world
+    cid, emma, founder, beta = w["cid"], w["u"]["emma"], w["u"]["founder"], w["u"]["beta"]
+    key = "notify.payroll.bank_change_alert"
+    # (1) effective value: ON.
+    assert resolve(founder, key)["value"] is True
+    # (2) and (7): neither ON nor OFF can be stored at TENANT; (12): nor at an entity.
+    for value in (True, False):
+        assert refused_write(founder, key, value) == "FIXED_SETTING"
+    assert refused_write(founder, key, False, "LEGAL_ENTITY", w["le01"]["id"]) == "FIXED_SETTING"
+    # (4)-(6) Emma changes her salary account: the request and the change are announced, masked, in the app and
+    # by e-mail.
+    clear_outbox(cid)
+    clear_outbox(beta.company_id)
+    active_account(w, emma, in_account())
+    subjects = sorted(m["subject"] for m in mails(cid))
+    assert subjects == ["Bank account change requested", "Your salary bank account was changed"], subjects
+    assert all(f"{MASK}6789" in m["text"] and IN_NUMBER not in m["text"] for m in mails(cid))
+    titles = [n["title"] for n in notes_of(emma.user_id, "%ank account%")]
+    assert "Bank account change requested" in titles and "Your salary bank account was changed" in titles
+    # (8)-(9) a FALSE value forced past the API never silences the alert.
+    _sql("INSERT INTO setting_values (company_id, key, scope_type, scope_id, value, locked, effective_from, status, "
+         "row_version, source, created_at, updated_at) VALUES (:c, :k, 'TENANT', NULL, 'false'::jsonb, false, "
+         "DATE '2020-01-01', 'ACTIVE', 1, 'ADMIN', now(), now())", c=cid, k=key)
+    clear_outbox(cid)
+    step_up(emma)
+    submit(emma, in_account(number="50100123456784"))
+    alerts = mails(cid)
+    assert alerts and all(m["subject"] == "Bank account change requested" for m in alerts), alerts
+    assert all(f"{MASK}6784" in m["text"] and "50100123456784" not in m["text"] for m in alerts)
+    # (10)-(11) switching it "back on" is refused as well: there is nothing to switch.
+    assert refused_write(founder, key, True) == "FIXED_SETTING"
+    # (13) Beta: ON, and none of Acme's alerts reached it.
+    assert resolve(beta, key)["value"] is True and mails(beta.company_id) == []
+    assert tenant_notes(beta.company_id, "%ank account%") == 0
+
+
+# ---------------------------------------------------------------------------
 # Features that cannot be verified through a run here (precise reasons; the list itself is asserted)
 # ---------------------------------------------------------------------------
 BLOCKED_FEATURES = {
@@ -1257,19 +1733,11 @@ BLOCKED_FEATURES = {
     "ADVANCE_NET_UNKNOWN otherwise; the verification tenants are provisioned inside the current period, so no "
     "advance can be approved on the run date. The switch gate itself is verified "
     "(test_salary_advance_switch_gates_applications).",
-    "payroll.incentives.enabled": "No code reads the switch: the INCENTIVE_PLAN policy type exists but neither the "
-    "snapshot builder nor the engine calculates incentives, so ON and OFF give the same run. Incentives can only be "
-    "paid as approved INCENTIVE wage inputs (covered by the wage-input cycle).",
-    "notify.payroll.approval_requested": "Registered and materialized by the starter profile but read by no service.",
-    "notify.payroll.input_cutoff_reminder_days": "Registered and materialized by the starter profile but read by no "
-    "service.",
-    "notify.payroll.payment_status_to_employee": "Registered and materialized by the starter profile but read by no "
-    "service.",
-    "notify.payroll.bank_change_alert": "Registered but read by no service.",
-    "notify.payroll.exceptions_digest": "Registered and materialized by the starter profile but read by no service.",
-    "employee benefits (Goal 2 §6)": "Payroll v2 has no benefit setting and no benefit policy type: the registry "
-    "and POLICY_TYPES define none, so there is nothing to switch ON or OFF. A benefit can only be modelled as a "
-    "salary component of kind BENEFIT_IN_KIND in a structure (no switch).",
+    "employee benefits (Goal 2 §6)": "Payroll v2 has no benefit setting and no benefit policy type: the design "
+    "(3.1 §4 switch catalogue, §3.2 policy types) and the registry define none, so there is nothing to switch ON or "
+    "OFF (decision I-21). A benefit is a salary component of kind BENEFIT_IN_KIND or an EMPLOYER_CONTRIBUTION of "
+    "category BENEFIT; test_incentives_and_benefits.py proves they stay out of cash gross and net and appear on the "
+    "payslip and in the CTC breakdown.",
 }
 
 

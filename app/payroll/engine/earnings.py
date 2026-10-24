@@ -34,6 +34,12 @@ weekly-off pay with the I-16 split F-05, shift allowance, task pay with caps and
 minimum-wage floor). A structure line for one of those components (method other
 than SYSTEM) replaces the engine's own line for it. All amounts are in the pay
 currency; there is no implicit FX (EC-CMP-07).
+
+Incentive plans (3.1 §5.9, ``app.payroll.incentives``, decision I-22) turn the
+approved achievement measures of the payout window (wage inputs with source
+INCENTIVE_PLAN, which never reach the structure's INPUT()/UNITS()) into one line
+of the plan's component: the plan formula over ``inc.*``, capped, rounded with
+the component's rounding, its sources the measures (consumed once at finalization).
 """
 
 from __future__ import annotations
@@ -45,6 +51,7 @@ from decimal import ROUND_DOWN, ROUND_HALF_EVEN, ROUND_HALF_UP, ROUND_UP, Decima
 from typing import Any
 
 from app.payroll import formula as fm
+from app.payroll import incentives as inc
 from app.payroll import time_pay as tp
 from app.payroll.engine.context import CalcContext
 from app.payroll.formula.ast import Binary, Call, ComponentRef, VariableRef, children
@@ -1235,6 +1242,8 @@ def usable_inputs(ctx: CalcContext, issues: list[CalcIssue]) -> list[Any]:
     """Approved wage inputs that can be paid: known component, pay currency (no implicit FX), switch ON."""
     usable = []
     for item in ctx.snapshot.wage_inputs:
+        if item.source == inc.MEASURE_SOURCE:
+            continue   # achievement measures of an incentive plan (``incentive_lines``), never paid as such
         component = ctx.component(item.component)
         if component is None:
             issues.append(blocking("UNKNOWN_COMPONENT", f"Wage input {item.id} names {item.component}, which is not in "
@@ -1287,6 +1296,160 @@ def input_lines(ctx: CalcContext, inputs: Sequence[Any], own: set[str], issues: 
                                          "external_ref": i.external_ref, "content_hash": i.content_hash}
                                         for i in items]))
     return lines
+
+
+def _incentive_env(ctx: CalcContext, evaluator: StructureEvaluator, code: str, earned: Sequence[Line]
+                   ) -> tuple[fm.TypeEnv, dict[str, Any], dict[str, Any], dict[str, str]]:
+    """Formula environment of an incentive plan: the final segment's structure (current amounts and full-period
+    rates), the formula tables, ``emp.attr.*`` and the plan-only ``inc.*`` variables."""
+    plan = evaluator.final_plan()
+    sigs = dict(plan.env_components) if plan is not None else {}
+    sigs.pop(code, None)
+    tags = {tag: [c for c in codes if c != code] for tag, codes in (plan.tags if plan is not None else {}).items()}
+    env = fm.TypeEnv(ctx.currency, components=sigs, tags=tags, tables=evaluator.tables,
+                     attributes=evaluator._attribute_types(), component=code, stage=STAGE_EARNINGS, expect="AMOUNT",
+                     locals=inc.LOCALS)
+    own = evaluator.structure_codes()
+    amounts: dict[str, Decimal] = {}
+    for line in earned:
+        if line.component in own and line.component in sigs:
+            amounts[line.component] = amounts.get(line.component, ZERO) + line.amount
+    components = {k: fm.MoneyValue(v, ctx.currency) for k, v in amounts.items()}
+    rates = {k: fm.MoneyValue(v, ctx.currency) for k, v in (plan.unit_rates if plan is not None else {}).items()
+             if k in sigs}
+    return env, components, rates, dict(plan.rate_units) if plan is not None else {}
+
+
+def _incentive_text(ctx: CalcContext, window: Any, measure: Decimal, target: Decimal | None,
+                    achievement: Decimal | None, value: Decimal, cap: Decimal | None, capped: Decimal) -> str:
+    label = _period_label(window.window_start.isoformat(), window.window_end.isoformat())
+    text = f"Incentive for {label}: measure {qty_text(measure)}"
+    if target is not None:
+        text += f" against target {qty_text(target)}"
+        if achievement is not None:
+            text += f" ({qty_text(achievement.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))}%)"
+    text += f" gives {money_text(value, ctx.minor_unit)}"
+    if cap is not None and capped < value:
+        text += f", capped at {money_text(cap, ctx.minor_unit)}"
+    return text
+
+
+def incentive_lines(ctx: CalcContext, evaluator: StructureEvaluator, task: tp.TaskPay | None,
+                    earned: Sequence[Line], issues: list[CalcIssue]) -> list[Line]:
+    """The incentive of the payout window (3.1 §5.9, decision I-22): one line of the plan's component.
+
+    Fail closed: a missing plan, window or component, a formula error and a negative result are BLOCKING exceptions
+    (no line, so the measures are not consumed); with the switch OFF nothing is paid and a warning says so.
+    """
+    measures = [w for w in ctx.snapshot.wage_inputs if w.source == inc.MEASURE_SOURCE]
+    ids = [m.id for m in measures]
+    if not ctx.setting_bool(inc.SWITCH):
+        if measures:
+            issues.append(warning("INCENTIVES_DISABLED", "Incentive plans are switched off; approved achievement "
+                                  "measures are not paid.", inputs=ids))
+        return []
+    if not measures:
+        return []
+    policy = ctx.policy(inc.POLICY_TYPE)
+    if policy is None:
+        issues.append(blocking("INCENTIVE_PLAN_MISSING", "Approved achievement measures need an active incentive plan "
+                               "for this employee.", inputs=ids))
+        return []
+    plan = policy.fields
+    code = str(plan.get("component") or "INCENTIVE")
+    window = ctx.snapshot.incentive
+    if window is None:
+        issues.append(blocking("INCENTIVE_WINDOW_MISSING", "The frozen inputs hold achievement measures but no payout "
+                               "window of the incentive plan; recalculate the employee.", component=code, inputs=ids))
+        return []
+    source = plan.get("measure_source") or "IMPORT"
+    if source not in inc.SUPPORTED_MEASURE_SOURCES:
+        issues.append(blocking("INCENTIVE_MEASURE_SOURCE_UNSUPPORTED", f"The incentive plan reads {source} measures, "
+                               "which are not supported; use IMPORT.", component=code, measure_source=source))
+        return []
+    component = ctx.component(code)
+    if component is None or component.kind != "EARNING":
+        issues.append(blocking("INCENTIVE_COMPONENT_INVALID", f"The incentive plan pays {code}, which is not an earning "
+                               "component of the catalogue.", component=code))
+        return []
+    wrong = [m.id for m in measures if m.component != code or m.units is None or m.amount is not None]
+    if wrong:
+        issues.append(blocking("INCENTIVE_MEASURE_MISMATCH", f"Measures {', '.join(map(str, wrong))} are not measures "
+                               f"of the plan's component {code} (the plan changed after they were entered); cancel "
+                               "and re-enter them.", component=code, inputs=wrong))
+        return []
+    formula = plan.get("formula")
+    if not formula:
+        issues.append(blocking("INCENTIVE_PLAN_INVALID", "The incentive plan has no formula.", component=code))
+        return []
+    with localcontext(CALC_CONTEXT):
+        measure = sum((m.units for m in measures), ZERO)
+    target = window.target
+    values = inc.local_values(measure, target)
+    achievement = values["inc.achievement_pct"]
+    if ctx.ledger is not None:
+        final = evaluator.final_plan()
+        values = {**variables(ctx, ctx.ledger.totals, compensation=final.compensation if final else None, task=task),
+                  **values}
+    env, components, rates, rate_units = _incentive_env(ctx, evaluator, code, earned)
+    try:
+        expr = fm.parse(formula)
+    except fm.FormulaError as error:
+        issues.append(blocking("FORMULA_ERROR", f"{code} cannot be calculated: {error.message}. The employee is not "
+                               "paid until it is fixed.", component=code, error=error.to_dict()))
+        return []
+    result = fm.evaluate(expr, fm.EvalContext(
+        env, components=components, rates=rates, variables=values, prev=evaluator.prev, ytd=evaluator.ytd,
+        tables=evaluator.tables, minor_units=dict(ctx.minor_units), rate_units=rate_units))
+    if not result.ok or result.value is None:
+        error = result.error or fm.FormulaError(fm.ErrorCode.NULL_VALUE, "the formula gave no value")
+        issues.append(blocking("FORMULA_ERROR", f"{code} cannot be calculated: {error.message}. The employee is not "
+                               "paid until it is fixed.", component=code, error=error.to_dict(),
+                               steps=list(result.steps), references=dict(result.references)))
+        return []
+    raw = result.value
+    if isinstance(raw, fm.MoneyValue) and raw.currency == ctx.currency:
+        value = raw.amount
+    elif isinstance(raw, Decimal):
+        value = raw
+    else:
+        issues.append(blocking("INCENTIVE_PLAN_INVALID", "The incentive formula must give an amount in the pay "
+                               f"currency {ctx.currency}.", component=code))
+        return []
+    if value < 0:
+        issues.append(blocking("INCENTIVE_NEGATIVE", f"The incentive formula gives {format(value, 'f')}; an incentive "
+                               "is never negative (claw back with a negative wage input).", component=code,
+                               value=format(value, "f")))
+        return []
+    capped, cap = value, None
+    if plan.get("cap") is not None:
+        cap_money = plan["cap"]
+        if cap_money.get("currency") != ctx.currency:
+            issues.append(blocking("INCENTIVE_CAP_CURRENCY", f"The incentive cap is in {cap_money.get('currency')}; the "
+                                   f"pay currency is {ctx.currency} and nothing is converted implicitly.",
+                                   component=code))
+            return []
+        cap = Decimal(str(cap_money["amount"]))
+        capped = min(value, cap)
+    mode = rounding_mode(ctx, component)
+    amount = round_amount(ctx, capped, mode)
+    trace = {"component": code, "component_version": component.version, "kind": component.kind,
+             "stage": STAGE_EARNINGS, "method": "INCENTIVE_PLAN",
+             "policy": {"id": policy.id, "version": policy.version, "policy_hash": policy.policy_hash},
+             "payout_frequency": plan.get("payout_frequency") or "MONTHLY",
+             "window": {"start": window.window_start.isoformat(), "end": window.window_end.isoformat()},
+             "measure": format(measure, "f"),
+             "measures": [{"id": m.id, "units": format(m.units, "f")} for m in measures],
+             "target": None if target is None else format(target, "f"), "target_source": window.target_source,
+             "achievement_pct": None if achievement is None else format(achievement.normalize(), "f"),
+             "formula": formula, "steps": list(result.steps), "references": dict(result.references),
+             "unrounded": format(value, "f"), "cap": money_json(cap, ctx.currency),
+             "capped": cap is not None and capped < value, "rounding": rounding_trace("LINE", mode, ctx.quantum),
+             "amount": money_json(amount, ctx.currency)}
+    text = _incentive_text(ctx, window, measure, target, achievement, value, cap, capped)
+    return [make_line(ctx, component, amount, explanation=text, trace=trace,
+                      sources=[{"type": "wage_input", "id": m.id, "source": m.source, "external_ref": m.external_ref,
+                                "content_hash": m.content_hash} for m in measures])]
 
 
 def arrears_lines(ctx: CalcContext) -> list[Line]:
@@ -1368,6 +1531,7 @@ def calculate_earnings(ctx: CalcContext) -> EarningsResult:
     lines.extend(time_based_lines(ctx, evaluator, task, issues))
     own = evaluator.structure_codes()
     lines.extend(input_lines(ctx, inputs, own, issues))
+    lines.extend(incentive_lines(ctx, evaluator, task, lines, issues))
     lines.extend(arrears_lines(ctx))
     lines.extend(reimbursement_lines(ctx, issues))
     issues = evaluator.issues + issues

@@ -234,6 +234,32 @@ see tenant HR data and cannot use the platform console. Create one as a platform
 evidence, the rules for new modules and the readiness report. `tests/test_platform_contracts.py`
 enforces the tenancy and authorization rules for every route and table, including future ones.
 
+## Payroll v2 migrations: rehearsal and rollback
+
+`python scripts/rehearse_payroll_migrations.py [--json report.json]` rehearses `0008`..head on legacy
+data in a scratch database of the embedded test server (it takes the heavy-command lock and drops the
+database afterwards; `--admin-url` points it at another scratch server, never the demo stack). It seeds
+three tenants at `0007_partner_admins` (legacy payroll rows in every status, issued payslips, salary
+structures, settings, attendance, leave, roles, a TOTP secret), upgrades, downgrades and upgrades again,
+and compares every 0007 row and the schema at each stage. `tests/payroll/test_migration_rehearsal.py`
+runs it in the database suite.
+
+Upgrading legacy data: every tenant gets `LEGACY_V1` (0011), permissions v2 and `payroll_manager` for
+its administrators (0010), one MIGRATED compensation assignment per placeable `salary_structure` row
+(0015), leave days for approved leave (0016), encrypted TOTP secrets (0026, needs `PAYROLL_MASTER_KEY`),
+and the D-4 repair of placements of terminated employees (0013). The legacy `payroll`,
+`salary_structure`, `issued_documents`, attendance, leave, employee and `company_settings` rows are
+not modified. The migrations grant an existing application role the new tables; run
+`python -m app.cli setup-db-roles` afterwards anyway.
+
+Rollback: `alembic downgrade 0007_partner_admins` runs in one transaction and restores the 0007 schema
+exactly. It keeps every legacy row, removes the roles, grants and assignments 0010 added, decrypts the
+TOTP secrets (same `PAYROLL_MASTER_KEY` required) and keeps the 0013 placement repair. It drops every
+payroll v2 table, including finalized v2 runs, v2 payslips and payment evidence, and the
+`audit_logs.details` column (the audit rows stay, their details do not). Half-day leave is rounded up.
+0012 refuses the whole downgrade while `tenant_data_keys` rows exist. Once tenants have used payroll v2,
+restore the pre-migration backup instead. Upgrading again re-runs the backfills with identical results.
+
 ## Keeping the frontend in sync
 
 After changing the permission registry:

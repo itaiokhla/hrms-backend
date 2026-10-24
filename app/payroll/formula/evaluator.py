@@ -457,7 +457,9 @@ class _Runner:
 
     def variable(self, node: VariableRef) -> Value:
         name = node.name
-        if name.startswith(CUSTOM_ATTRIBUTE_PREFIX):
+        if name in self.env.locals:
+            declared = self.env.locals[name].type
+        elif name.startswith(CUSTOM_ATTRIBUTE_PREFIX):
             declared = self.env.attributes[name[len(CUSTOM_ATTRIBUTE_PREFIX):]]
         else:
             declared = VARIABLES[name].type

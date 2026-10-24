@@ -162,6 +162,7 @@ def test_entity_validation_iso_codes_and_country_lock(app, acme):
 
 
 def test_department_cycle_rejected_and_teams_extend_department_scope(app, acme):
+    """EC-ORG-10: a department parent that creates a cycle is rejected."""
     eng = acme.post("/api/v1/departments", json={"name": "Engineering"}).json()
     team = acme.post("/api/v1/departments", json={"name": "Platform team", "parent_department_id": eng["id"]}).json()
     r = acme.put(f"/api/v1/departments/{eng['id']}", json={"name": "Engineering", "parent_department_id": team["id"]})
@@ -219,6 +220,7 @@ def test_placement_change_history_and_overlap_rules(app, acme):
 
 
 def test_termination_and_rehire_keep_history(acme):
+    """EC-ORG-22: rehire keeps the employee row and code with a new employment period."""
     emp = create_employee(acme, "Leaver", hire_date="2024-01-15")
     assert acme.post(f"/api/v1/employees/{emp['id']}/deactivate").status_code == 200
     closed = acme.get(f"/api/v1/employees/{emp['id']}/assignments").json()

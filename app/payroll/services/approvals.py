@@ -498,13 +498,23 @@ def holds_any_approval_right(db: Session, principal: Principal) -> bool:
 # Routing
 # ---------------------------------------------------------------------------
 def _notify_step(ctx: _Context, request: ApprovalRequest, step: ApprovalRequestStep) -> None:
+    """Tell the step's approvers on the channels of notify.payroll.approval_requested (no amounts)."""
+    from app.payroll.services import notifications as payroll_notifications
+
+    channels = payroll_notifications.approval_channels(ctx.db, request)
+    if not channels:
+        return
     label = MODULE_LABELS[request.module]
-    for user_id in _eligible_user_ids(ctx, request, step, limit=NOTIFY_LIMIT):
-        NotificationService.create(
-            ctx.db, user_id, f"{label.capitalize()} awaiting your approval",
-            f"Approval request #{request.id} ({label}) is waiting for your decision.",
-            "approval", f"{INBOX_URL}?id={request.id}",
-        )
+    user_ids = _eligible_user_ids(ctx, request, step, limit=NOTIFY_LIMIT)
+    if "IN_APP" in channels:
+        for user_id in user_ids:
+            NotificationService.create(
+                ctx.db, user_id, f"{label.capitalize()} awaiting your approval",
+                f"Approval request #{request.id} ({label}) is waiting for your decision.",
+                "approval", f"{INBOX_URL}?id={request.id}",
+            )
+    if "EMAIL" in channels:
+        payroll_notifications.queue_approval_emails(ctx.db, request, step, user_ids)
 
 
 def _set_pending(ctx: _Context, request: ApprovalRequest, step: ApprovalRequestStep) -> None:

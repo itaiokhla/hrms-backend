@@ -304,6 +304,7 @@ def test_migration_literals_match_registry_2026_10_3():
 
 
 def test_ec_mig_04_migration_materializes_legacy_v1_idempotently_and_reverts(app):
+    """EC-MIG-06: company_settings rows move to setting_values and the legacy get_values answers as before."""
     m = _migration()
     acme = signup_company(app, "Legacy Co")
     beta = signup_company(app, "Fresh Co")

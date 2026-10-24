@@ -70,6 +70,7 @@ from app.payroll.formula.variables import (
     NAMESPACES,
     VARIABLES,
     Stage,
+    VariableDef,
     is_protected,
 )
 
@@ -106,6 +107,8 @@ class TypeEnv:
     ``component``/``stage``: the component being defined, for self-reference and
     STAGE_VIOLATION checks. ``allow_protected``: country-pack formulas only.
     ``expect``: AMOUNT (money or a plain number), NUMBER, BOOLEAN or ANY.
+    ``locals``: variables that exist only in this formula's context (for example ``inc.measure`` of an incentive
+    plan formula), by full name; they are unknown everywhere else.
     """
 
     currency: str
@@ -117,9 +120,13 @@ class TypeEnv:
     stage: int | None = None
     allow_protected: bool = False
     expect: Expect = "AMOUNT"
+    locals: Mapping[str, VariableDef] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         validate_currency(self.currency)
+        for name, definition in self.locals.items():
+            if not isinstance(definition, VariableDef) or definition.name != name:
+                raise TypeError(f"locals[{name!r}] must be the VariableDef of {name}")
         if self.expect not in EXPECTS:
             raise ValueError(f"expect must be one of {EXPECTS}, got {self.expect!r}")
         if self.stage is not None and (isinstance(self.stage, bool) or not isinstance(self.stage, int)):
@@ -308,7 +315,7 @@ class Typer:
         if isinstance(ref, ComponentRef):
             return f"{text} is not in every salary structure and is NULL when absent; {fix}"
         if isinstance(ref, VariableRef):
-            definition = VARIABLES.get(ref.name)
+            definition = self.env.locals.get(ref.name) or VARIABLES.get(ref.name)
             if definition is not None and definition.source is not None:
                 return f"{text} is NULL when {definition.source} is OFF; {fix}"
             return f"{text} can be empty for some employees; {fix}"
@@ -436,6 +443,9 @@ class Typer:
             if ftype is None:
                 return self.fail(ErrorCode.UNKNOWN_REFERENCE, f"unknown custom attribute {attribute}", node)
             return _Info(self.resolve(ftype), (node,))
+        local = env.locals.get(name)
+        if local is not None:
+            return _Info(self.resolve(local.type), (node,) if local.may_be_null else ())
         namespace = node.namespace
         if namespace not in NAMESPACES:
             return self.fail(

@@ -399,8 +399,8 @@ def _standard_period(snap: Snapshot, segment: Any) -> Snapshot:
               "payroll.late_penalty.enabled": False}
     whole = replace(segment, start=snap.period.start, end=snap.period.end)
     return replace(snap, segments=(whole,), days=days, settings=values, switch_ranges={}, ledger_overrides={},
-                   overtime_entries=(), non_working_day_work=(), shifts=(), wage_inputs=(), arrears=(),
-                   reimbursements=(), loans=(), advances=(), court_orders=(), bank_accounts=())
+                   overtime_entries=(), non_working_day_work=(), shifts=(), wage_inputs=(), incentive=None,
+                   arrears=(), reimbursements=(), loans=(), advances=(), court_orders=(), bank_accounts=())
 
 
 def resolve_net_based(snap: Snapshot, ctx: CalcContext) -> tuple[Snapshot, list[CalcIssue], dict[str, Any]]:

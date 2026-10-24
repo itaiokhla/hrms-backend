@@ -116,6 +116,7 @@ def test_company_user_cannot_use_platform_endpoints(three_companies):
 
 
 def test_platform_admin_manages_tenants_without_hr_data(three_companies, app):
+    """EC-ORG-20: tenant HR endpoints refuse the platform principal."""
     from app.cli import create_platform_admin
 
     create_platform_admin("ops@platform.io", "Ops", "Platf0rmPass!")
@@ -135,6 +136,7 @@ def test_platform_admin_manages_tenants_without_hr_data(three_companies, app):
 
 
 def test_inactive_subscription_blocks_data_but_not_session(three_companies, app):
+    """EC-WL-22 (API half): an inactive subscription gets no data; the blocked screen is checked in Chrome."""
     from app.cli import create_platform_admin
 
     create_platform_admin("ops@platform.io", "Ops", "Platf0rmPass!")

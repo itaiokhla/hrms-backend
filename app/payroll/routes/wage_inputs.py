@@ -44,6 +44,8 @@ class WageInputIn(StrictModel):
     amount: Optional[PayMoneyIn] = None
     units: Optional[DecimalStr] = None
     rate: Optional[DecimalStr] = None
+    # An achievement measure of the employee's incentive plan (3.1 §5.9, decision I-22): no amount, units or rate.
+    measure: Optional[DecimalStr] = None
     # Currency of a units input (defaults to the pay group's); amounts carry their own.
     currency: Optional[str] = Field(None, pattern=r"^[A-Z]{3}$")
     convert_currency: bool = False
@@ -59,8 +61,11 @@ class WageInputIn(StrictModel):
 
     @model_validator(mode="after")
     def _shape(self) -> "WageInputIn":
-        if (self.amount is None) == (self.units is None):
-            raise ValueError("Give either amount or units.")
+        if sum(v is not None for v in (self.amount, self.units, self.measure)) != 1:
+            raise ValueError("Give exactly one of amount, units or measure.")
+        if self.measure is not None and (self.currency is not None or self.rate is not None or self.recurrence
+                                         is not None or self.convert_currency):
+            raise ValueError("A measure has no currency, rate or recurrence.")
         if self.amount is not None and (self.currency is not None or self.rate is not None):
             raise ValueError("currency and rate go with units; an amount carries its own currency.")
         if self.period_end < self.period_start:
@@ -70,10 +75,12 @@ class WageInputIn(StrictModel):
     def to_data(self) -> service.InputData:
         return service.InputData(
             employee_id=self.employee_id, component_code=self.component_code, period_start=self.period_start,
-            period_end=self.period_end, amount=self.amount.decimal if self.amount else None, units=self.units,
+            period_end=self.period_end, amount=self.amount.decimal if self.amount else None,
+            units=self.measure if self.measure is not None else self.units,
             rate=self.rate, currency=self.amount.currency if self.amount else self.currency,
             convert_currency=self.convert_currency, reason=self.reason, external_ref=self.external_ref,
             recurrence_until=self.recurrence.until if self.recurrence else None,
+            source=service.incentives.MEASURE_SOURCE if self.measure is not None else "MANUAL",
         )
 
 

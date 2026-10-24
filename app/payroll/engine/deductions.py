@@ -19,6 +19,13 @@ waivable ``PROTECTED_NET_NOT_SET`` issue lists them. Court orders and voluntary 
 still taken within the pack floor, or never below zero net when there is none. Negative net pay coming from earlier stages is never
 clipped here (the net stage raises ``NEGATIVE_NET``, EC-RUN-10); every item is then deferred.
 
+A clawback (an approved negative wage input of an earning component, EC-VAR-12) is an earning line with a
+negative amount. It is a recovery too: the protected floor is taken on the gross cash earnings before
+clawbacks, and a clawback that takes net pay below that floor raises a blocking, non-waivable
+``CLAWBACK_EXCEEDS_PROTECTED_NET`` naming the most that can be recovered this period (the input is reduced
+and the rest entered in a later period); without a protected net percentage it raises the blocking,
+waivable ``CLAWBACK_PROTECTED_NET_NOT_SET``. The engine never shortens an input by itself.
+
 Context fields read (``engine.context.CalcContext``): ``currency``, ``settings``/``setting``,
 ``min_net_pay_percent``, ``court_orders``, ``loans``, ``advances`` (plain mappings: ``id`` or
 ``loan_id``; the amount due as ``amount``, ``due``, ``instalment_amount`` or ``instalment``; optional
@@ -64,6 +71,8 @@ DEDUCTION_DEFERRED = "DEDUCTION_DEFERRED"
 DEDUCTION_RECEIVABLE = "DEDUCTION_RECEIVABLE"
 INVALID_DEDUCTION = "INVALID_DEDUCTION"
 DEDUCTIONS_ALREADY_APPLIED = "DEDUCTIONS_ALREADY_APPLIED"
+CLAWBACK_EXCEEDS_PROTECTED_NET = "CLAWBACK_EXCEEDS_PROTECTED_NET"
+CLAWBACK_PROTECTED_NET_NOT_SET = "CLAWBACK_PROTECTED_NET_NOT_SET"
 
 
 @dataclass(frozen=True)
@@ -138,17 +147,22 @@ def evaluate(ctx: Any, lines: Sequence[Line]) -> DeductionResult:
         reimbursements = sum((line.amount for line in lines if line.kind == "REIMBURSEMENT"), ZERO)
         deducted = sum((line.amount for line in lines if line.kind == "DEDUCTION"), ZERO)
         net_before = gross + reimbursements - deducted
-    if not items:
+        # Clawbacks (EC-VAR-12): negative earning lines; the floor is taken on the earnings before them.
+        clawback = -sum((line.amount for line in lines if line.kind == "EARNING" and line.amount < 0), ZERO)
+        cash_gross = gross + clawback
+    if not items and not clawback:
         return DeductionResult(lines, (), tuple(issues), net_before=net_before, gross=gross, skipped=tuple(skipped))
 
     try:
         percent = _setting_percent(ctx)
-        protection = protected_net_room(max(gross, ZERO), net_before, currency, min_net_pay_percent=percent,
+        protection = protected_net_room(max(cash_gross, ZERO), net_before, currency, min_net_pay_percent=percent,
                                         pack_floor_percent=_pack_floor(ctx))
     except (TimePayError, MoneyError, ValueError) as error:
         issues.append(CalcIssue(INVALID_DEDUCTION, "BLOCKING", f"Protected net pay cannot be applied: {error}",
                                 {"setting": PROTECTED_NET_KEY}))
         return DeductionResult(lines, (), tuple(issues), net_before=net_before, gross=gross, skipped=tuple(skipped))
+    if clawback:
+        issues.extend(_clawback_issues(lines, clawback, cash_gross, net_before, protection, percent is None, currency))
 
     unset = percent is None                       # G-23: the company percentage, not only a pack floor
     remaining = max(ZERO, net_before) if protection.percent is None else protection.room
@@ -367,6 +381,35 @@ def _line(item: DeductionItem, take: Decimal, due: Decimal, rest: Decimal, room_
     return Line(component=item.component, kind="DEDUCTION", category=CATEGORY[item.type], stage=STAGE_POST_TAX,
                 amount=take, currency=currency, period_ref=item.period_ref, sources=tuple(dict(s) for s in item.sources),
                 trace=trace, explanation=text[0].upper() + text[1:], sort_order=800 + RANK[item.type] * 10)
+
+
+def _clawback_issues(lines: Sequence[Line], clawback: Decimal, cash_gross: Decimal, net_before: Decimal,
+                     protection: ProtectedNet, unset: bool, currency: str) -> List[CalcIssue]:
+    """EC-VAR-12: a clawback is recovered within the protected net, like every automated recovery."""
+    from app.payroll.money import amount_str
+
+    codes = sorted({line.component for line in lines if line.kind == "EARNING" and line.amount < 0})
+    details: Dict[str, Any] = {"components": codes, "clawback": amount_str(clawback, currency),
+                               "gross_before_clawback": amount_str(cash_gross, currency),
+                               "net_before_deductions": amount_str(net_before, currency), "setting": PROTECTED_NET_KEY}
+    found: List[CalcIssue] = []
+    if unset:
+        found.append(CalcIssue(
+            CLAWBACK_PROTECTED_NET_NOT_SET, "BLOCKING",
+            f"A clawback of {fmt(clawback)} ({', '.join(codes)}) is a recovery and needs a protected net pay "
+            "percentage (Settings › Loans & advances) before it can be taken.", details, waivable=True))
+    if protection.floor is not None and net_before < protection.floor:
+        with localcontext(CALC_CONTEXT):
+            shortfall = protection.floor - net_before
+            recoverable = quantize_amount(max(ZERO, clawback - shortfall), currency, "DOWN")
+        found.append(CalcIssue(
+            CLAWBACK_EXCEEDS_PROTECTED_NET, "BLOCKING",
+            f"The clawback of {fmt(clawback)} ({', '.join(codes)}) takes net pay to {fmt(net_before)}, below the "
+            f"protected net of {fmt(protection.floor)} ({fmt(protection.percent)}% of {fmt(cash_gross)}). At most "
+            f"{fmt(recoverable)} can be recovered this period: reduce the input and enter the rest in a later period.",
+            {**details, "protected_floor": amount_str(protection.floor, currency),
+             "recoverable_this_period": amount_str(recoverable, currency)}))
+    return found
 
 
 def _deferred_issue(item: DeductionItem, due: Decimal, take: Decimal, rest: Decimal, final: bool,

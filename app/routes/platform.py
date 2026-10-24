@@ -240,10 +240,15 @@ def update_company(company_id: int, data: CompanyUpdate, request: Request,
             raise bad_request("Invalid subscription status")
         if "subscription_plan" in changes and changes["subscription_plan"] not in PLANS:
             raise bad_request(f"Plan must be one of {', '.join(PLANS)}")
+        logged = dict(changes)
+        details = None
         if "partner_id" in changes:
             partner_id = changes.pop("partner_id") or None
             if partner_id is not None and db.get(Partner, partner_id) is None:
                 raise not_found("Partner")
+            # EC-ORG-21: the move to another partner (or to direct) is part of the audit record.
+            logged["partner_id"] = partner_id
+            details = {"partner_id": {"before": company.partner_id, "after": partner_id}}
             company.partner_id = partner_id
         for key, value in changes.items():
             setattr(company, key, value)
@@ -254,8 +259,9 @@ def update_company(company_id: int, data: CompanyUpdate, request: Request,
             ).update({UserSession.revoked_at: utcnow(), UserSession.revoke_reason: "company_suspended"},
                      synchronize_session=False)
         AuditLogService.log(
-            db, None, "Platform", "COMPANY_UPDATED", f"{company.name}: {changes}", "company", company.id,
+            db, None, "Platform", "COMPANY_UPDATED", f"{company.name}: {logged}", "company", company.id,
             client_ip(request), company_id=None, actor_type="platform", actor_id=admin.admin_id, actor_email=admin.email,
+            details=details,
         )
         db.commit()
         brand_service.invalidate_cache(company.id)

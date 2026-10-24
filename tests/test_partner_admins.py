@@ -47,6 +47,7 @@ def test_partner_sees_only_its_own_clients_as_counts(world):
 
 
 def test_partner_session_opens_neither_the_platform_console_nor_tenant_data(world):
+    """EC-ORG-15: partner staff reach no tenant HR route."""
     app = world["app"]
     north = _partner(app, "admin@northwind.example")
     for path in ("/api/v1/platform/companies", "/api/v1/platform/partners", "/api/v1/platform/me",

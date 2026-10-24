@@ -40,6 +40,7 @@ def test_every_colour_ends_with_aa_contrast():
 
 
 def test_low_contrast_colour_is_adjusted_and_exact_colour_kept():
+    """EC-WL-03: the UI primary is darkened until text passes 4.5:1, the exact colour is kept and a warning is shown."""
     tokens = brand_theme.derive_tokens("#F5C518")  # yellow: white text impossible
     assert tokens["light"]["primary-foreground"] == "224 32% 12%"  # dark text instead
     assert tokens["exact"]["primary"] == "#F5C518"
@@ -50,6 +51,7 @@ def test_low_contrast_colour_is_adjusted_and_exact_colour_kept():
 
 
 def test_brand_hue_near_error_colour_warns():
+    """EC-WL-04: a brand hue near the error colour only warns."""
     tokens = brand_theme.derive_tokens("#E11D48")
     assert any("close to the error colour" in w for w in tokens["warnings"])
     assert not any("error colour" in w for w in brand_theme.derive_tokens("#0F766E")["warnings"])
@@ -87,6 +89,8 @@ def admin(app):
          "logo-too-flat", "too-large"],
 )
 def test_bad_uploads_are_rejected(admin, kind, data, name, ctype, code):
+    """EC-WL-01 (wrong type, truncated, animated, too large, too many pixels) and EC-WL-06 (phase 1: an SVG with a
+    script is refused; nothing stored)."""
     r = upload(admin, kind, data, name, ctype)
     assert r.status_code == 400, r.text
     assert r.json()["code"] == code
@@ -124,6 +128,8 @@ def _brand_on(app, host: str, **headers) -> dict:
 
 
 def test_draft_invisible_until_published_and_rollback(app, admin):
+    """EC-WL-07 (draft only through a signed preview token, no-store, others see the published brand) and EC-WL-10
+    (rollback is a new version; history kept; served at once)."""
     host = tenant_host("acme-corp")
     before = _brand_on(app, host)
     assert before["display_name"] == "Acme Corp" and before["tokens"] is None
@@ -168,6 +174,7 @@ def test_draft_invisible_until_published_and_rollback(app, admin):
 
 
 def test_concurrent_publish_one_wins(app, admin):
+    """EC-WL-08: two publishes at once, one wins and the other gets 409."""
     admin.put("/api/v1/branding/draft", json={"changes": {"tagline": "Race"}})
     row_version = admin.get("/api/v1/branding").json()["draft"]["row_version"]
     results = []
@@ -190,6 +197,7 @@ def test_stale_draft_edit_is_refused(admin):
 
 
 def test_branding_requires_permission(app, admin):
+    """EC-WL-07: only users with branding:manage reach the draft."""
     employee = invite_and_activate(app, admin, create_employee(admin, "Plain"), ["employee"])
     hr = invite_and_activate(app, admin, create_employee(admin, "Hr"), ["hr_admin"])
     for client in (employee, hr):
@@ -215,6 +223,8 @@ def test_invalid_field_values_rejected(admin):
 # Plans and partner locks (EC-WL-11, EC-WL-12)
 # ---------------------------------------------------------------------------
 def test_plan_gates_product_name_and_downgrade_keeps_value_inactive(app, admin):
+    """EC-WL-12: after a downgrade the field resolves to the platform value; the tenant's value is kept inactive
+    (NOT_ENTITLED)."""
     r = admin.put("/api/v1/branding/draft", json={"changes": {"product_name": "Acme People"}})
     assert r.status_code == 403 and r.json()["code"] == "BRAND_NOT_ENTITLED"
     ops = platform_admin(app)
@@ -231,6 +241,8 @@ def test_plan_gates_product_name_and_downgrade_keeps_value_inactive(app, admin):
 
 
 def test_partner_lock_overrides_tenant_ui_and_api(app):
+    """EC-WL-11: a partner-locked field is refused by the API (403 BRAND_FIELD_LOCKED) and reported as locked to the
+    UI."""
     ops = platform_admin(app)
     tenant_a = signup_company(app, "Acme Corp")
     tenant_b = signup_company(app, "Beta Industries")
@@ -266,6 +278,7 @@ def test_partner_lock_overrides_tenant_ui_and_api(app):
 
 
 def test_kill_switch_falls_back_to_platform_brand(app, admin):
+    """EC-WL-26: the platform kill switch falls back to the platform brand."""
     admin.put("/api/v1/branding/draft", json={"changes": {"primary_color": "#0F766E", "tagline": "Totally a bank"}})
     admin.post("/api/v1/branding/publish", json={})
     ops = platform_admin(app)
@@ -282,6 +295,8 @@ def test_kill_switch_falls_back_to_platform_brand(app, admin):
 # Public brand isolation (EC-WL-19, EC-WL-20, EC-WL-21) and assets
 # ---------------------------------------------------------------------------
 def test_public_brand_allow_list_and_host_isolation(app):
+    """EC-WL-19 (forged host without the proxy key is the platform host), EC-WL-20 (Vary: Host) and EC-WL-21 (unknown
+    host: neutral platform brand)."""
     a = signup_company(app, "Acme Corp")
     b = signup_company(app, "Beta Industries")
     a.put("/api/v1/branding/draft", json={"changes": {"tagline": "Acme only", "support_email": "hr@acme.io"}})

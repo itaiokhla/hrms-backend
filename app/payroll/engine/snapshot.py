@@ -56,7 +56,12 @@ JSON shape (every key optional unless marked *required*; defaults in brackets)::
                           currency, effective_from, effective_to, grade, skill, location}], carried_in,
                           skill, location, minimum_wage {min_hourly_rate, verified, pack_forces_top_up}
     wage_inputs           [{id *, component *, amount, units, currency, source [MANUAL], external_ref, reason,
-                          content_hash}] approved inputs targeting the period (EC-VAR-01)
+                          content_hash}] approved inputs targeting the period (EC-VAR-01); source INCENTIVE_PLAN
+                          items are achievement measures (units = the measure) of the payout window
+    incentive             window_start *, window_end *, target, target_source (EMPLOYEE | GRADE), grade_id: the
+                          payout window this run pays and the employee's resolved target (``app.payroll.incentives``,
+                          I-22); present only when payroll.incentives.enabled is ON, a plan applies and the period
+                          ends a window (omitted from to_dict when absent, so older snapshots keep their hash)
     arrears               [{id *, component * (original), amount *, period_ref *, tags (inherited), reason}]
     reimbursements        [{id *, claim_type *, amount *, currency, taxability}] approved WITH_PAYROLL claims
     loans, advances       [{...}] instalments due, passed to the deductions stage as plain mappings
@@ -826,6 +831,40 @@ class BankAccount:
 
 
 @dataclass(frozen=True)
+class IncentiveInputs:
+    """The payout window this run pays and the employee's resolved incentive target (3.1 §5.9, decision I-22)."""
+
+    window_start: dt.date
+    window_end: dt.date
+    target: Decimal | None = None
+    target_source: str | None = None
+    grade_id: int | str | None = None
+
+    _KEYS = ("window_start", "window_end", "target", "target_source", "grade_id")
+
+    @classmethod
+    def from_dict(cls, raw: Any, path: str = "incentive") -> IncentiveInputs | None:
+        if raw is None:
+            return None
+        data = _mapping(raw, path, cls._KEYS, ("window_start", "window_end"))
+        item = cls(_date(data["window_start"], f"{path}.window_start"),
+                   _date(data["window_end"], f"{path}.window_end"),
+                   _dec(data.get("target"), f"{path}.target", optional=True),
+                   None if data.get("target_source") is None else _choice(
+                       data.get("target_source"), f"{path}.target_source", ("EMPLOYEE", "GRADE")),
+                   _ident(data.get("grade_id"), f"{path}.grade_id"))
+        if item.window_end < item.window_start:
+            raise _fail(path, "the payout window ends before it starts")
+        if (item.target is None) != (item.target_source is None):
+            raise _fail(path, "a target needs its source and a source needs its target")
+        return item
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"window_start": self.window_start.isoformat(), "window_end": self.window_end.isoformat(),
+                "target": dec_str(self.target), "target_source": self.target_source, "grade_id": self.grade_id}
+
+
+@dataclass(frozen=True)
 class TaskInputs:
     """Approved tasks attributed to the period, the rate card and the minimum-wage data (3.4 §10)."""
 
@@ -1116,7 +1155,7 @@ def _table(raw: Any, path: str) -> Mapping[str, Any]:
 
 _TOP_KEYS = ("schema_version", "run", "employee", "period", "currency", "settings", "switch_ranges", "policies",
              "components", "segments", "days", "ledger_overrides", "overtime_entries", "non_working_day_work", "shifts",
-             "tasks", "wage_inputs", "arrears", "reimbursements", "loans", "advances", "court_orders", "previous",
+             "tasks", "wage_inputs", "incentive", "arrears", "reimbursements", "loans", "advances", "court_orders", "previous",
              "ytd", "pack", "pack_state", "tax_profile", "attestation", "fx", "bank_accounts", "tables")
 
 
@@ -1145,6 +1184,7 @@ class Snapshot:
     shifts: tuple[ShiftWorked, ...] = ()
     tasks: TaskInputs = field(default_factory=TaskInputs)
     wage_inputs: tuple[WageInput, ...] = ()
+    incentive: IncentiveInputs | None = None
     arrears: tuple[ArrearsItem, ...] = ()
     reimbursements: tuple[Reimbursement, ...] = ()
     loans: tuple[Mapping[str, Any], ...] = ()
@@ -1212,6 +1252,7 @@ class Snapshot:
             shifts=_items(data.get("shifts"), "shifts", _shift),
             tasks=TaskInputs.from_dict(data.get("tasks")),
             wage_inputs=_items(data.get("wage_inputs"), "wage_inputs", WageInput.from_dict),
+            incentive=IncentiveInputs.from_dict(data.get("incentive")),
             arrears=_items(data.get("arrears"), "arrears", ArrearsItem.from_dict),
             reimbursements=_items(data.get("reimbursements"), "reimbursements", Reimbursement.from_dict),
             loans=_items(data.get("loans"), "loans", lambda v, p: _json_value(_mapping(v, p), p)),
@@ -1228,7 +1269,7 @@ class Snapshot:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        return self._with_optional({
             "schema_version": self.schema_version,
             "run": self.run.to_dict(),
             "employee": self.employee.to_dict(),
@@ -1262,10 +1303,15 @@ class Snapshot:
             "fx": to_plain(self.fx),
             "bank_accounts": [b.to_dict() for b in self.bank_accounts],
             "tables": to_plain(self.tables),
-        }
+        })
 
     def canonical_json(self) -> str:
         return canonical_json(self.to_dict())
+
+    def _with_optional(self, data: dict[str, Any]) -> dict[str, Any]:
+        if self.incentive is not None:
+            data["incentive"] = self.incentive.to_dict()
+        return data
 
     @property
     def content_hash(self) -> str:
@@ -1284,7 +1330,7 @@ def load(snapshot: Snapshot | Mapping[str, Any]) -> Snapshot:
 
 
 __all__ = [
-    "ArrearsItem", "BankAccount", "Compensation", "ComponentDef", "EmployeeInfo", "PeriodInfo", "PolicySnapshot",
+    "ArrearsItem", "BankAccount", "Compensation", "ComponentDef", "EmployeeInfo", "IncentiveInputs", "PeriodInfo", "PolicySnapshot",
     "Previous", "Reimbursement", "RunInfo", "SCHEMA_VERSION", "Segment", "Snapshot", "SnapshotError",
     "StructureLine", "TaskInputs", "WageInput", "canonical_json", "content_hash", "day_from_dict", "day_to_dict",
     "load", "sha256_hex", "to_plain",

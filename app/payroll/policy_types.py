@@ -758,7 +758,20 @@ class IncentivePlan(PolicyFields):
         return self
 
     def activation_problems(self, switches: frozenset[str] | None) -> list[ActivationProblem]:
-        return [] if self.formula is not None else [ActivationProblem("formula", "Enter the incentive formula.")]
+        """The formula is required and may read only the plan's ``inc.*`` variables in that namespace; task-based
+        measures are not supported yet (decision I-22: no exactly-once consumption of task measures)."""
+        from app.payroll import incentives
+
+        found: list[ActivationProblem] = []
+        if self.formula is None:
+            found.append(ActivationProblem("formula", "Enter the incentive formula."))
+        else:
+            found.extend(ActivationProblem("formula", text) for text in incentives.formula_problems(self.formula))
+        if self.measure_source not in incentives.SUPPORTED_MEASURE_SOURCES:
+            found.append(ActivationProblem(
+                "measure_source", "Task-based measures are not supported yet; use IMPORT (approved measures entered "
+                "or imported as wage inputs)."))
+        return found
 
 
 # --------------------------------------------------------------------------- 3.1 §5.10 reimbursements

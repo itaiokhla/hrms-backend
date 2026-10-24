@@ -349,6 +349,7 @@ def test_bank_account_is_masked_on_the_payslip(docs_world):
 # Immutability and re-render (EC-DOC-03)
 # ---------------------------------------------------------------------------
 def test_ec_doc_03_rerender_reproduces_bytes_and_issued_documents_never_change(docs_world):
+    """EC-COR-15: after a template change the issued payslip serves its stored bytes and keeps its lineage."""
     from app.core import storage
 
     w = docs_world

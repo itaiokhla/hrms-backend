@@ -189,6 +189,7 @@ def pay(app):
 # Obligations from the finalized-run event (EC-PAY-15, EC-PAY-16)
 # ---------------------------------------------------------------------------
 def test_ec_pay_15_ec_pay_16_one_obligation_per_positive_net_and_none_for_zero_or_negative(pay):
+    """EC-REL-03: a redelivered finalized event creates no duplicate obligation or instruction."""
     run_id = finalized_run(pay, {"Emma": "50000.00", "Ivan": "42000.50", "Zara": "0", "Nell": "-1250.00"})
     rows = sql("SELECT employee_id, amount, currency, status, source_type, run_employee_id FROM payment_obligations "
                "WHERE run_id = :r ORDER BY employee_id", r=run_id)

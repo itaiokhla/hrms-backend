@@ -330,6 +330,7 @@ def test_ec_cmp_12_the_compensation_hook_proposes_for_each_finalized_period(retr
 # Attendance correction -> recovery paid in the next regular run (EC-COR-02, EC-ATT-06, EC-COR-17, EC-VAR-01)
 # ---------------------------------------------------------------------------
 def test_ec_cor_02_ec_att_06_lop_after_finalization_is_recovered_in_the_next_regular_run(retro_world):
+    """EC-COR-17: an overpayment found after finalization is recovered in the next run within the protected net."""
     w = retro_world
     set_tenant_setting(w, "payroll.deductions.min_net_pay_percent", "50")
     set_tenant_setting(w, "payroll.arrears.recovery_mode", "NEXT_RUN")
@@ -481,6 +482,7 @@ def test_detect_validation_and_permissions(retro_world):
 # Recovery beyond the protected net (EC-COR-05)
 # ---------------------------------------------------------------------------
 def test_ec_cor_05_plan_recovery_splits_by_the_protected_net_capacity():
+    """EC-COR-17: recovery lines never exceed the protected net capacity."""
     from app.payroll.services.retro import instalment_count, plan_recovery, split_amount
 
     plan = plan_recovery("NEXT_RUN", Decimal("60000"), gross=Decimal("100000"), net=Decimal("100000"),

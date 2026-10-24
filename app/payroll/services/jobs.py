@@ -305,6 +305,11 @@ def _discard_inline(session: Session, previous_transaction) -> None:
 
 
 def _run_inline_after_commit(session: Session) -> None:
+    # SQLAlchemy also emits after_commit when a SAVEPOINT is released (``begin_nested``). The enclosing transaction
+    # is still open then, so the claiming connection cannot see its jobs yet: they would be dropped from the list
+    # and never run inline (F-68). Keep them for the outermost commit.
+    if session.in_nested_transaction():
+        return
     pending = session.info.get(_INLINE_PENDING) or []
     ids = list(pending)
     pending.clear()
