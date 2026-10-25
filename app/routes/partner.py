@@ -4,7 +4,8 @@ A partner administrator sees only its own partner: the tenants it sells to, as
 aggregate counts, and its own brand (with the fields it locks for its tenants).
 Owning the commercial relationship grants no access to tenant HR data: there is
 no endpoint here that returns employees, payroll, attendance or bank records, and
-tenant routes do not accept partner sessions. Bureau grants are not implemented.
+tenant routes do not accept partner sessions. The only way into a tenant is a tenant-granted, read-only,
+time-boxed delegation (app/routes/partner_delegation.py), which yields a separate delegated principal.
 """
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -13,9 +14,10 @@ from sqlalchemy import func
 from app.core.errors import not_found
 from app.core.principal import PlatformPrincipal, get_partner_principal, require_platform_host
 from app.core.rate_limit import client_ip
+from app.core.security import PLATFORM_ACCESS_COOKIE, decode_jwt, utcnow
 from app.database.db import system_session
 from app.models.branding import CommercialBrandProfile
-from app.models.company import Company, Partner
+from app.models.company import Company, Partner, PlatformSession
 from app.models.employee import Employee
 from app.models.user import User
 from app.routes import platform as platform_routes
@@ -36,8 +38,26 @@ def partner_refresh(request: Request, response: Response):
     return platform_routes.platform_refresh(request, response)
 
 
+def _revoke_access_session(request: Request) -> None:
+    """End the signed-in partner session server-side.
+
+    The refresh cookie is scoped to /api/v1/platform/auth, so a browser never sends it to this path and
+    platform_logout alone would only clear cookies. The access cookie (path /) names the session, so tokens
+    opened under a delegation (app.services.partner_delegation_service) die with the sign-out.
+    """
+    claims = decode_jwt(request.cookies.get(PLATFORM_ACCESS_COOKIE) or "", "access")
+    if not claims or claims.get("pt") != "partner":
+        return
+    with system_session() as db:
+        row = db.get(PlatformSession, str(claims.get("sid")))
+        if row is not None and str(row.admin_id) == str(claims.get("sub")) and row.revoked_at is None:
+            row.revoked_at, row.revoke_reason = utcnow(), "logout"
+            db.commit()
+
+
 @router.post("/auth/logout")
 def partner_logout(request: Request, response: Response):
+    _revoke_access_session(request)
     return platform_routes.platform_logout(request, response)
 
 

@@ -236,6 +236,10 @@ PERMISSIONS: List[PermissionDef] = [
          "View tax regimes, tax identifiers and declarations.", _OWN_ENTITY, full_access=_OWN_ONLY),
     _pay("payroll:tax_profile:verify", "Verify tax declarations",
          "Verify tax declarations and proofs submitted by employees.", _ENTITY),
+    _pay("payroll:tax_profile:edit", "Submit tax declarations",
+         "Submit and update your own tax declarations and proofs.", _SELF, full_access=_OWN_ONLY),
+    _pay("payroll:tax_profile:review", "Review tax declarations",
+         "Review, approve or reject tax declarations and proofs submitted by employees of a legal entity.", _ENTITY),
     _pay("payroll:statutory:review", "Review statutory filings",
          "Review statutory reports and contribution returns.", _ENTITY),
     _pay("payroll:statutory:submit", "Submit statutory filings",
@@ -245,6 +249,9 @@ PERMISSIONS: List[PermissionDef] = [
     _pay("payroll:reports:export", "Export payroll reports", "Download payroll registers and reports.", _PAY_GROUPS),
     _pay("payroll:audit:read", "View payroll audit trail", "View payroll events in the audit log.", _COMPANY,
          "confidential", None),
+    _pay("payroll:legal_hold:manage", "Manage legal holds",
+         "Place legal holds on payroll documents and release them (releasing needs a second person and a "
+         "recent step-up), run the retention sweep and process employee erasure requests.", _COMPANY),
     # Legacy payroll screens: deprecated aliases for one release (3.9 §5.2), never implied by full access.
     _legacy("payroll:read", "View payroll (legacy)",
             "Legacy payroll screens: view payroll runs and payslips.", _SELF_OR_COMPANY, _OWN_ONLY),
@@ -286,6 +293,11 @@ PERMISSIONS: List[PermissionDef] = [
     PermissionDef(
         "settings:approve_changes", "Administration", "Approve setting changes",
         "Approve or reject changes to sensitive settings made by someone else.", _COMPANY, "confidential",
+    ),
+    PermissionDef(
+        "settings:partner_access:manage", "Administration", "Manage partner access",
+        "Grant and revoke time-boxed, read-only access for the company's partner (reseller or bureau).",
+        _COMPANY, "confidential",
     ),
     PermissionDef("audit:read", "Administration", "View audit log", "View the company audit trail.", _COMPANY, "confidential"),
     # White label
@@ -447,6 +459,7 @@ SELF_SERVICE = [
     ("payroll:bank_details:read_masked", _S),
     ("payroll:bank_details:edit", _S),
     ("payroll:tax_profile:read", _S),
+    ("payroll:tax_profile:edit", _S),
     ("payroll:loans:read", _S),
     ("payroll:reimbursements:read", _S),
     ("overtime:request", _S),
@@ -465,7 +478,8 @@ _PAYROLL_PROCESSOR = _company_wide(
     "payroll:salary_structure:edit", "payroll:payslip:read", "payroll:bank_details:read_masked",
     "payroll:bank_details:edit", "payroll:loans:read", "payroll:loans:manage", "payroll:loans:approve",
     "payroll:reimbursements:read", "payroll:reimbursements:manage", "payroll:reimbursements:approve",
-    "payroll:tax_profile:verify", "payroll:reports:read", "payroll:reports:export", "payroll:configuration:read",
+    "payroll:tax_profile:verify", "payroll:tax_profile:review", "payroll:reports:read", "payroll:reports:export",
+    "payroll:configuration:read",
 )
 
 

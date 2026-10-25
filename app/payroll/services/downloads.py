@@ -434,7 +434,7 @@ def build_payslip_zip(ctx_progress, db: Session, principal: Principal, job: Expo
     relative, path = _export_path(job.company_id, "zip")
     base = (db.query(PayDocument.id)
             .filter(PayDocument.company_id == job.company_id, PayDocument.run_id == run.id,
-                    PayDocument.doc_type == documents.PAYSLIP,
+                    PayDocument.doc_type == documents.PAYSLIP, PayDocument.retention_redacted_at.is_(None),
                     documents.staff_clause(principal, documents.READ))
             .order_by(PayDocument.id))
     ids = [i for (i,) in base.all()]

@@ -251,6 +251,18 @@ def build_tenant(app, key, *, full=True):
     w["report_export"] = ok(admin.post(f"{PAY}/reports/payroll_register/exports", json={"format": "CSV"}), 202)["id"]
     w["zip_export"] = ok(admin.post(f"{PAY}/payslips/zip", json={"run_id": run_id}), 202)["id"]
     w["policy"] = first_id(ok(admin.get(f"{PAY}/policies")))
+    # A pending tax declaration of Emma with one proof (the tax profile routes name both objects).
+    submitter = w["emma_login"].me()["user"]["id"]
+    w["tax_profile"] = sql(
+        "INSERT INTO employee_tax_profiles (company_id, employee_id, legal_entity_id, country, pack_code, schema_hash, "
+        "version_no, effective_from, status, declared_values, identifiers_enc, identifiers_masked, submitted_by_user_id, "
+        "submitted_at, row_version, created_at, updated_at) VALUES (:c, :e, :le, 'IN', 'IN', :h, 1, '2026-04-01', "
+        "'SUBMITTED', '{\"regime\": \"NEW\"}'::jsonb, '{}'::jsonb, '{}'::jsonb, :u, now(), 1, now(), now()) RETURNING id",
+        c=cid, e=emma, le=le, h="0" * 64, u=submitter)[0][0]
+    sql("INSERT INTO employee_tax_proofs (company_id, profile_id, employee_id, field_code, file_name, storage_path, "
+        "sha256, mime, bytes, uploaded_by_user_id, created_at, updated_at) VALUES (:c, :p, :e, 'regime', 'proof.pdf', "
+        ":path, :h, 'application/pdf', 12, :u, now(), now())",
+        c=cid, p=w["tax_profile"], e=emma, path=f"{cid}/tax-proofs/none.pdf", h="a" * 64, u=submitter)
     return w
 
 
@@ -353,6 +365,7 @@ PARAM_TABLES = {
     "payroll_id": "payroll", "entry_id": "overtime_entries", "reversal_id": "payroll_reversals",
     "query_id": "payslip_queries", "assignment_id": "compensation_assignments", "rate_id": "fx_rates",
     "proposal_id": "arrears_proposals", "proof_id": "payment_manual_settlements", "pay_group_id": "pay_groups",
+    "profile_id": "employee_tax_profiles",
     "match_id": "reconciliation_matches", "liability_id": "statutory_liabilities",
     "exception_id": "payroll_exceptions", "attestation_id": "statutory_attestations",
     "receipt_id": "reimbursement_receipts", "legal_entity_id": "legal_entities", "journal_id": "accounting_journals",
@@ -378,7 +391,7 @@ CONTEXT_TABLES = {
     ("import_id", "wage-input-imports"): "wage_input_imports", ("import_id", "imports"): "compensation_imports",
     ("export_id", "exports"): "export_jobs", ("export_id", "report-exports"): "jobs",
     ("evidence_id", "tasks"): "task_evidence", ("evidence_id", "evidence"): "task_evidence",
-    ("request_id", "on-duty"): "on_duty_requests",
+    ("request_id", "on-duty"): "on_duty_requests", ("proof_id", "proofs"): "employee_tax_proofs",
 }
 # Not tenant objects: catalogue codes, KPI names, legacy month/year, file formats.
 NON_OBJECT_PARAMS = {"kpi", "alpha2", "fmt", "year", "month", "payee_type", "version"}

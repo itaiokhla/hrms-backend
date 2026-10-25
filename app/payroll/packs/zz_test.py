@@ -40,6 +40,7 @@ from app.payroll.packs.base import (
     Scheme,
     SourceEntry,
     SourceManifest,
+    TaxProfileField,
     TestVector,
     choice_switch,
     earning,
@@ -246,6 +247,17 @@ class ZedlandPack(BasePack):
         return [self.line("ZZ_PENSION_ER", value, ctx, f"{pct(row['employer_rate'])} × {text} = {fmt(base)}",
                           base=base, rate=row["employer_rate"], rule=row.source,
                           details={"split_rule": SPLIT_RULE})]
+
+    def tax_profile_schema(self) -> Tuple[TaxProfileField, ...]:
+        """Fictional declaration of the fictional pack: the one fact its withholding needs (ZZ.wht.profile)."""
+        return (
+            TaxProfileField("resident", "Tax resident of Zedland", "BOOL", required=True, group="Residency",
+                            note="Fictional test pack: not law.",
+                            help="Never inferred from citizenship (EC-STA-09)."),
+            TaxProfileField("dependants", "Number of dependants", "INTEGER", group="Dependants",
+                            minimum=Decimal(0), maximum=Decimal(20), proof_required=True,
+                            note="Fictional test pack: not law."),
+        )
 
     def withholding(self, taxable: Decimal, ytd: Mapping[str, Any], profile: Optional[Mapping[str, Any]],
                     ctx: PackContext) -> List[Line]:

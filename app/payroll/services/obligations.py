@@ -30,6 +30,11 @@ EC-PAY-15, EC-PAY-16, EC-PAY-17, EC-PAY-23, EC-BNK-03, EC-BNK-09, EC-RUN-13).
 * Balances (EC-PAY-23): per employee, run, legal entity or batch and currency: obligated, intended,
   submitted, settled (paid to date), returned and outstanding = obligated − paid to date, exactly.
 
+* Nominees (EC-BNK-15): the finalized settlement run of a DEATH case creates an obligation of payee type
+  NOMINEE and one instruction per nominee share (``services.nominees``); the deceased employee's own accounts are
+  never used for it. Instructions carry the nominee marker in the beneficiary snapshot, which routes readiness,
+  re-creation and reissue to the nominee's accounts.
+
 Services take (db, principal, ...) and never commit.
 """
 
@@ -115,11 +120,12 @@ class PayeeAccount:
         return dict(self.row.allocation or {})
 
 
-def payee_accounts(db: Session, company_id: int, employee_id: int, at: Optional[datetime] = None
-                   ) -> List[PayeeAccount]:
-    """The employee's accounts serving at ``at`` (default now), in allocation order. A replacement still in
-    its cooling-off period does not compete with the account it replaces, which keeps serving until then."""
-    items = bank_accounts.usable_accounts(db, company_id, employee_id, at or events.now())
+def payee_accounts(db: Session, company_id: int, employee_id: int, at: Optional[datetime] = None, *,
+                   payee_type: str = "EMPLOYEE") -> List[PayeeAccount]:
+    """The payee's accounts (an employee's, or a nominee's when ``payee_type`` is NOMINEE and the id is the
+    nominee's) serving at ``at`` (default now), in allocation order. A replacement still in its cooling-off
+    period does not compete with the account it replaces, which keeps serving until then."""
+    items = bank_accounts.usable_accounts(db, company_id, employee_id, at or events.now(), payee_type=payee_type)
     if not items:
         return []
     ids = [int(item["bank_account_id"]) for item in items]
@@ -192,12 +198,22 @@ def readiness_of(account: Optional[PayeeAccount]) -> Readiness:
     return Readiness("READY")
 
 
+def instruction_accounts(db: Session, row: PaymentInstruction) -> List[PayeeAccount]:
+    """The accounts now serving the payee of an instruction: its nominee's (an ended or unknown nominee has
+    none, and never the deceased employee's own) or the employee's."""
+    from app.payroll.services import nominees
+
+    is_nominee, nominee_id = nominees.nominee_of_instruction(row)
+    if is_nominee:
+        return nominees.payee_accounts(db, row.company_id, nominee_id) if nominee_id is not None else []
+    return payee_accounts(db, row.company_id, row.employee_id)
+
+
 def current_readiness(db: Session, row: PaymentInstruction) -> Readiness:
     """Readiness of an instruction's snapshot account as of now (ACCOUNT_INACTIVE when it no longer serves)."""
     if row.bank_account_id is None:
         return Readiness("NOT_READY", "MISSING_BANK_ACCOUNT")
-    account = next((a for a in payee_accounts(db, row.company_id, row.employee_id) if a.id == row.bank_account_id),
-                   None)
+    account = next((a for a in instruction_accounts(db, row) if a.id == row.bank_account_id), None)
     return readiness_of(account) if account is not None else Readiness("NOT_READY", "ACCOUNT_INACTIVE")
 
 
@@ -288,9 +304,12 @@ def _new_instruction(db: Session, obligation: PaymentObligation, *, account: Opt
                      sequence: int, readiness: Readiness, note: Optional[str] = None,
                      reissue_of: Optional[int] = None, account_amount: Optional[Decimal] = None,
                      account_currency: Optional[str] = None, fx_conversion_id: Optional[int] = None,
-                     principal: Optional[Principal] = None) -> PaymentInstruction:
+                     principal: Optional[Principal] = None, snapshot_extra: Optional[Mapping[str, Any]] = None
+                     ) -> PaymentInstruction:
     key = _idempotency_key(obligation, account.id if account is not None else None, sequence)
     snapshot, enc = ({}, None) if account is None else beneficiary_snapshot(db, account, key)
+    if snapshot_extra:  # a nominee's marker and share (the sealed part is the account's alone)
+        snapshot = {**snapshot, **dict(snapshot_extra)}
     initial = "READY" if readiness.status == "READY" else "NOT_READY"
     row = PaymentInstruction(
         company_id=obligation.company_id, obligation_id=obligation.id, run_id=obligation.run_id,
@@ -330,18 +349,29 @@ def _fx(db: Session, obligation: PaymentObligation, amount: Decimal, target: str
 
 def build_instructions(db: Session, obligation: PaymentObligation, *, amount: Optional[Decimal] = None,
                        hold_reason: Optional[str] = None, reissue_of: Optional[int] = None,
-                       single_account: bool = False, principal: Optional[Principal] = None) -> List[PaymentInstruction]:
-    """Instructions for ``amount`` (default: the obligation) from the payee's accounts as they are now."""
+                       single_account: bool = False, principal: Optional[Principal] = None,
+                       replaces: Optional[PaymentInstruction] = None, accounts: Optional[List[PayeeAccount]] = None,
+                       snapshot_extra: Optional[Mapping[str, Any]] = None) -> List[PaymentInstruction]:
+    """Instructions for ``amount`` (default: the obligation) from the payee's accounts as they are now.
+
+    A NOMINEE obligation is divided by ``services.nominees`` (which calls back with the nominee's own
+    ``accounts``, ``snapshot_extra`` and ``single_account``); ``replaces`` names the instruction being replaced."""
+    if obligation.payee_type == "NOMINEE" and accounts is None:
+        from app.payroll.services import nominees
+
+        return nominees.build_for_obligation(db, obligation, amount=amount, hold_reason=hold_reason,
+                                             reissue_of=reissue_of, replaces=replaces, principal=principal)
     total = Decimal(obligation.amount) if amount is None else amount
     on = obligation.pay_date or events.now().date()
     rules = bank_rules(db, obligation.company_id, obligation.legal_entity_id, on)
-    accounts = payee_accounts(db, obligation.company_id, obligation.employee_id)
+    if accounts is None:
+        accounts = payee_accounts(db, obligation.company_id, obligation.employee_id)
     sequence = _next_sequence(db, obligation)
     held = Readiness("ON_HOLD", hold_reason) if hold_reason else None
     if not accounts:
         return [_new_instruction(db, obligation, account=None, amount=total, sequence=sequence,
                                  readiness=held or Readiness("NOT_READY", "MISSING_BANK_ACCOUNT"),
-                                 reissue_of=reissue_of, principal=principal)]
+                                 reissue_of=reissue_of, principal=principal, snapshot_extra=snapshot_extra)]
     if single_account or not rules.split_enabled:
         payable = [a for a in accounts if readiness_of(a).usable]
         candidates = payable or accounts
@@ -365,7 +395,7 @@ def build_instructions(db: Session, obligation: PaymentObligation, *, amount: Op
         note = "; ".join(f"{i.code}: {i.message}" for i in result.issues) or result.outcome
         return [_new_instruction(db, obligation, account=None, amount=total, sequence=sequence,
                                  readiness=held or Readiness("NOT_READY", "ALLOCATION_INVALID"), note=note[:1000],
-                                 reissue_of=reissue_of, principal=principal)]
+                                 reissue_of=reissue_of, principal=principal, snapshot_extra=snapshot_extra)]
     by_id = {a.id: a for a in accounts}
     note = "; ".join(i.message for i in result.issues) or None
     created = []
@@ -383,7 +413,7 @@ def build_instructions(db: Session, obligation: PaymentObligation, *, amount: Op
             db, obligation, account=account, amount=line.amount, sequence=sequence, readiness=readiness,
             note=(line.explanation if note is None else f"{line.explanation}; {note}")[:1000], reissue_of=reissue_of,
             account_amount=account_amount, account_currency=account_currency, fx_conversion_id=conversion_id,
-            principal=principal))
+            principal=principal, snapshot_extra=snapshot_extra))
     return created
 
 
@@ -404,6 +434,8 @@ def create_for_run(db: Session, company_id: int, run_id: int) -> dict:
         PayrollRunEmployee.status == "CALCULATED").order_by(PayrollRunEmployee.id).all()
     existing = {(o.run_employee_id, o.currency) for o in db.query(PaymentObligation).filter(
         PaymentObligation.company_id == company_id, PaymentObligation.run_id == run.id)}
+    from app.payroll.services import nominees
+
     created = skipped = 0
     for row in rows:
         net = Decimal(row.net) if row.net is not None else None
@@ -414,7 +446,8 @@ def create_for_run(db: Session, company_id: int, run_id: int) -> dict:
             continue
         obligation = PaymentObligation(
             company_id=company_id, source_type="RUN_EMPLOYEE", run_id=run.id, run_employee_id=row.id,
-            payee_type="EMPLOYEE", employee_id=row.employee_id, legal_entity_id=run.legal_entity_id,
+            payee_type="NOMINEE" if nominees.death_case_for(db, run, row) is not None else "EMPLOYEE",
+            employee_id=row.employee_id, legal_entity_id=run.legal_entity_id,
             pay_group_id=run.pay_group_id, amount=net, currency=row.currency, status="OPEN",
             pay_date=period.pay_date,
         )
@@ -501,12 +534,24 @@ def create_payment_intent(db: Session, principal: Principal, run: PayrollRun, ro
     return {"status": "RELEASED" if released else "NOTHING_HELD", "released_instructions": released}
 
 
+def _refuse_if_unclaimed(db: Session, row: PaymentInstruction, what: str) -> None:
+    """Unclaimed pay (EC-PAY-19, company policy; services.unclaimed): while the obligation is UNCLAIMED its payments
+    are neither reissued nor released one by one; the obligation is released as a whole with a reason."""
+    status = db.query(PaymentObligation.status).filter(PaymentObligation.company_id == row.company_id,
+                                                       PaymentObligation.id == row.obligation_id).scalar()
+    if status == "UNCLAIMED":
+        raise conflict(f"This payment belongs to unclaimed pay and cannot be {what}: release the unclaimed "
+                       "obligation first.", "OBLIGATION_UNCLAIMED")
+
+
 def release_hold(db: Session, principal: Principal, instruction_id: int, reason: str, *,
                  expected_version: Optional[int] = None) -> PaymentInstruction:
     """A person releases a held payment (payroll:payment:approve). A hold whose cause is still present is
     refused: the run employee's payment hold is released on the run (EC-RUN-13), an unverified or flagged
     account is fixed on the account; system holds lift by themselves once their cause is gone."""
     row = events.get_instruction_for(db, principal, instruction_id, APPROVE, lock=True)
+    if row.status == "ON_HOLD" and row.status_reason == "UNCLAIMED":
+        _refuse_if_unclaimed(db, row, "released")
     if row.status == "ON_HOLD":
         obligation = db.query(PaymentObligation).filter(PaymentObligation.company_id == row.company_id,
                                                         PaymentObligation.id == row.obligation_id).one()
@@ -657,19 +702,21 @@ def refresh_readiness(db: Session, principal: Principal, run_id: int) -> dict:
             changed.append(ready_if_usable(db, row))
             continue
         if row.status == "NOT_READY" and row.bank_account_id is None:
-            if not payee_accounts(db, row.company_id, row.employee_id):
+            if not instruction_accounts(db, row):
                 continue
             # A placeholder without an account is replaced by instructions to the account now on file.
             changed.append(events.transition(db, principal, row, "CANCEL", reason="A bank account is now on file",
                                              updates={"status_reason": "REPLACED"}))
-            changed.extend(build_instructions(db, obligation, amount=Decimal(row.amount), principal=principal))
+            changed.extend(build_instructions(db, obligation, amount=Decimal(row.amount), principal=principal,
+                                              replaces=row))
             continue
         if row.status == "NOT_READY" and current_readiness(db, row).reason == "ACCOUNT_INACTIVE":
             # The snapshot account stopped serving before anything was sent: pay the account now on file.
             changed.append(events.transition(db, principal, row, "CANCEL",
                                              reason="The bank account was replaced before payment",
                                              updates={"status_reason": "REPLACED"}))
-            changed.extend(build_instructions(db, obligation, amount=Decimal(row.amount), principal=principal))
+            changed.extend(build_instructions(db, obligation, amount=Decimal(row.amount), principal=principal,
+                                              replaces=row))
             continue
         if row.status == "NOT_READY":
             changed.append(ready_if_usable(db, row))
@@ -696,8 +743,8 @@ def bank_changes(db: Session, rows: Sequence[PaymentInstruction]) -> List[dict]:
             change = "ACCOUNT_REPLACED"
         elif account.fingerprint != snapshot.get("fingerprint"):
             change = "ACCOUNT_DETAILS_CHANGED"
-        elif row.created_at is not None and bank_accounts.changed_since(db, row.company_id, row.employee_id,
-                                                                        row.created_at):
+        elif row.created_at is not None and bank_accounts.changed_since(
+                db, row.company_id, account.payee_id, row.created_at, payee_type=account.payee_type):
             change = "BANK_DETAILS_CHANGED"
         if change:
             warnings.append({"instruction_id": row.id, "employee_id": row.employee_id, "change": change,
@@ -718,7 +765,8 @@ def recreate_instructions(db: Session, principal: Principal, rows: Sequence[Paym
         obligation = db.query(PaymentObligation).filter(PaymentObligation.company_id == row.company_id,
                                                         PaymentObligation.id == row.obligation_id).one()
         events.transition(db, principal, row, "CANCEL", reason=reason, updates={"status_reason": "RECREATED"})
-        created.extend(build_instructions(db, obligation, amount=Decimal(row.amount), principal=principal))
+        created.extend(build_instructions(db, obligation, amount=Decimal(row.amount), principal=principal,
+                                          replaces=row))
     events.audit(db, principal, INSTRUCTIONS_RECREATED, f"{len(rows)} payment instruction(s) recreated from current "
                  "bank details", "payment_instruction", rows[0].id if rows else 0, principal.company_id,
                  cancelled=[r.id for r in rows], created=[r.id for r in created], reason=reason)
@@ -733,7 +781,7 @@ REISSUABLE = ("REJECTED", "FAILED", "RETURNED", "REVERSED")
 
 
 def _usable_account(db: Session, row: PaymentInstruction) -> Optional[PayeeAccount]:
-    return next((a for a in payee_accounts(db, row.company_id, row.employee_id) if readiness_of(a).usable), None)
+    return next((a for a in instruction_accounts(db, row) if readiness_of(a).usable), None)
 
 
 def _perform_reissue(db: Session, principal: Principal, row: PaymentInstruction, reason: str,
@@ -744,7 +792,7 @@ def _perform_reissue(db: Session, principal: Principal, row: PaymentInstruction,
                             BANK_ACCOUNT_USABLE=True, updates={"reissue_request": None},
                             details={"requested_by_user_id": requested_by, "approved_by_user_id": principal.user_id})
     created = build_instructions(db, obligation, amount=Decimal(old.amount), reissue_of=old.id, single_account=True,
-                                 principal=principal)
+                                 principal=principal, replaces=old)
     events.sync_after(db, principal, [old, *created])
     return created
 
@@ -758,6 +806,7 @@ def request_reissue(db: Session, principal: Principal, instruction_id: int, reas
     if row.status not in REISSUABLE:
         raise conflict(f"Only a failed or returned payment can be reissued; this one is {row.status}.",
                        "INVALID_TRANSITION")
+    _refuse_if_unclaimed(db, row, "reissued")
     text = events.reason_text(reason)
     if _usable_account(db, row) is None:
         raise conflict("Fix the payee's bank details first: no usable bank account is on file.",
@@ -786,6 +835,8 @@ def approve_reissue(db: Session, principal: Principal, instruction_id: int, note
     request = dict(row.reissue_request or {})
     if not request:
         raise conflict("No reissue of this payment is waiting for approval.", "NO_REISSUE_PENDING")
+    # A reissue requested before the obligation became UNCLAIMED must not slip a READY payment past the policy hold.
+    _refuse_if_unclaimed(db, row, "reissued")
     if request.get("requested_by_user_id") == principal.user_id:
         raise AppError(403, "Someone other than the requester must approve the reissue.", "DUAL_CONTROL")
     if _usable_account(db, row) is None:
@@ -928,7 +979,8 @@ def my_payments(db: Session, principal: Principal, *, year: Optional[int] = None
     if principal.employee_id is None:
         return {"items": [], "years": []}
     query = db.query(PaymentObligation).filter(PaymentObligation.company_id == principal.company_id,
-                                               PaymentObligation.employee_id == principal.employee_id)
+                                               PaymentObligation.employee_id == principal.employee_id,
+                                               PaymentObligation.payee_type == "EMPLOYEE")
     all_rows = query.order_by(PaymentObligation.pay_date.desc().nullslast(), PaymentObligation.id.desc()).all()
     years = sorted({o.pay_date.year for o in all_rows if o.pay_date is not None}, reverse=True)
     rows = [o for o in all_rows if year is None or (o.pay_date is not None and o.pay_date.year == year)]

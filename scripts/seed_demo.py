@@ -51,12 +51,21 @@ class Api:
         return self._ok(self.client.patch(path, json=json, headers=self._headers()))
 
 
+# The Employee role's self-service grants (app.core.permission_registry.SELF_SERVICE). The custom
+# Recruiter role includes all of them, so the "cannot hand out more power than they hold" rule lets
+# Pooja grant Employee (e2e/04). Kept equal to the registry by tests/payroll_unit/test_legacy_e2e_seed.py.
 SELF_SERVICE = [
     ("employee:read", "SELF"), ("employee:read_confidential", "SELF"), ("profile:update", "SELF"),
     ("attendance:read", "SELF"), ("attendance:mark", "SELF"), ("location:read", "SELF"), ("leave:read", "SELF"),
     ("leave:apply", "SELF"),
     ("holiday:read", "COMPANY"), ("payroll:read", "SELF"), ("compensation:read", "SELF"),
     ("asset:read", "SELF"), ("asset:acknowledge", "SELF"),
+    # Payroll v2 self-service (3.9 §5.3)
+    ("payroll:payslip:read", "SELF"), ("payroll:compensation:read", "SELF"),
+    ("payroll:bank_details:read_masked", "SELF"), ("payroll:bank_details:edit", "SELF"),
+    ("payroll:tax_profile:read", "SELF"), ("payroll:tax_profile:edit", "SELF"),
+    ("payroll:loans:read", "SELF"), ("payroll:reimbursements:read", "SELF"),
+    ("overtime:request", "SELF"), ("task:read", "SELF"),
 ]
 
 NIMBUS = {

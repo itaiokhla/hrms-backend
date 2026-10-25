@@ -203,6 +203,10 @@ class SettingDef:
     support_status: str = "SUPPORTED"
     legal_sensitivity: str = "NONE"
     decision_required: bool = False
+    # False for a key added after migration 0011 froze the LEGACY_V1 literals (3.1 §9, ARCHITECTURE §9): existing
+    # tenants get no row for it and it resolves to its registry default (which must be the safe/OFF choice) until
+    # an admin writes it. STARTER_V1 still materializes every tenant key (EC-CFG-23).
+    legacy_v1: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "allowed_levels", tuple(Level(lv) for lv in self.allowed_levels))
@@ -1174,6 +1178,16 @@ def _catalogue() -> list[SettingDef]:
             "payroll.payments.batch_max_items", "int", 1000, (LE,), S_PAYMENTS, "Maximum payments per batch",
             "Larger payment batches are split.",
             constraints={"min": 1}, ui={"group": "Payments"},
+        ),
+        _setting(
+            "payroll.payments.unclaimed_after_days", "int", None, _T_LE, S_PAYMENTS, "Mark unpaid pay as unclaimed after",
+            "Company policy, off when empty: net pay that is still unpaid this many days after its pay date, with "
+            "nothing in flight (never sent, failed, returned or rejected), is moved to UNCLAIMED by a daily job. "
+            "Unsent payments are held, finance and the employee are notified, and a person releases it again with a "
+            "reason. Nothing is paid or deleted. Escheatment (unclaimed property) rules are country-specific and are "
+            "not implemented: this is a company policy value, not a legal limit.",
+            constraints={"min": 1, "max": 3650, "nullable": True}, requires_approval=True, legacy_v1=False,
+            ui={"group": "Payments", "unit": "days"},
         ),
         _flag(
             "payroll.payments.reissue_requires_approval", "Approve payment reissues",
@@ -2872,7 +2886,7 @@ def profile_values(
 def _materialize(profile: Profile, legacy: Mapping[str, Any]) -> dict[str, Any]:
     values: dict[str, Any] = {}
     for defn in definitions():
-        if Level.TENANT not in defn.allowed_levels or defn.key in _PACK_KEYS:
+        if Level.TENANT not in defn.allowed_levels or defn.key in _PACK_KEYS or (not defn.legacy_v1 and profile.name == "LEGACY_V1"):
             continue
         if defn.key in legacy:
             values[defn.key] = legacy[defn.key]

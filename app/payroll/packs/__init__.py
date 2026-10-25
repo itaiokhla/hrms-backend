@@ -220,6 +220,17 @@ def setting_constraints(country_code: str, on: date, *, environment: str = PRODU
     return result
 
 
+def tax_profile_pack(alpha2: str, on: date, *, environment: str = PRODUCTION) -> Optional[CountryPack]:
+    """The pack whose employee tax-profile schema applies to a legal entity in ``alpha2`` on ``on`` (3.2 §7.2):
+    the latest national pack version effective that day that may be used here (verified, a fixture in
+    development/test, or a preview draft) and declares at least one field. ``None`` means the country asks
+    employees for nothing yet, which the pages say plainly (an unusable pack, for instance a fixture in
+    production, offers no fields: a declaration form is never built on data the platform will not use)."""
+    usable = [p for p in packs_for_country(alpha2, on=on, environment=environment)
+              if usage(p.meta, environment=environment, preview=True).produces_lines and p.tax_profile_schema()]
+    return usable[-1] if usable else None
+
+
 def register_settings(codes: Optional[Iterable[str]] = None, *, environment: str = PRODUCTION) -> Tuple[str, ...]:
     """Register the packs' employer choices (``payroll.statutory.<CC>.*``) in the settings registry.
     Idempotent; called at application start-up and by tests that need the keys."""
@@ -295,5 +306,5 @@ __all__ = [
     "FIXTURE", "FIXTURE_ENVIRONMENTS", "PREVIEW", "PRODUCTION", "REFUSED", "TEST_ENVIRONMENTS", "VERIFIED",
     "PackUnavailable", "PackUsage", "VectorResult", "all_packs", "capability", "country_capability",
     "environment_name", "find_pack", "get_pack", "lookup", "manifest_problems", "pack_snapshot", "packs_for_country",
-    "register_settings", "rules_used", "run_vectors", "setting_constraints", "usage",
+    "register_settings", "rules_used", "run_vectors", "setting_constraints", "tax_profile_pack", "usage",
 ]

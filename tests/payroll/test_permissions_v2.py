@@ -62,7 +62,7 @@ LEGACY = ("payroll:read", "payroll:prepare", "payroll:approve", "payroll:process
           "compensation:read", "compensation:manage")
 EMPLOYEE_PAYROLL_SELF = {
     "payroll:payslip:read", "payroll:compensation:read", "payroll:bank_details:read_masked", "payroll:bank_details:edit",
-    "payroll:tax_profile:read", "payroll:loans:read", "payroll:reimbursements:read",
+    "payroll:tax_profile:read", "payroll:tax_profile:edit", "payroll:loans:read", "payroll:reimbursements:read",
 }
 
 
@@ -509,15 +509,25 @@ def test_payroll_approver_can_go_when_nobody_creates_runs(app):
 # ---------------------------------------------------------------------------
 # Data migration 0010 (EC-MIG-07, EC-MIG-08)
 # ---------------------------------------------------------------------------
+def _later_grants(key):
+    """Default-role grants added by migrations after 0010 (each lists them in NEW_GRANTS): 0010 is history and
+    stays frozen, the registry defaults are 0010's literals plus these explicit later additions."""
+    spec = importlib.util.spec_from_file_location("m0033", ROOT / "alembic" / "versions" / "0033_tax_profiles_unclaimed.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return set(module.NEW_GRANTS.get(key, ()))
+
+
 def test_migration_literals_match_registry_2026_10_4():
     m = _migration()
     defaults = {r.system_key: {(c, s.value) for c, s in r.grants} for r in reg.DEFAULT_ROLES}
     for key, (name, description, grants) in m.NEW_ROLES.items():
-        assert set(grants) == defaults[key], key
+        assert set(grants) | _later_grants(key) == defaults[key], key
         assert (name, description) == (reg.DEFAULT_ROLES_BY_KEY[key].name, reg.DEFAULT_ROLES_BY_KEY[key].description)
     for key, additions in m.SYSTEM_ROLE_ADDITIONS.items():
         assert set(additions) <= defaults[key], key
-    assert defaults["employee"] == set(m._LEGACY_SELF_SERVICE) | set(m.SYSTEM_ROLE_ADDITIONS["employee"])
+    assert defaults["employee"] == (set(m._LEGACY_SELF_SERVICE) | set(m.SYSTEM_ROLE_ADDITIONS["employee"])
+                                    | _later_grants("employee"))
     assert m.DESCRIPTIONS["company_admin"][1] == reg.DEFAULT_ROLES_BY_KEY["company_admin"].description
     assert m.legacy_equivalents({("payroll:approve", _C), ("employee:read", _C)}) == {("payroll:run:approve", _C)}
 
@@ -577,7 +587,7 @@ def test_ec_mig_08_migration_upgrade_is_complete_idempotent_and_reversible(app):
     defaults = {r.system_key: {(c, s.value) for c, s in r.grants} for r in reg.DEFAULT_ROLES}
     for key in ("hr_admin", "payroll_manager", "manager", "employee", "auditor", "payroll_processor",
                 "payroll_approver", "finance_payments"):
-        assert after[key] == defaults[key], key
+        assert after[key] | _later_grants(key) == defaults[key], key     # 0010 plus the later explicit additions
     assert after["Legacy payroll desk"] == set(custom) | {
         ("payroll:run:read", _C), ("payroll:payslip:read", _C), ("payroll:reports:read", _C),
         ("payroll:run:approve", _C), ("payroll:compensation:read", _S)}

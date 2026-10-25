@@ -145,6 +145,8 @@ class PayDocument(TenantMixin, BaseModel):
     rerendered_at = Column(DateTime(timezone=True), nullable=True)
     rerender_mismatch = Column(Boolean, nullable=False, default=False)
     retention_until = Column(Date, nullable=True)
+    # Set by the retention sweep when the stored PDF was deleted (migration 0031); the row itself stays.
+    retention_redacted_at = Column(DateTime(timezone=True), nullable=True)
     issued_by_user_id = Column(Integer, nullable=True)
     row_version = Column(Integer, nullable=False, default=1)
 

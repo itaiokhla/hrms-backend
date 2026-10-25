@@ -277,6 +277,39 @@ def test_partner_lock_overrides_tenant_ui_and_api(app):
     assert set(partners["tenants"][0]) == {"id", "name", "status", "plan", "active_employees"}
 
 
+def test_partner_credit_or_lock_only_edit_can_be_published(app):
+    """Gate-chrome regression (24 Oct): a partner brand draft that changes only the "powered by" credit or only the
+    field locks was refused with 422 "There are no unpublished changes." (the diff compared brand fields only), so an
+    operator could never publish it. The credit must reach the tenant's public brand and its documents."""
+    ops = platform_admin(app)
+    tenant = signup_company(app, "Acme Corp")
+    partner = ops.post("/api/v1/platform/partners", json={
+        "name": "PayEase", "tenant_entitlements": {"branding.product_name": True},
+    }).json()
+    assert ops.patch(f"/api/v1/platform/companies/{tenant.company_id}", json={"partner_id": partner["id"]}).status_code == 200
+
+    r = ops.put(f"/api/v1/platform/brands/partners/{partner['id']}", json={"changes": {}, "powered_by_label": "Powered by PayEase"})
+    assert r.status_code == 200, r.text
+    assert [c["field"] for c in r.json()["validation"]["changes"]] == ["powered_by_label"]
+    r = ops.post(f"/api/v1/platform/brands/partners/{partner['id']}/publish")
+    assert r.status_code == 200, r.text
+    assert _brand_on(app, tenant_host("acme-corp"))["powered_by_label"] == "Powered by PayEase"
+    from app.services import brand_service
+
+    assert brand_service.document_brand(tenant.company_id, None)["powered_by_label"] == "Powered by PayEase"
+
+    r = ops.put(f"/api/v1/platform/brands/partners/{partner['id']}", json={"changes": {}, "locked_fields": ["tagline"]})
+    assert r.status_code == 200, r.text
+    assert [c["field"] for c in r.json()["validation"]["changes"]] == ["locked_fields"]
+    assert ops.post(f"/api/v1/platform/brands/partners/{partner['id']}/publish").status_code == 200
+    assert "tagline" in tenant.get("/api/v1/branding").json()["locked_fields"]
+
+    # Nothing changed at all is still refused.
+    ops.put(f"/api/v1/platform/brands/partners/{partner['id']}", json={"changes": {}})
+    r = ops.post(f"/api/v1/platform/brands/partners/{partner['id']}/publish")
+    assert r.status_code == 422 and "no unpublished changes" in r.text
+
+
 def test_kill_switch_falls_back_to_platform_brand(app, admin):
     """EC-WL-26: the platform kill switch falls back to the platform brand."""
     admin.put("/api/v1/branding/draft", json={"changes": {"primary_color": "#0F766E", "tagline": "Totally a bank"}})

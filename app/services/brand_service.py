@@ -609,6 +609,17 @@ def diff_profiles(before: Optional[dict], after: Optional[dict]) -> List[dict]:
                                 "from": "image" if old_sha else None, "to": "new image" if new_sha else None})
         elif old != new:
             changes.append({"field": name, "label": FIELD_LABELS[name], "from": old, "to": new})
+    # Platform and partner profiles also carry their field locks and the "powered by" credit. An edit of only
+    # those is a real change: without this the operator could never publish it ("no unpublished changes").
+    # Tenant and legal-entity profiles have neither (empty on both sides), so nothing is added for them.
+    old_locks = sorted((before or {}).get("locked_fields") or [])
+    new_locks = sorted((after or {}).get("locked_fields") or [])
+    if old_locks != new_locks:
+        changes.append({"field": "locked_fields", "label": "Locked fields", "from": old_locks, "to": new_locks})
+    old_label = (before or {}).get("powered_by_label") or None
+    new_label = (after or {}).get("powered_by_label") or None
+    if old_label != new_label:
+        changes.append({"field": "powered_by_label", "label": "Powered-by label", "from": old_label, "to": new_label})
     return changes
 
 

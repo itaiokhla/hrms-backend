@@ -32,6 +32,7 @@ from app.payroll.engine.lines import (
     Line,
 )
 from app.payroll.money import CALC_CONTEXT, STATUTORY_ROUNDING, decimal_str, quantize_amount, quantum
+from app.payroll.packs.tax_profile import TaxProfileField
 from app.payroll.settings_registry import PAYROLL_MODULE, S_STATUTORY, UNSET, Level, LegalConstraint, SettingDef
 from app.payroll.state_machines import PackVersionStatus
 
@@ -673,6 +674,7 @@ class CountryPack(Protocol):
     def protected_net_floor_percent(self, ctx: Optional[PackContext] = None) -> Optional[Decimal]: ...
     def ytd_keys(self) -> Tuple[str, ...]: ...
     def reports(self) -> List[ReportDef]: ...
+    def tax_profile_schema(self) -> Tuple[TaxProfileField, ...]: ...
     def payment_rules(self) -> PaymentRules: ...
     def rule_data(self) -> Dict[str, Any]: ...
     def test_vectors(self) -> Tuple["TestVector", ...]: ...
@@ -767,6 +769,12 @@ class BasePack:
 
     def reports(self) -> List[ReportDef]:
         return []
+
+    def tax_profile_schema(self) -> Tuple[TaxProfileField, ...]:
+        """The declaration fields this pack needs from an employee (3.2 §6.1, §7.2); none by default, which means
+        the employee has nothing to declare and the pages say so. Override with ``TaxProfileField``s; the
+        framework adds no field and gives none a meaning (the pack reads the values from ``ctx.tax_profile``)."""
+        return ()
 
     def payment_rules(self) -> PaymentRules:
         return PaymentRules()

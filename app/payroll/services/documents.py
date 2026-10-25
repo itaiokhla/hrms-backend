@@ -289,6 +289,11 @@ def _cleanup_on_rollback(session: Session, previous_transaction) -> None:
 
 
 def _forget_on_commit(session: Session) -> None:
+    # SQLAlchemy 2.0 also emits after_commit when a SAVEPOINT is released (``begin_nested``) while the enclosing
+    # transaction is still open. Forgetting the files then would leave them on disk if the outer transaction
+    # rolls back later (F-72 (2)); keep them until the outermost commit, as jobs._run_inline_after_commit does.
+    if session.in_nested_transaction():
+        return
     session.info.pop(_FILES_KEY, None)
 
 
@@ -370,6 +375,10 @@ def issue(
         return existing
     if number is None and allocate and not draft:
         number = allocate_number(db, company_id, legal_entity_id, doc_type, number_date or issue_date)
+    if retention_until is None:  # the company's own retention policy (legal holds and the sweep: legal_holds.py)
+        from app.payroll.services import legal_holds
+
+        retention_until = legal_holds.retention_date_for(db, company_id, legal_entity_id, issue_date)
     public_id = new_public_id()
     frozen = jsonable({**content, "number": number, "public_id": public_id, "issue_date": issue_date,
                        "doc_type": doc_type, "draft": draft})
@@ -430,6 +439,9 @@ def document_bytes(db: Session, principal: Optional[Principal], doc: PayDocument
     """(bytes, rerendered). Stored bytes when intact, else a re-render compared with the stored hash."""
     from app.payroll.services import pdf_render
 
+    if doc.retention_redacted_at is not None:  # the retention sweep deleted the file: never re-render or re-store it
+        raise AppError(410, "The stored file of this document was deleted when its retention period ended.",
+                       "RETENTION_EXPIRED")
     data = _read_stored(doc)
     if data is not None:
         return data, False
@@ -459,6 +471,16 @@ def document_bytes(db: Session, principal: Optional[Principal], doc: PayDocument
                {"matches_original": matches})
     db.flush()
     return rendered, True
+
+
+def ensure_deletable(db: Session, doc: PayDocument) -> None:
+    """Guard for any code that would delete a document or its stored file: LEGAL_HOLD while a hold covers it.
+
+    (Documents are never deleted by any path, ``documents_immutable``; only the retention sweep removes stored
+    files, through ``legal_holds.sweep``, and the trigger ``documents_retention_guard`` repeats this check.)"""
+    from app.payroll.services import legal_holds
+
+    legal_holds.ensure_document_not_held(db, doc)
 
 
 def log_access(db: Session, doc: Optional[PayDocument], user_id: Optional[int], action: str, ip: Optional[str],
@@ -651,6 +673,8 @@ def document_json(doc: PayDocument, *, as_staff: bool = True) -> dict[str, Any]:
             "brand_version": doc.brand_version, "renderer": doc.renderer, "rerendered": doc.rerendered,
             "rerender_mismatch": doc.rerender_mismatch, "superseded_at": doc.superseded_at.isoformat()
             if doc.superseded_at else None, "reversed_at": doc.reversed_at.isoformat() if doc.reversed_at else None,
+            "retention_until": doc.retention_until.isoformat() if doc.retention_until else None,
+            "retention_redacted_at": doc.retention_redacted_at.isoformat() if doc.retention_redacted_at else None,
         })
     return data
 

@@ -3,8 +3,8 @@ control and verification, and company funding accounts (3.7 §2-§6, §12; 3.9 �
 
 Payment obligations, batches, instructions and reconciliation live in app/models/payment_flows.py.
 
-* ``bank_accounts``: one row per account of a payee (employees now; ``payee_type`` keeps room for
-  contractors and nominees). Account numbers and IBANs are stored only as envelope ciphertexts
+* ``bank_accounts``: one row per account of a payee (employees and nominees, see app.models.nominees;
+  ``payee_type`` keeps room for contractors). Account numbers and IBANs are stored only as envelope ciphertexts
   (app.payroll.services.keys, purpose-bound and tied to the row by associated data) with a separate
   ``last4`` for display and a per-tenant keyed ``fingerprint`` for duplicate detection. Rows are never
   deleted and the identifying details never change (trigger): a change is a new account that replaces
@@ -85,6 +85,7 @@ class BankAccount(TenantMixin, BaseModel):
     payee_type = Column(String(12), nullable=False, default="EMPLOYEE")
     payee_id = Column(Integer, nullable=False)
     employee_id = Column(Integer, nullable=True, index=True)  # payee_type EMPLOYEE
+    nominee_id = Column(Integer, nullable=True, index=True)  # payee_type NOMINEE (app.models.nominees)
     holder_name = Column(String(140), nullable=False)
     country = Column(CHAR(2), nullable=False)
     currency = Column(CHAR(3), nullable=False)
@@ -125,6 +126,7 @@ class BankAccount(TenantMixin, BaseModel):
     __table_args__ = (
         UniqueConstraint("company_id", "id", name="uq_bank_accounts_company_id_id"),
         _fk("bank_accounts", "employee_id", "employees", "employee"),
+        _fk("bank_accounts", "nominee_id", "nominees", "nominee"),
         _fk("bank_accounts", "replaces_account_id", "bank_accounts", "replaces"),
         _fk("bank_accounts", "replaced_by_account_id", "bank_accounts", "replaced_by"),
         _fk("bank_accounts", "created_by_user_id", "users", "created_by"),
@@ -138,6 +140,8 @@ class BankAccount(TenantMixin, BaseModel):
         CheckConstraint(f"hold_reason IS NULL OR hold_reason IN {_sql_list(HOLD_REASONS)}", name="ck_bank_accounts_hold_reason"),
         CheckConstraint("(payee_type = 'EMPLOYEE') = (employee_id IS NOT NULL)", name="ck_bank_accounts_employee"),
         CheckConstraint("employee_id IS NULL OR employee_id = payee_id", name="ck_bank_accounts_payee"),
+        CheckConstraint("(payee_type = 'NOMINEE') = (nominee_id IS NOT NULL) AND (nominee_id IS NULL OR nominee_id = payee_id)",
+                        name="ck_bank_accounts_nominee"),
         CheckConstraint("account_number_enc IS NOT NULL OR iban_enc IS NOT NULL", name="ck_bank_accounts_number"),
         CheckConstraint("country ~ '^[A-Z]{2}$'", name="ck_bank_accounts_country"),
         CheckConstraint("currency ~ '^[A-Z]{3}$'", name="ck_bank_accounts_currency"),
@@ -166,6 +170,7 @@ class BankAccountChangeRequest(TenantMixin, BaseModel):
     payee_type = Column(String(12), nullable=False, default="EMPLOYEE")
     payee_id = Column(Integer, nullable=False)
     employee_id = Column(Integer, nullable=True, index=True)
+    nominee_id = Column(Integer, nullable=True, index=True)
     kind = Column(String(10), nullable=False, default="ADD")
     replaces_account_id = Column(Integer, nullable=True)
     requested_by_user_id = Column(Integer, nullable=True)
@@ -193,6 +198,7 @@ class BankAccountChangeRequest(TenantMixin, BaseModel):
         _fk("bank_account_change_requests", "bank_account_id", "bank_accounts", "account"),
         _fk("bank_account_change_requests", "replaces_account_id", "bank_accounts", "replaces"),
         _fk("bank_account_change_requests", "employee_id", "employees", "employee"),
+        _fk("bank_account_change_requests", "nominee_id", "nominees", "nominee"),
         _fk("bank_account_change_requests", "requested_by_user_id", "users", "requested_by"),
         _fk("bank_account_change_requests", "decided_by_user_id", "users", "decided_by"),
         _fk("bank_account_change_requests", "security_reviewed_by_user_id", "users", "security_reviewed_by"),
@@ -204,6 +210,8 @@ class BankAccountChangeRequest(TenantMixin, BaseModel):
         _in("bank_account_change_requests", "status", CHANGE_STATUSES),
         CheckConstraint("(payee_type = 'EMPLOYEE') = (employee_id IS NOT NULL)",
                         name="ck_bank_account_change_requests_employee"),
+        CheckConstraint("(payee_type = 'NOMINEE') = (nominee_id IS NOT NULL) AND (nominee_id IS NULL OR nominee_id = payee_id)",
+                        name="ck_bank_account_change_requests_nominee"),
         CheckConstraint("(kind = 'REPLACE') = (replaces_account_id IS NOT NULL)",
                         name="ck_bank_account_change_requests_replaces"),
         CheckConstraint("jsonb_typeof(risk_flags) = 'array'", name="ck_bank_account_change_requests_risk_flags"),

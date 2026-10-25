@@ -868,7 +868,12 @@ def cancel_case(db: Session, principal: Principal, case_id: int, reason: str, *,
                 expected_version: Optional[int] = None) -> FinalSettlementCase:
     case = _load(db, principal, case_id, EDIT, lock=True)
     _check_version(case, expected_version)
-    return _move(db, principal, case, "CANCEL", reason=_reason(reason))
+    case = _move(db, principal, case, "CANCEL", reason=_reason(reason))
+    if case.termination_type == "DEATH":
+        from app.payroll.services import nominees
+
+        nominees.on_case_cancelled(db, principal, case)  # nominees end, their accounts are deactivated
+    return case
 
 
 def release_hold(db: Session, principal: Principal, case_id: int, note: str, *,
@@ -1109,6 +1114,9 @@ def create_settlement_run(db: Session, principal: Principal, case_id: int, *, la
     period = calendars.period_containing(db, case.company_id, case.pay_group_id, case.last_working_day)
     if period is None:
         raise conflict("No pay period of the pay group contains the last working day.", "NO_PAY_PERIOD")
+    from app.payroll.services import nominees
+
+    nominees.ensure_ready_for_run(db, case)  # DEATH: nominees with shares adding up to 100 percent (EC-BNK-15)
     run = runs.create_run(db, principal, runs.RunRequest(
         run_type=sm.RunType.FINAL_SETTLEMENT.value, pay_group_id=case.pay_group_id, pay_period_id=period.id,
         label=label or f"Final settlement · {employee.first_name} {employee.last_name}"[:150],
@@ -1288,6 +1296,10 @@ def case_json(db: Session, case: FinalSettlementCase, *, today: dt.date, with_it
                 totals[key] += Decimal(i.amount)
         data["totals"] = {k: amount_str(v, case.currency) for k, v in totals.items()}
         data["open_items"] = sum(1 for i in items if i.status in OPEN_ITEMS)
+        if case.termination_type == "DEATH":
+            from app.payroll.services import nominees
+
+            data["nominees"] = nominees.case_summary(db, case)  # shares and readiness; the records are /payroll/nominees
     return data
 
 

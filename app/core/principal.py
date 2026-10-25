@@ -37,6 +37,21 @@ SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 ACTIVE_SUBSCRIPTIONS = {"trialing", "active"}
 
 
+@dataclass(frozen=True)
+class DelegationContext:
+    """Set on a principal that is a partner operator acting under a tenant-granted delegation.
+
+    The principal is read-only and limited to the delegated permission codes; user_id is 0 (the operator
+    is not a tenant user) and every request is audited with these ids (app.services.partner_delegation_service).
+    """
+
+    delegation_id: int
+    partner_id: int
+    operator_id: int
+    operator_email: str
+    platform_session_id: str
+
+
 @dataclass
 class Principal:
     user_id: int
@@ -54,6 +69,8 @@ class Principal:
     extra: dict = field(default_factory=dict)
     # (permission, LEGAL_ENTITY|BRANCH|PAY_GROUP) -> ids covered by the user's role assignments.
     targets: Dict[Tuple[str, str], FrozenSet[int]] = field(default_factory=dict)
+    # Only for a partner operator under a delegation (never a tenant user).
+    delegation: Optional[DelegationContext] = None
 
     def scopes(self, code: str) -> FrozenSet[str]:
         return self.grants.get(code, frozenset())
@@ -218,6 +235,16 @@ def _resolve_principal(request: Request, db: Session) -> Principal:
     if not token:
         raise unauthorized()
     claims = decode_jwt(token, "access")
+    if claims and claims.get("pt") == "delegate":
+        # A partner operator under a tenant delegation: bearer token only, checked against the live
+        # delegation on every request (expiry and revocation apply at once).
+        from app.services import partner_delegation_service
+
+        if via_cookie:
+            raise unauthorized("Session expired", "SESSION_EXPIRED")
+        principal = partner_delegation_service.resolve_delegate_principal(request, db, claims)
+        request.state.principal = principal
+        return principal
     if not claims or claims.get("pt") != "user":
         raise unauthorized("Session expired", "SESSION_EXPIRED")
     try:

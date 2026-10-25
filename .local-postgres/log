@@ -327,3 +327,32 @@
 2026-10-23 23:00:07.292 GMT [8456] LOG:  could not reserve shared memory region (addr=000001BDB5D70000) for child 00000000000012B8: error code 487
 2026-10-24 12:51:51.561 GMT [18752] LOG:  checkpoint starting: time
 2026-10-24 12:51:51.685 GMT [18752] LOG:  checkpoint complete: wrote 1 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.110 s, sync=0.001 s, total=0.126 s; sync files=0, longest=0.000 s, average=0.000 s; distance=6 kB, estimate=1099 kB; lsn=0/5200A10, redo lsn=0/52009D8
+2026-10-24 15:21:55.220 GMT [18752] LOG:  checkpoint starting: time
+2026-10-24 15:21:57.021 GMT [18752] LOG:  checkpoint complete: wrote 17 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.779 s, sync=0.001 s, total=1.803 s; sync files=0, longest=0.000 s, average=0.000 s; distance=38 kB, estimate=993 kB; lsn=0/520A4A0, redo lsn=0/520A468
+2026-10-24 15:26:55.032 GMT [18752] LOG:  checkpoint starting: time
+2026-10-24 15:26:58.316 GMT [18752] LOG:  checkpoint complete: wrote 31 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=3.274 s, sync=0.001 s, total=3.285 s; sync files=0, longest=0.000 s, average=0.000 s; distance=7 kB, estimate=894 kB; lsn=0/520C230, redo lsn=0/520C1F8
+2026-10-24 15:31:55.326 GMT [18752] LOG:  checkpoint starting: time
+2026-10-24 15:31:55.453 GMT [18752] LOG:  checkpoint complete: wrote 2 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.113 s, sync=0.001 s, total=0.129 s; sync files=0, longest=0.000 s, average=0.000 s; distance=7 kB, estimate=806 kB; lsn=0/520E1D0, redo lsn=0/520E198
+2026-10-24 15:36:55.496 GMT [18752] LOG:  checkpoint starting: time
+2026-10-24 15:36:55.853 GMT [18752] LOG:  checkpoint complete: wrote 4 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.339 s, sync=0.001 s, total=0.396 s; sync files=0, longest=0.000 s, average=0.000 s; distance=1 kB, estimate=725 kB; lsn=0/520E820, redo lsn=0/520E7E8
+2026-10-24 15:41:55.863 GMT [18752] LOG:  checkpoint starting: time
+2026-10-24 15:41:55.991 GMT [18752] LOG:  checkpoint complete: wrote 2 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.110 s, sync=0.001 s, total=0.129 s; sync files=0, longest=0.000 s, average=0.000 s; distance=1 kB, estimate=653 kB; lsn=0/520EFE0, redo lsn=0/520EFA8
+2026-10-24 15:46:55.994 GMT [18752] LOG:  checkpoint starting: time
+2026-10-24 15:46:56.130 GMT [18752] LOG:  checkpoint complete: wrote 2 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.113 s, sync=0.001 s, total=0.136 s; sync files=0, longest=0.000 s, average=0.000 s; distance=2 kB, estimate=588 kB; lsn=0/520F910, redo lsn=0/520F8D8
+2026-10-24 15:51:55.142 GMT [18752] LOG:  checkpoint starting: time
+2026-10-24 15:51:55.266 GMT [18752] LOG:  checkpoint complete: wrote 2 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.110 s, sync=0.001 s, total=0.125 s; sync files=0, longest=0.000 s, average=0.000 s; distance=3 kB, estimate=529 kB; lsn=0/5210770, redo lsn=0/5210738
+2026-10-24 15:56:55.271 GMT [18752] LOG:  checkpoint starting: time
+2026-10-24 15:56:55.415 GMT [18752] LOG:  checkpoint complete: wrote 2 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.123 s, sync=0.001 s, total=0.146 s; sync files=0, longest=0.000 s, average=0.000 s; distance=4 kB, estimate=477 kB; lsn=0/52117D0, redo lsn=0/5211798
+2026-10-24 16:01:55.455 GMT [18752] LOG:  checkpoint starting: time
+2026-10-24 16:01:55.581 GMT [18752] LOG:  checkpoint complete: wrote 2 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.109 s, sync=0.001 s, total=0.164 s; sync files=0, longest=0.000 s, average=0.000 s; distance=4 kB, estimate=429 kB; lsn=0/52129B8, redo lsn=0/5212980
+2026-10-24 16:06:55.586 GMT [18752] LOG:  checkpoint starting: time
+2026-10-24 16:06:55.827 GMT [18752] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.225 s, sync=0.001 s, total=0.242 s; sync files=0, longest=0.000 s, average=0.000 s; distance=4 kB, estimate=387 kB; lsn=0/5213CF8, redo lsn=0/5213CC0
+2026-10-24 16:11:55.837 GMT [18752] LOG:  checkpoint starting: time
+2026-10-24 16:11:55.964 GMT [18752] LOG:  checkpoint complete: wrote 2 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.116 s, sync=0.001 s, total=0.127 s; sync files=0, longest=0.000 s, average=0.000 s; distance=5 kB, estimate=349 kB; lsn=0/52151C0, redo lsn=0/5215188
+2026-10-24 16:16:55.977 GMT [18752] LOG:  checkpoint starting: time
+2026-10-24 16:16:56.121 GMT [18752] LOG:  checkpoint complete: wrote 2 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.121 s, sync=0.001 s, total=0.146 s; sync files=0, longest=0.000 s, average=0.000 s; distance=5 kB, estimate=314 kB; lsn=0/52167F8, redo lsn=0/52167C0
+2026-10-24 16:21:55.163 GMT [18752] LOG:  checkpoint starting: time
+2026-10-24 16:21:55.287 GMT [18752] LOG:  checkpoint complete: wrote 2 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.107 s, sync=0.001 s, total=0.162 s; sync files=0, longest=0.000 s, average=0.000 s; distance=5 kB, estimate=283 kB; lsn=0/5217F88, redo lsn=0/5217F50
+2026-10-24 16:26:55.294 GMT [18752] LOG:  checkpoint starting: time
+2026-10-24 16:26:55.472 GMT [18752] LOG:  checkpoint complete: wrote 2 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.136 s, sync=0.001 s, total=0.179 s; sync files=0, longest=0.000 s, average=0.000 s; distance=6 kB, estimate=256 kB; lsn=0/52198A0, redo lsn=0/5219868
+2026-10-25 04:36:49.823 GMT [8456] LOG:  could not reserve shared memory region (addr=000001BDB5D70000) for child 0000000000001358: error code 487

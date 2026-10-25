@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from app.payroll.engine.lines import STAGE_STATUTORY, STAGE_TAX, Line
 from app.payroll.money import CALC_CONTEXT
 from app.payroll.packs.base import (
+    FIXTURE_LABEL,
     HUNDRED,
     ZERO,
     Band,
@@ -49,6 +50,7 @@ from app.payroll.packs.base import (
     Scheme,
     SourceEntry,
     SourceManifest,
+    TaxProfileField,
     TestVector,
     choice_enum,
     choice_flag,
@@ -478,6 +480,28 @@ class IndiaFixturePack(BasePack):
                       "under the Code on Wages the excess counts as wages. Statutory bases were not changed; "
                       "deciding the clause of each component is a legal-review decision.",
                       included=str(included), excluded=str(excluded), excess=str(excess))
+
+    # -- employee tax profile (3.2 §7.2): the fields this fixture's withholding reads, nothing more
+    def tax_profile_schema(self) -> Tuple[TaxProfileField, ...]:
+        note = f"{FIXTURE_LABEL}: illustrative field of the fixture, not a statement of law."
+        return (
+            TaxProfileField(
+                "regime", "Tax regime", "ENUM", required=False, group="Regime and elections", note=note,
+                choices=(("NEW", "New regime"), ("OLD", "Old regime")),
+                help="The fixture withholds tax for the new regime only; choosing the old regime blocks withholding "
+                     "in a run until a pack that implements it exists."),
+            TaxProfileField(
+                "previous_employment.income", "Income from a previous employer this tax year", "MONEY",
+                group="Previous employment", note=note, proof_required=True, minimum=ZERO,
+                help="Taxable income paid by earlier employers since the tax year began."),
+            TaxProfileField(
+                "previous_employment.tax", "Tax already withheld by a previous employer", "MONEY",
+                group="Previous employment", note=note, minimum=ZERO,
+                help="Tax withheld by earlier employers on that income."),
+            TaxProfileField(
+                "tax_id", "Tax identifier", "IDENTIFIER", group="Identifiers", note=note, max_length=20,
+                help="Kept encrypted and masked; it never enters a payroll calculation."),
+        )
 
     # -- stage 7
     def withholding(self, taxable: Decimal, ytd: Mapping[str, Any], profile: Optional[Mapping[str, Any]],

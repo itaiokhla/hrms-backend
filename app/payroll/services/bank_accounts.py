@@ -1,6 +1,9 @@
 """Payee bank accounts: entry, change control, verification and the read API for payments (3.7 §2-§5, §12).
 
-* Entry. Accounts belong to a payee (``payee_type`` EMPLOYEE today; CONTRACTOR and NOMINEE are reserved).
+* Entry. Accounts belong to a payee (``payee_type`` EMPLOYEE or NOMINEE; CONTRACTOR is reserved). A NOMINEE
+  account (a nominee or legal heir of a deceased employee, app.payroll.services.nominees, EC-BNK-15) goes
+  through the same checks and defences, always as an HR change (never self-service), with the nominee record's
+  creator counted as a maker, a verification that is always required before payout, and no cooling-off waiver.
   Details are checked with ``app.payroll.banking.validators`` for the account's country: fields of another
   country are refused (EC-BNK-04), a failed IBAN checksum is refused (EC-BNK-05). Passing those checks is
   recorded as a FORMAT verification event, which never makes an account VERIFIED (3.7 §4). The account
@@ -55,6 +58,7 @@ from app.database.db import TenantContextError, current_company_id
 from app.models.audit_log import AuditLog
 from app.models.company import Company
 from app.models.employee import Employee
+from app.models.nominees import Nominee
 from app.models.payments import (
     OPEN_CHANGE_STATUSES,
     BankAccount,
@@ -111,6 +115,7 @@ PAYMENT_RETURNED = "PAYMENT_RETURNED"
 REVIEW_FLAGS = frozenset({DUPLICATE_ACCOUNT, HOLDER_NAME_MISMATCH})
 # Risk flags of a change request shown to the approver (3.7 §3.2 step 2).
 NEW_DEVICE, NEW_IP, VELOCITY_LIMIT, HR_CHANGE = "NEW_DEVICE", "NEW_IP", "VELOCITY_LIMIT", "HR_CHANGE"
+NOMINEE_PAYEE = "NOMINEE_PAYEE"
 
 SANDBOX = "SANDBOX"
 SANDBOX_LABEL = "SANDBOX: simulated check; no money moved and no bank or provider was contacted"
@@ -289,6 +294,21 @@ def _setting(db: Session, company_id: int, key: str, employee_id: Optional[int],
     return resolve_setting(db, company_id, key, on=on, employee_id=employee_id)
 
 
+def nominee_employee_id(db: Session, company_id: int, nominee_id: Optional[int]) -> Optional[int]:
+    """The deceased employee a nominee is paid for (None for anything else)."""
+    if nominee_id is None:
+        return None
+    found = db.query(Nominee.employee_id).filter(Nominee.company_id == company_id, Nominee.id == nominee_id).first()
+    return found[0] if found else None
+
+
+def _subject_employee_id(db: Session, row) -> Optional[int]:
+    """The employee whose pay settings govern an account: its own, or the deceased a nominee is paid for."""
+    if row.employee_id is not None:
+        return row.employee_id
+    return nominee_employee_id(db, row.company_id, getattr(row, "nominee_id", None))
+
+
 def _methods(db: Session, company_id: int, employee_id: Optional[int], on: date) -> frozenset:
     value = _setting(db, company_id, "payroll.bank.verification_methods", employee_id, on) or ()
     return frozenset(str(v).upper() for v in value)
@@ -388,6 +408,7 @@ def serialize_account(row: BankAccount, *, for_self: bool = False) -> dict:
         "payee_type": row.payee_type,
         "payee_id": row.payee_id,
         "employee_id": row.employee_id,
+        "nominee_id": row.nominee_id,
         "holder_name": row.holder_name,
         "country": row.country,
         "currency": row.currency,
@@ -457,7 +478,7 @@ def serialize_change_request(db: Session, row: BankAccountChangeRequest, *, for_
     )
     data = {
         "id": row.id, "bank_account_id": row.bank_account_id, "payee_type": row.payee_type,
-        "payee_id": row.payee_id, "employee_id": row.employee_id, "kind": row.kind,
+        "payee_id": row.payee_id, "employee_id": row.employee_id, "nominee_id": row.nominee_id, "kind": row.kind,
         "replaces_account_id": row.replaces_account_id, "channel": row.channel, "status": row.status,
         "approval_request_id": row.approval_request_id, "decided_at": row.decided_at,
         "decision_reason": row.decision_reason, "cooling_off_waived": row.cooling_off_waived_reason is not None,
@@ -465,6 +486,10 @@ def serialize_change_request(db: Session, row: BankAccountChangeRequest, *, for_
         "before": [serialize_account(b, for_self=for_self) for b in before],
         "row_version": row.row_version, "created_at": row.created_at,
     }
+    if row.nominee_id is not None and not for_self:
+        from app.payroll.services import nominees
+
+        data["nominee"] = nominees.nominee_summary(db, row.company_id, row.nominee_id)
     if not for_self:
         data.update({
             "requested_by_user_id": row.requested_by_user_id, "step_up_at": row.step_up_at,
@@ -509,8 +534,26 @@ def _load_account(db: Session, principal: Principal, account_id: int, permission
     if lock:
         query = query.with_for_update(of=BankAccount).populate_existing()
     row = query.first()
+    if row is None and not own:
+        row = _nominee_account(db, principal, account_id, permissions, lock=lock)
     if row is None:
         raise not_found("Bank account")
+    return row
+
+
+def _nominee_account(db: Session, principal: Principal, account_id: int, permissions: Sequence[str], *,
+                     lock: bool = False) -> Optional[BankAccount]:
+    """A NOMINEE account whose final-settlement case is in the caller's scope (the employee scope above never
+    reaches it: a nominee account carries no employee id)."""
+    from app.payroll.services import nominees
+
+    query = db.query(BankAccount).filter(BankAccount.company_id == principal.company_id,
+                                         BankAccount.id == account_id, BankAccount.payee_type == "NOMINEE")
+    if lock:
+        query = query.with_for_update(of=BankAccount).populate_existing()
+    row = query.first()
+    if row is None or not nominees.visible(db, principal, permissions, row.nominee_id):
+        return None
     return row
 
 
@@ -551,6 +594,10 @@ def _makers(db: Session, row: BankAccount) -> set:
     makers.update(u for (u,) in db.query(BankVerification.performed_by_user_id).filter(
         BankVerification.company_id == row.company_id, BankVerification.bank_account_id == row.id,
         BankVerification.result == "EVIDENCE_SUBMITTED"))
+    if row.nominee_id is not None:  # whoever recorded the nominee is a maker of the nominee's account too
+        creator = db.query(Nominee.created_by_user_id).filter(Nominee.company_id == row.company_id,
+                                                              Nominee.id == row.nominee_id).first()
+        makers.add(creator[0] if creator else None)
     makers.discard(None)
     return makers
 
@@ -559,7 +606,10 @@ def _ensure_not_maker(db: Session, principal: Optional[Principal], row: BankAcco
     """Maker-checker (EC-BNK-12): whoever entered the account or its evidence, and the payee, never decide it."""
     if principal is None:
         return
-    if principal.user_id in _makers(db, row) or (row.employee_id is not None and principal.employee_id == row.employee_id):
+    # The payee: the employee, or for a nominee's account the deceased employee whose settlement it is (a login of
+    # the deceased never decides where the estate's pay goes).
+    subject = _subject_employee_id(db, row)
+    if principal.user_id in _makers(db, row) or (subject is not None and principal.employee_id == subject):
         raise forbidden("The person who entered a bank change or its evidence cannot approve or verify it.")
 
 
@@ -628,7 +678,7 @@ def _passed_methods(db: Session, row: BankAccount) -> frozenset:
 
 
 def _required_passed(db: Session, row: BankAccount) -> bool:
-    required = _methods(db, row.company_id, row.employee_id, clock.company_today(db, row.company_id))
+    required = _methods(db, row.company_id, _subject_employee_id(db, row), clock.company_today(db, row.company_id))
     try:
         status = controls.verification_status(_passed_methods(db, row), required)
     except BankingError as exc:
@@ -749,6 +799,25 @@ _EVENTS = {
                        "A payment to your bank account {account} failed or was returned. Please update your bank "
                        "details so that we can pay you."),
 }
+_NOMINEE_EVENTS = {
+    "REQUESTED": ("Bank account change requested for a settlement payee",
+                  "A bank account {account} was submitted on {when} for a payee of a final settlement. It is paid "
+                  "only after approval by a second person, verification and a cooling-off period. If this was not "
+                  "expected, contact HR immediately."),
+    "BLOCKED": ("Bank account change held for a security review",
+                "A bank account {account} for a settlement payee was submitted on {when} and is held for a "
+                "security review because of several recent changes."),
+    "APPROVED": ("Settlement payee bank account approved",
+                 "The bank account {account} of a settlement payee was approved on {when}. It receives payments "
+                 "from {usable}. If this was not expected, contact HR immediately."),
+    "REJECTED": ("Settlement payee bank account not approved",
+                 "The bank account {account} of a settlement payee was not approved."),
+    "DEACTIVATED": ("Settlement payee bank account removed",
+                    "The bank account {account} of a settlement payee was deactivated on {when}."),
+    "PAYMENT_FAILED": ("Settlement payment failed",
+                       "A settlement payment to the bank account {account} failed or was returned. New bank details "
+                       "are needed before it can be paid."),
+}
 _CHANNELS = {"SELF": "self-service", "HR": "by HR", "BUREAU": "by your payroll provider"}
 
 
@@ -769,7 +838,7 @@ def _contacts(db: Session, employee: Optional[Employee]) -> List[str]:
 
 
 def _message(db: Session, row: BankAccount, event: str, change: Optional[BankAccountChangeRequest]) -> Tuple[str, str]:
-    title, template = _EVENTS[event]
+    title, template = (_NOMINEE_EVENTS if row.nominee_id is not None else _EVENTS)[event]
     when = (change.created_at if change is not None and event in ("REQUESTED", "BLOCKED") else _now())
     usable = row.usable_from.strftime("%d %b %Y %H:%M UTC") if row.usable_from else "after approval"
     return title, template.format(account=_bank_line(row), when=when.strftime("%d %b %Y %H:%M UTC"),
@@ -780,7 +849,12 @@ def _message(db: Session, row: BankAccount, event: str, change: Optional[BankAcc
 def _notify(db: Session, row: BankAccount, event: str, change: Optional[BankAccountChangeRequest] = None) -> None:
     from app.payroll.services import notifications as payroll_notifications
 
-    if event == "PAYMENT_FAILED":
+    if row.nominee_id is not None:
+        # A settlement payee's messages go to staff and to the payee's own address; they are not employee
+        # payment-status messages, so only the locked-ON bank alert is resolved (never silenced).
+        if event != "PAYMENT_FAILED":
+            payroll_notifications.bank_change_alert_required(db, row.company_id)
+    elif event == "PAYMENT_FAILED":
         # A payment status message (notify.payroll.payment_status_to_employee): OFF sends nothing; the account is
         # FAILED either way and the employee's own page asks for new details.
         if not payroll_notifications.payment_status_enabled(db, row.company_id, row.employee_id):
@@ -793,9 +867,14 @@ def _notify(db: Session, row: BankAccount, event: str, change: Optional[BankAcco
         employee = db.query(Employee).filter(Employee.company_id == row.company_id,
                                              Employee.id == row.employee_id).first()
     title, message = _message(db, row, event, change)
+    kind = "error" if event in ("PAYMENT_FAILED", "BLOCKED") else "warning" if event != "REJECTED" else "info"
     if employee is not None and employee.user_id is not None:
-        kind = "error" if event in ("PAYMENT_FAILED", "BLOCKED") else "warning" if event != "REJECTED" else "info"
         NotificationService.create(db, employee.user_id, title, message, kind, "/me/bank-accounts")
+    elif row.nominee_id is not None:  # the nominee has no login: the staff who recorded and submitted are told
+        from app.payroll.services import nominees
+
+        for user_id in nominees.staff_to_notify(db, row, change):
+            NotificationService.create(db, user_id, title, message, kind, f"/payroll/payments/nominees/{row.nominee_id}")
     payload = {"bank_account_id": row.id, "event_code": event}
     if change is not None:
         payload["change_request_id"] = change.id
@@ -809,6 +888,11 @@ def _alert_recipients(db: Session, row: BankAccount, change: Optional[BankAccoun
         employee = db.query(Employee).filter(Employee.company_id == row.company_id,
                                              Employee.id == row.employee_id).first()
     recipients = _contacts(db, employee)
+    if row.nominee_id is not None:
+        email_of = db.query(Nominee.email).filter(Nominee.company_id == row.company_id,
+                                                  Nominee.id == row.nominee_id).first()
+        if email_of and email_of[0] and email_of[0].strip().lower() not in recipients:
+            recipients.append(email_of[0].strip().lower())
     sources = []
     if change is not None:
         sources.append(change.contact_emails or [])
@@ -921,7 +1005,10 @@ def _check_allocations(rules: Sequence[Tuple[Any, dict, str]], *, max_accounts: 
         raise AppError(400, [{"field": "allocation", "code": i.code, "msg": i.message} for i in errors], errors[0].code)
 
 
-def _split(db: Session, company_id: int, employee_id: Optional[int], on: date) -> Tuple[bool, int]:
+def _split(db: Session, company_id: int, employee_id: Optional[int], on: date, payee_type: str = "EMPLOYEE"
+           ) -> Tuple[bool, int]:
+    if payee_type == "NOMINEE":  # one account receives a nominee's whole share
+        return False, 1
     split = bool(_setting(db, company_id, "payroll.bank.split_payments_enabled", employee_id, on))
     maximum = int(_setting(db, company_id, "payroll.bank.max_accounts_per_payee", employee_id, on) or 1) if split else 1
     return split, maximum
@@ -980,15 +1067,25 @@ def submit_account(db: Session, principal: Principal, *, details: BankDetails, p
                    self_service: bool = False) -> BankAccountChangeRequest:
     """Submit a new bank account for a payee: checks, encryption, defences, approval routing (3.7 §3)."""
     company_id = principal.company_id
-    if self_service:
-        employee = _own_employee(db, principal, EDIT)
-        channel = "SELF"
+    nominee = None
+    if payee_type == "NOMINEE":
+        from app.payroll.services import nominees
+
+        if self_service:
+            raise forbidden()
+        nominee = nominees.payee_for_submission(db, principal, int(payee_id or 0))
+        employee, channel = None, "HR"
+        payee_type, payee_id, subject_id = "NOMINEE", nominee.id, nominee.employee_id
     else:
-        employee = _payee_employee(db, principal, payee_type, int(payee_id or 0), EDIT)
-        channel = "HR"
-    payee_type, payee_id = "EMPLOYEE", employee.id
+        if self_service:
+            employee = _own_employee(db, principal, EDIT)
+            channel = "SELF"
+        else:
+            employee = _payee_employee(db, principal, payee_type, int(payee_id or 0), EDIT)
+            channel = "HR"
+        payee_type, payee_id, subject_id = "EMPLOYEE", employee.id, employee.id
     today = clock.company_today(db, company_id)
-    if self_service and not _setting(db, company_id, "payroll.bank.self_service_enabled", employee.id, today):
+    if self_service and not _setting(db, company_id, "payroll.bank.self_service_enabled", subject_id, today):
         raise conflict("Bank account self-service is switched off; ask HR to update your account.",
                        "BANK_SELF_SERVICE_DISABLED")
     step_up.ensure_step_up(db, principal)  # EC-BNK-06
@@ -1005,7 +1102,7 @@ def submit_account(db: Session, principal: Principal, *, details: BankDetails, p
     if pending is not None:
         raise conflict("Another bank account change for this person is still open.", "CHANGE_ALREADY_PENDING")
 
-    split, max_accounts = _split(db, company_id, employee.id, today)
+    split, max_accounts = _split(db, company_id, subject_id, today, payee_type)
     active = _active_accounts(db, company_id, payee_type, payee_id)
     if replaces_account_id is not None:
         replaced = [a for a in active if a.id == replaces_account_id]
@@ -1015,7 +1112,7 @@ def submit_account(db: Session, principal: Principal, *, details: BankDetails, p
         replaced = [] if split else list(active)
     remaining = [a for a in active if a not in replaced]
     rule = _allocation_rule(allocation, split=split, others=len(remaining))
-    pay_currency = _pay_currency(db, company_id, employee.id, today, checked.currency)
+    pay_currency = _pay_currency(db, company_id, subject_id, today, checked.currency)
     _check_allocations([(a.id, _allocation_json(a), a.currency) for a in remaining]
                        + [("new", rule, checked.currency)], max_accounts=max_accounts, pay_currency=pay_currency)
 
@@ -1030,7 +1127,8 @@ def submit_account(db: Session, principal: Principal, *, details: BankDetails, p
     owner = f"payee={payee_type}:{payee_id}"
     sealed = seal(db, company_id, "bank_accounts", account_id, owner, checked)
     row = BankAccount(
-        id=account_id, company_id=company_id, payee_type=payee_type, payee_id=payee_id, employee_id=employee.id,
+        id=account_id, company_id=company_id, payee_type=payee_type, payee_id=payee_id,
+        employee_id=employee.id if employee is not None else None, nominee_id=nominee.id if nominee else None,
         holder_name=checked.account.holder_name, country=checked.account.country, currency=checked.currency,
         routing=dict(checked.account.routing), bank_name=bank_name, branch_name=branch_name,
         bank_address=checked.account.bank_address, account_type=checked.account.account_type, allocation=rule,
@@ -1038,7 +1136,7 @@ def submit_account(db: Session, principal: Principal, *, details: BankDetails, p
         replaces_account_id=replaced[0].id if replaced else None, created_by_user_id=principal.user_id,
         row_version=1, **sealed,
     )
-    legal_name = _employee_name(employee)
+    legal_name = nominee.name if nominee is not None else _employee_name(employee)
     score = name_match_score(row.holder_name, legal_name)
     if score < NAME_MATCH_THRESHOLD:  # EC-BNK-08
         _add_flag(row, HOLDER_NAME_MISMATCH, score=decimal_str(score),
@@ -1047,20 +1145,25 @@ def submit_account(db: Session, principal: Principal, *, details: BankDetails, p
     db.flush()
 
     change_flags = _device_flags(db, principal, meta)
-    if channel == "HR":
+    if nominee is not None:
+        change_flags.append({"code": NOMINEE_PAYEE, "detail": "Account of a nominee or legal heir of a deceased "
+                             "employee: check the proof document before approving"})
+    elif channel == "HR":
         change_flags.append({"code": HR_CHANGE, "detail": "Entered by HR on the employee's behalf"})
     if blocked:
         change_flags.append({"code": VELOCITY_LIMIT, "detail": "More than 2 bank changes in 90 days"})
     change = BankAccountChangeRequest(
         company_id=company_id, bank_account_id=row.id, payee_type=payee_type, payee_id=payee_id,
-        employee_id=employee.id, kind="REPLACE" if replaced else "ADD",
+        employee_id=employee.id if employee is not None else None, nominee_id=nominee.id if nominee else None,
+        kind="REPLACE" if replaced else "ADD",
         replaces_account_id=replaced[0].id if replaced else None, requested_by_user_id=principal.user_id,
         channel=channel, step_up_at=session.step_up_at if session is not None else None,
         step_up_method=session.step_up_method if session is not None else None,
         ip_address=(meta.ip_address or None) and meta.ip_address[:64],
         user_agent=(meta.user_agent or None) and meta.user_agent[:255],
         risk_flags=change_flags + [{"code": f["code"], "detail": f.get("detail")} for f in row.risk_flags],
-        contact_emails=_contacts(db, employee),
+        contact_emails=[nominee.email.strip().lower()] if nominee is not None and nominee.email
+        else _contacts(db, employee),
         status="SECURITY_REVIEW" if blocked else "PENDING_APPROVAL", created_at=now, row_version=1,
     )
     db.add(change)
@@ -1097,18 +1200,22 @@ def _route(db: Session, principal: Optional[Principal], row: BankAccount, change
     """Submitted account: approval (always for HR, else per setting) or activation after cooling-off."""
     today = clock.company_today(db, row.company_id)
     requires = change.channel != "SELF" or bool(
-        _setting(db, row.company_id, "payroll.bank.change_requires_approval", row.employee_id, today))
+        _setting(db, row.company_id, "payroll.bank.change_requires_approval", _subject_employee_id(db, row), today))
     if requires:
         _account_transition(db, principal, row, "SUBMIT", system=True, change=change)
         _verification_transition(db, principal, row, "SUBMIT", system=True)
         _sync_review(db, row)
         requester = principal_for_user(db, row.company_id, change.requested_by_user_id)
+        context = {"maker_user_ids": [u for u in (change.requested_by_user_id,) if u is not None],
+                   "channel": change.channel, "bank_account_id": row.id, "kind": change.kind,
+                   "risk_flags": [f["code"] for f in change.risk_flags]}
+        if row.nominee_id is not None:
+            from app.payroll.services import nominees
+
+            context.update(nominees.approval_context(db, row))  # case scope; the deceased is no approval subject
         request = approvals.submit(
             db, requester, module=MODULE, subject_type=SUBJECT, subject_id=change.id,
-            subject_employee_id=row.employee_id,
-            context={"maker_user_ids": [u for u in (change.requested_by_user_id,) if u is not None],
-                     "channel": change.channel, "bank_account_id": row.id, "kind": change.kind,
-                     "risk_flags": [f["code"] for f in change.risk_flags]},
+            subject_employee_id=row.employee_id, context=context,
         )
         change.status = "PENDING_APPROVAL"
         change.approval_request_id = request.id
@@ -1124,9 +1231,10 @@ def _activate(db: Session, principal: Optional[Principal], row: BankAccount, cha
     company_id = row.company_id
     today = clock.company_today(db, company_id)
     now = _now()
-    hours = int(_setting(db, company_id, "payroll.bank.cooling_off_hours", row.employee_id, today))
+    subject = _subject_employee_id(db, row)
+    hours = int(_setting(db, company_id, "payroll.bank.cooling_off_hours", subject, today))
     usable = controls.usable_from(now, hours, waived_reason=change.cooling_off_waived_reason)
-    split, max_accounts = _split(db, company_id, row.employee_id, today)
+    split, max_accounts = _split(db, company_id, subject, today, row.payee_type)
     active = [a for a in _active_accounts(db, company_id, row.payee_type, row.payee_id, lock=True) if a.id != row.id]
     if split:
         replaced = [a for a in active if a.id == change.replaces_account_id]
@@ -1135,7 +1243,7 @@ def _activate(db: Session, principal: Optional[Principal], row: BankAccount, cha
     remaining = [a for a in active if a not in replaced]
     _check_allocations([(a.id, _allocation_json(a), a.currency) for a in remaining]
                        + [(row.id, _allocation_json(row), row.currency)], max_accounts=max_accounts,
-                       pay_currency=_pay_currency(db, company_id, row.employee_id, today, row.currency))
+                       pay_currency=_pay_currency(db, company_id, subject, today, row.currency))
     if action == "ACTIVATE":
         _account_transition(db, principal, row, "ACTIVATE", system=True, change=change,
                             changes={"approved_at": now, "usable_from": usable,
@@ -1218,6 +1326,17 @@ def _load_change(db: Session, principal: Principal, change_id: int, permissions:
     if lock:
         query = query.with_for_update(of=BankAccountChangeRequest).populate_existing()
     row = query.first()
+    if row is None and not own:
+        from app.payroll.services import nominees
+
+        found = db.query(BankAccountChangeRequest).filter(
+            BankAccountChangeRequest.company_id == principal.company_id, BankAccountChangeRequest.id == change_id,
+            BankAccountChangeRequest.payee_type == "NOMINEE")
+        if lock:
+            found = found.with_for_update(of=BankAccountChangeRequest).populate_existing()
+        found = found.first()
+        if found is not None and nominees.visible(db, principal, permissions, found.nominee_id):
+            row = found
     if row is None:
         raise not_found("Bank change request")
     return row
@@ -1261,6 +1380,9 @@ def decide_change_request(db: Session, principal: Principal, change_id: int, dec
     account = _lock_account(db, change.company_id, change.bank_account_id)
     _ensure_not_maker(db, principal, account)
     if decision.upper() == "APPROVE" and waive_cooling_off_reason is not None:
+        if account.payee_type == "NOMINEE":
+            raise conflict("The cooling-off of a nominee's bank account is never waived.",
+                           "COOLING_OFF_NOT_WAIVABLE")
         change.cooling_off_waived_reason = _reason(waive_cooling_off_reason)
         change.cooling_off_waived_by_user_id = principal.user_id
         db.flush()
@@ -1337,6 +1459,9 @@ def waive_cooling_off(db: Session, principal: Principal, account_id: int, reason
     step_up.ensure_step_up(db, principal)
     _check_version(row, expected_row_version)
     now = _now()
+    if row.payee_type == "NOMINEE":
+        raise conflict("The cooling-off of a nominee's bank account is never waived: it protects the settlement "
+                       "of a deceased employee from diversion.", "COOLING_OFF_NOT_WAIVABLE")
     if row.status != _BA.ACTIVE or row.usable_from is None or row.usable_from <= now:
         raise conflict("This account is not in a cooling-off period.", "NOT_COOLING_OFF")
     _ensure_not_maker(db, principal, row)
@@ -1374,9 +1499,10 @@ def deactivate_account(db: Session, principal: Principal, account_id: int, reaso
     today = clock.company_today(db, row.company_id)
     remaining = [a for a in _active_accounts(db, row.company_id, row.payee_type, row.payee_id) if a.id != row.id]
     if remaining:
-        split, max_accounts = _split(db, row.company_id, row.employee_id, today)
+        subject = _subject_employee_id(db, row)
+        split, max_accounts = _split(db, row.company_id, subject, today, row.payee_type)
         _check_allocations([(a.id, _allocation_json(a), a.currency) for a in remaining], max_accounts=max(max_accounts,
-                           len(remaining)), pay_currency=_pay_currency(db, row.company_id, row.employee_id, today,
+                           len(remaining)), pay_currency=_pay_currency(db, row.company_id, subject, today,
                                                                        row.currency))
     now = _now()
     effective_to = max(today, row.effective_from or today)
@@ -1417,6 +1543,15 @@ def payee_accounts(db: Session, principal: Principal, payee_type: str, payee_id:
     kind = _payee_type(payee_type)
     if not any(principal.has(p) for p in VIEW_PERMISSIONS):
         raise forbidden()
+    if kind == "NOMINEE":
+        from app.payroll.services import nominees
+
+        if not nominees.visible(db, principal, VIEW_PERMISSIONS, payee_id):
+            raise not_found("Payee")
+        rows = (db.query(BankAccount)
+                .filter(BankAccount.company_id == principal.company_id, BankAccount.payee_type == kind,
+                        BankAccount.payee_id == payee_id).order_by(BankAccount.id.desc()).all())
+        return [serialize_account(r) for r in rows]
     if kind != "EMPLOYEE":
         raise not_found("Payee")
     held = [p for p in VIEW_PERMISSIONS if principal.has(p)]
@@ -1464,7 +1599,8 @@ def add_evidence(db: Session, principal: Principal, account_id: int, file_name: 
     if row.status not in (_BA.PENDING_APPROVAL, _BA.ACTIVE) or row.verification_status not in (_V.PENDING,
                                                                                               _V.REQUIRES_REVIEW):
         raise conflict("Evidence can be added only while the account awaits verification.", "VERIFICATION_NOT_OPEN")
-    if "DOCUMENT_REVIEW" not in _methods(db, row.company_id, row.employee_id, clock.company_today(db, row.company_id)):
+    if "DOCUMENT_REVIEW" not in _methods(db, row.company_id, _subject_employee_id(db, row),
+                                         clock.company_today(db, row.company_id)):
         raise conflict("Document review is not a verification method of this company.", "METHOD_NOT_ENABLED")
     if not data:
         raise bad_request("No file provided.", "EVIDENCE_EMPTY")
@@ -1547,14 +1683,20 @@ def verify_account(db: Session, principal: Principal, account_id: int, method: s
                                                                                               _V.REQUIRES_REVIEW):
         raise conflict("This account is not awaiting verification.", "VERIFICATION_NOT_OPEN")
     today = clock.company_today(db, row.company_id)
-    if method not in _methods(db, row.company_id, row.employee_id, today):
+    if method not in _methods(db, row.company_id, _subject_employee_id(db, row), today):
         raise conflict(f"{method} is not a verification method of this company.", "METHOD_NOT_ENABLED")
     reason = _reason(reason, required=False)
     if method == "DOCUMENT_REVIEW":
         return row, _document_review(db, principal, row, decision, evidence_id, reason)
-    employee = db.query(Employee).filter(Employee.company_id == row.company_id, Employee.id == row.employee_id).first()
+    if row.nominee_id is not None:
+        nominee = db.query(Nominee).filter(Nominee.company_id == row.company_id, Nominee.id == row.nominee_id).one()
+        payee_name = nominee.name
+    else:
+        employee = db.query(Employee).filter(Employee.company_id == row.company_id,
+                                             Employee.id == row.employee_id).first()
+        payee_name = _employee_name(employee)
     outcome = SANDBOX_ADAPTER.check(method, last4=row.last4, holder_name=row.holder_name,
-                                    payee_name=_employee_name(employee), fingerprint=row.fingerprint)
+                                    payee_name=payee_name, fingerprint=row.fingerprint)
     score = outcome["score"]
     event = _record(db, row, method, outcome["result"], principal, provider=SANDBOX,
                     provider_ref=outcome["provider_ref"], name_match_score=score, reason=reason,
@@ -1807,8 +1949,11 @@ def usable_accounts(db: Session, company_id: int, payee_id: int, on, *, payee_ty
     if not rows:
         return []
     day = on if not isinstance(on, datetime) else _local_date(db, company_id, instant)
-    exclude = bool(_setting(db, company_id, "payroll.bank.exclude_unverified_from_payout",
-                            payee_id if payee_type == "EMPLOYEE" else None, day))
+    subject = payee_id if payee_type == "EMPLOYEE" else (
+        nominee_employee_id(db, company_id, payee_id) if payee_type == "NOMINEE" else None)
+    # A nominee's account must always be verified before money moves to it, whatever the company setting.
+    exclude = payee_type == "NOMINEE" or bool(_setting(db, company_id, "payroll.bank.exclude_unverified_from_payout",
+                                                       subject, day))
     return [beneficiary_snapshot(r, hold_reasons=_hold_reasons(r, instant, exclude)) for r in rows]
 
 

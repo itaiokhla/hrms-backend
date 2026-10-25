@@ -1127,6 +1127,19 @@ class _Builder:
             self.source("pack", data["code"], data)
         return data
 
+    def tax_profile_json(self) -> Optional[dict]:
+        """The employee's approved tax declarations in force on the period end, read-only (tax_profiles service):
+        None when the pack declares no fields or nothing is approved, so such a run is exactly as before."""
+        from app.payroll.services import tax_profiles
+
+        content, version_id, issues = tax_profiles.frozen_profile(
+            self.db, self.cid, self.eid, pack_reference(self.run, self.period, self.entity), self.end)
+        for code, severity, message, details in issues:
+            self.issue(code, severity, message, **details)
+        if content is not None:
+            self.source("tax_profile", version_id, content)
+        return content
+
     def pack_state_json(self) -> dict:
         """F-15: the previous finalized run's snapshot state plus the determinations that run made."""
         rows = self.finalized_rows(regular_only=False, before_start=False, limit=1)
@@ -1349,7 +1362,7 @@ class _Builder:
             "previous": self.previous_json(),
             "ytd": self.ytd_json(),
             "pack": self.pack_json(),
-            "tax_profile": None,
+            "tax_profile": self.tax_profile_json(),
             "attestation": self.attestation_json(),
             "bank_accounts": self.bank_accounts_json(),
             "tables": self.tables_json(),

@@ -4,6 +4,8 @@ row-level isolation of every overtime/task table across three tenants (3.4 §10,
 EC-TSK-01, EC-TSK-02, EC-TSK-04, EC-TSK-05, EC-TSK-10, EC-TSK-12, EC-SEC-01, EC-SEC-05.
 """
 
+import json
+import re
 from contextlib import contextmanager
 from datetime import date, timedelta
 
@@ -32,6 +34,52 @@ def sql(query, **params):
     with system_engine.begin() as conn:
         result = conn.execute(text(query), params)
         return result.all() if result.returns_rows else None
+
+
+_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?([+-]\d{2}:?\d{2}|Z)?)?$")
+
+
+def pay_leaks(body, *needles):
+    """Every JSON leaf of `body` that contains one of `needles`, as (path, value).
+
+    Timestamps/dates and identifier fields (`id`, `*_id`, `*_ids`) are skipped: they are not pay and their
+    digits are random (a microsecond part such as `.855800` must not count as the amount 800). Every other
+    value, including keys, is checked, so an amount under any field name still counts as a leak.
+    """
+    payload = json.loads(body) if isinstance(body, (str, bytes)) else body
+    found = []
+
+    def walk(node, path, key):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if any(n in str(k) for n in needles):
+                    found.append((f"{path}.{k}", k))
+                walk(v, f"{path}.{k}", str(k))
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                walk(v, f"{path}[{i}]", key)
+        elif node is not None and not isinstance(node, bool):
+            if key == "id" or key.endswith("_id") or key.endswith("_ids"):
+                return
+            value = str(node)
+            if isinstance(node, str) and _TIMESTAMP.match(value):
+                return
+            if any(n in value for n in needles):
+                found.append((path, node))
+
+    walk(payload, "$", "")
+    return found
+
+
+def test_pay_leak_scan_ignores_timestamps_and_ids_but_finds_amounts():
+    """Regression for F-72 (1): the F-42 check used `"800" not in response.text`, which failed whenever a
+    timestamp's microseconds contained 800. The scan must ignore that and still find the amount anywhere."""
+    clean = {"id": 1800, "created_at": "2026-10-24T10:12:39.855800+00:00", "task_ids": [800],
+             "rate": None, "quantity": "12", "approved_on": "2026-08-00"}
+    assert pay_leaks(json.dumps(clean), "800") == []
+    for leaked in ({"rate": {"amount": "800.00"}}, {"x": [{"note": "pay 800 INR"}]}, {"amount": 800},
+                   {"estimate": "9600.00"}, {"800.00": True}):
+        assert pay_leaks(json.dumps(leaked), "800", "9600"), leaked
 
 
 @contextmanager
@@ -429,14 +477,15 @@ def test_f42_task_rates_are_shown_only_to_payroll_viewers_never_to_managers(app,
         assert item["warnings"] == []
     detail = task(u["mona"], created["id"])
     assert detail["rate"] is None and detail["pay_hidden"] is True
-    assert "800" not in u["mona"].get(f"{BASE}/{created['id']}").text
+    raw = u["mona"].get(f"{BASE}/{created['id']}")
+    assert raw.status_code == 200 and pay_leaks(raw.text, "800", "9600") == [], raw.text
     # The assignee without payroll:inputs:read does not see it either (the UI never showed it).
     assert task(u["walt"], created["id"])["rate"] is None
     # The approval inbox carries no amount for tasks.
     inbox = u["mona"].get("/api/v1/payroll/approvals", params={"module": "task"})
     assert inbox.status_code == 200, inbox.text
     assert [i["subject_id"] for i in inbox.json()["items"]] == [created["id"]]
-    assert inbox.json()["items"][0]["amount"] is None and "800" not in inbox.text
+    assert inbox.json()["items"][0]["amount"] is None and pay_leaks(inbox.text, "800", "9600") == [], inbox.text
     r = approve(u["mona"], created["id"])
     assert r.status_code == 200 and "rate" not in r.json(), r.text
     assert task(u["admin"], created["id"])["rate"] == rate

@@ -82,6 +82,20 @@ def check_company(c: Checker, key: str, spec: dict) -> Optional[int]:
     brand = c.one("SELECT product_name FROM brand_profiles WHERE company_id = :c AND status = 'PUBLISHED' "
                   "AND owner_type = 'TENANT' ORDER BY version DESC LIMIT 1", c=cid)
     c.check(name, "published brand", brand == spec["brand"]["product_name"], f"{brand!r}")
+    # White-label inheritance levels used by the Chrome suite (07-white-label): reseller partner, entity brand.
+    if spec.get("partner"):
+        partner = c.q("SELECT p.name, cbp.powered_by_label FROM companies co JOIN partners p ON p.id = co.partner_id "
+                      "LEFT JOIN commercial_brand_profiles cbp ON cbp.partner_id = p.id AND cbp.status = 'PUBLISHED' "
+                      "WHERE co.id = :c", c=cid)
+        c.check(name, f"tenant of partner {spec['partner']['name']} with its published credit",
+                [tuple(r) for r in partner] == [(spec["partner"]["name"], spec["partner"]["powered_by_label"])],
+                f"{[tuple(r) for r in partner]}")
+    for code, fields in (spec.get("entity_document_brand") or {}).items():
+        row = c.q("SELECT bp.accent_color, bp.legal_footer FROM brand_profiles bp JOIN legal_entities l "
+                  "ON l.id = bp.legal_entity_id AND l.company_id = bp.company_id WHERE bp.company_id = :c "
+                  "AND l.code = :code AND bp.owner_type = 'LEGAL_ENTITY' AND bp.status = 'PUBLISHED'", c=cid, code=code)
+        c.check(name, f"published document brand of legal entity {code}",
+                [tuple(r) for r in row] == [(fields["accent_color"], fields["legal_footer"])], f"{len(row)} row(s)")
 
     # Organisation
     entities = {code: (cc, confirmed, cur) for code, cc, confirmed, cur in c.q(

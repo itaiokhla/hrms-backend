@@ -62,7 +62,10 @@ async def receive(adapter: str, request: Request):
             db.rollback()
             if not service.is_duplicate_error(exc):
                 raise
-            outcome = "DUPLICATE"
+            # The delivery that applied the event records it in the inbox with its real outcome. Logging this
+            # DUPLICATE first (the winner may still be finishing its commit) made the winner report DUPLICATE too
+            # although it had applied the event (F-68); the inbox keeps one row per event id either way.
+            return JSONResponse({"outcome": "DUPLICATE"}, status_code=200)
     finally:
         db.close()
     logged = _log(adapter=event.adapter, outcome=service.WEBHOOK_OUTCOME.get(outcome, "PROCESSED"),

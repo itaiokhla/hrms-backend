@@ -39,7 +39,8 @@ CRITICAL_AREAS = ("EC-SEC", "EC-PAY", "EC-BNK", "EC-RUN")
 
 ID_IN_TEXT = re.compile(r"\bEC-([A-Z]{2,4})-(\d{2})\b")
 ID_IN_NAME = re.compile(r"(?:^|_)ec_([a-z]{2,4})_(\d{2})(?=_|$)")
-JS_TEST_TITLE = re.compile(r"""\b(?:test|it|describe)(?:\.\w+)?\(\s*(['"`])(.*?)\1""", re.S)
+# A skipped or fixme test (test.fixme / test.skip / it.skip / describe.skip) asserts nothing, so it never covers an id.
+JS_TEST_TITLE = re.compile(r"""\b(?:test|it|describe)(?:\.(?!fixme\b|skip\b|todo\b)\w+)?\(\s*(['"`])(.*?)\1""", re.S)
 
 # Ids the implementation recorded as not implemented or deliberately out of automated scope, with the
 # reason (FOLLOW-UPS.md / CHECKLIST.md). Anything else uncovered gets the generic reason of its test level.
@@ -48,16 +49,9 @@ KNOWN_GAPS = {
     "EC-HOL-07": "Not implemented: comp-off expiry beyond the pure rules (FOLLOW-UPS F-40).",
     "EC-HOL-01": "Not implemented: holiday-on-weekly-off substitution beyond the pure rules (FOLLOW-UPS F-40).",
     # Critical-area gaps, checked against the code on 23 Oct 2026 (security verification agent).
-    "EC-BNK-15": "Partial: the NOMINEE payee type exists (app/models/payments.py PAYEE_TYPES) and a death case pays a "
-                 "named nominee through final settlement (tests/payroll/test_final_settlement.py::test_ec_cor_07_"
-                 "death_pays_a_named_nominee_and_ec_cor_12_absconding_is_held); on the bank-account side NOMINEE is "
-                 "reserved (app/payroll/services/bank_accounts.py docstring): a payee change to a nominee's own "
-                 "account with documents and approval is not implemented, so no test can name the id.",
     "EC-PAY-19": "UNCLAIMED exists only as an obligation status (app/models/payment_flows.py); no country pack defines "
                  "an unclaimed period and no job moves obligations to it (packs ship as DRAFT, decision I-07). "
                  "Manual/staging per 04-edge-cases.",
-    "EC-SEC-16": "Not implemented: documents carry retention_until (app/models/pay_documents.py) but there is no "
-                 "legal-hold flag and no retention-deletion job to conflict with it. Manual/staging per 04-edge-cases.",
     # Checked against the code on 24 Oct 2026 (gate-ec): applicable but not implemented, or only partly.
     "EC-WL-23": "Not implemented: there is no custom sending domain; every e-mail leaves from the platform sender "
                 "(settings.smtp_from) with the tenant's display name and Reply-To (app/services/email_service.py), so "
@@ -72,8 +66,10 @@ KNOWN_GAPS = {
     "EC-ORG-16": "Not implemented: partners have no operator access into a tenant (the partner console shows aggregate "
                  "counts only, tests/test_partner_admins.py), so a partner cannot prepare or approve a run; the "
                  "separation of duties for tenant users is EC-RUN-05.",
-    "EC-ORG-17": "Not implemented: there are no partner access grants into a tenant (no grant model, no expiry), so no "
-                 "grant can expire under a running job.",
+    "EC-ORG-17": "Not applicable to what exists: partner delegations (F-74, decision I-24) are read-only; every "
+                 "non-GET request on a delegated session is refused with 403 DELEGATION_READ_ONLY "
+                 "(app/services/partner_delegation_service.py), so a partner cannot start a job whose grant could "
+                 "expire mid-way. Partner write access with jobs is not implemented.",
     "EC-ORG-18": "Not implemented: there are no partner access grants to revoke; the closest control (a suspended "
                  "partner or a re-scoped partner account loses its session at once) is asserted in tests/"
                  "test_partner_admins.py::test_suspended_partner_and_rescoped_accounts_lose_access_at_once.",

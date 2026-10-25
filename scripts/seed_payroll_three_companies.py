@@ -355,6 +355,11 @@ COMPANIES: Dict[str, dict] = {
                   "default_locale": "en-IN", "show_powered_by": False,
                   "legal_footer": "Alpha Technologies Pvt Ltd (fictitious test company)",
                   "support_email": "people@alpha-tech.example"},
+        # Document brand of legal entity IN01 (enterprise plan, 01 §5.7): payslips of IN01 show this footer and
+        # accent instead of the tenant's (white-label inheritance PLATFORM -> PARTNER -> TENANT -> LEGAL ENTITY).
+        "entity_document_brand": {"IN01": {"accent_color": "#B45309",
+                                           "legal_footer": "Alpha Technologies Pvt Ltd, IN01 payroll entity "
+                                                           "(fictitious test company)"}},
         "notes": ["Switches ON: overtime, salary advances (plus the starter profile's attendance, leave, wage inputs, "
                   "tasks, reimbursements); minimum net pay 50 %.",
                   "Overtime policy (company values): workday 1.5x, weekly off 2x, holiday 2x; hourly base = BASIC "
@@ -468,6 +473,11 @@ COMPANIES: Dict[str, dict] = {
                   "primary_color": "#0F766E", "accent_color": "#14B8A6", "sidebar_style": "DARK",
                   "default_locale": "en-AE", "legal_footer": "Beta Logistics LLC (fictitious test company)",
                   "support_email": "hr@beta-logistics.example"},
+        # Beta is a tenant of a (fictitious) reseller partner: the partner grants every white-label entitlement and
+        # brands the platform credit, so Beta's documents and e-mails show the partner's "powered by" line while
+        # Alpha (credit hidden) and Gamma (direct tenant: the platform's credit) do not.
+        "partner": {"name": "Northwind Payroll Partners (fictitious)",
+                    "powered_by_label": "Powered by Northwind Payroll Cloud"},
         # A finalized September gives the monthly net the loan's instalment check needs; the loan is then
         # disbursed (off-cycle) and October's finalized run recovers its first instalment.
         "notes": ["Switches ON: overtime, holiday-work premium, loans; minimum net pay 50 %. Mon-Fri week (country "
@@ -737,6 +747,56 @@ class CompanySeed:
         ops.patch(f"platform/companies/{self.state['company_id']}",
                   {"subscription_plan": self.spec["plan"], "subscription_status": "active"})
         self.ctx.created(f"plan {self.spec['plan']}")
+
+    def _platform(self) -> "Api":
+        ops = Api((self.ctx.make_platform_client or self.ctx.make_client)(), PLATFORM_EMAIL)
+        ops.post("platform/auth/login", {"email": PLATFORM_EMAIL, "password": self.ctx.platform_password})
+        return ops
+
+    def ensure_partner(self) -> None:
+        """A reseller partner (platform console) whose tenant this company is (white-label inheritance level 2).
+        The partner grants every white-label entitlement, so the tenant keeps its own brand; only fields the
+        tenant leaves empty (the "powered by" credit) come from the partner."""
+        wanted = self.spec.get("partner")
+        if not wanted or not self.ctx.platform_password:
+            return
+        ops = self._platform()
+        listing = ops.get("platform/partners")
+        partners, entitlements = listing.get("partners", []), listing.get("entitlements", {})
+        partner = next((x for x in partners if x["name"] == wanted["name"]), None)
+        if partner is None:
+            partner = ops.post("platform/partners", {"name": wanted["name"], "billing_mode": "PARTNER_BILLS_TENANT",
+                                                     "tenant_entitlements": {k: True for k in entitlements}})
+            self.ctx.created(f"partner {wanted['name']}")
+        published = partner.get("brand") or {}
+        if published.get("powered_by_label") != wanted["powered_by_label"]:
+            ops.put(f"platform/brands/partners/{partner['id']}",
+                    {"changes": {}, "powered_by_label": wanted["powered_by_label"]})
+            ops.post(f"platform/brands/partners/{partner['id']}/publish", {})
+            self.ctx.created(f"partner brand ({wanted['powered_by_label']})")
+        listed = items_of(ops.get("platform/companies", q=self.spec["name"], limit=50))
+        current = next((c for c in listed if c.get("id") == self.state["company_id"]), {})
+        if current.get("partner_id") != partner["id"]:
+            ops.patch(f"platform/companies/{self.state['company_id']}", {"partner_id": partner["id"]})
+            self.ctx.created(f"{self.spec['name']} placed under partner {wanted['name']}")
+        else:
+            self.ctx.existing()
+        self.state["partner"] = {"id": partner["id"], "name": wanted["name"],
+                                 "powered_by_label": wanted["powered_by_label"]}
+
+    def ensure_entity_document_brand(self) -> None:
+        """Document brand of a legal entity (accent and legal footer on its payslips), published before any run."""
+        for code, fields in (self.spec.get("entity_document_brand") or {}).items():
+            entity_id = self.ids["entities"][code]
+            view = self.admin.get(f"legal-entities/{entity_id}/document-brand")
+            published = (view.get("published") or {}).get("fields") or {}
+            if all(published.get(k) == v for k, v in fields.items()):
+                self.ctx.existing()
+            else:
+                self.admin.put(f"legal-entities/{entity_id}/document-brand", {"changes": fields})
+                self.admin.post(f"legal-entities/{entity_id}/document-brand/publish", {})
+                self.ctx.created(f"document brand of legal entity {code}")
+            self.state.setdefault("entity_document_brand", {})[code] = dict(fields, entity_id=entity_id)
 
     def ensure_company_settings(self) -> None:
         current = self.admin.get("settings")
@@ -1762,6 +1822,7 @@ class CompanySeed:
         self.log("tenant and organisation")
         self.ensure_admin()
         self.optional("subscription plan (platform operator)", self.ensure_plan)
+        self.optional("reseller partner (platform operator)", self.ensure_partner)
         self.ensure_company_settings()
         self.ensure_entities()
         self.ensure_work_weeks()
@@ -1774,6 +1835,7 @@ class CompanySeed:
         self.ensure_roles()
         self.ensure_people()
         self.optional("brand", self.ensure_brand)
+        self.optional("legal-entity document brand", self.ensure_entity_document_brand)
         self.optional("holidays", self.ensure_holidays)
         self.log("payroll configuration")
         self.ensure_payroll_settings()

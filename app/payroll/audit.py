@@ -18,6 +18,8 @@ COUNTRY_PACKS = "Country Packs"
 PAYROLL_ROLES = "Payroll Roles"
 LOANS = "Loans"
 REIMBURSEMENTS = "Reimbursements"
+LEGAL_HOLDS = "Legal Holds"
+TAX_PROFILES = "Tax Profiles"
 
 PAYROLL_AUDIT_MODULES = (
     LEGACY_PAYROLL,
@@ -33,6 +35,8 @@ PAYROLL_AUDIT_MODULES = (
     PAYROLL_ROLES,
     LOANS,
     REIMBURSEMENTS,
+    LEGAL_HOLDS,
+    TAX_PROFILES,
 )
 
 PAYROLL_AUDIT_PERMISSION = "payroll:audit:read"

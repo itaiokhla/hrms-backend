@@ -124,6 +124,11 @@ class AuditLogService:
         Credentials and bank, tax and identity numbers are always masked; money amounts too when
         mask_amounts is set (for events readable without payroll access).
         """
+        delegation = getattr(principal, "delegation", None)
+        if delegation is not None:
+            # A partner operator under a delegation: attribute the action to the operator, never to a user id.
+            actor_type, actor_id, actor_email = "partner", delegation.operator_id, delegation.operator_email
+            details = {**(details or {}), "delegation_id": delegation.delegation_id, "partner_id": delegation.partner_id}
         entry = AuditLog(
             company_id=company_id if company_id is not None else (
                 principal.company_id if principal else current_company_id(db)

@@ -309,10 +309,30 @@ def _queue_payslip_email(db: Session, payroll: Payroll, employee: Employee) -> N
         "link": {"url": link(payroll.company_id, "/payslips")},
     }
 
-    def send(_session):
+    # Sent once, after the outermost commit only. SQLAlchemy 2.0 also emits after_commit when a SAVEPOINT is
+    # released inside a still-open transaction, and an outer rollback must cancel the e-mail rather than leave it
+    # armed for the session's next commit (F-72 (2)). Rolling back the savepoint it was queued in cancels it too.
+    state = {"done": False}
+    queued_in = db.get_nested_transaction() or db.get_transaction()
+
+    def send(session):
+        if state["done"] or session.in_nested_transaction():
+            return
+        state["done"] = True
         EmailService.send_template("payroll.payslip_published", employee.email, context, payroll.company_id)
 
-    event.listen(db, "after_commit", send, once=True)
+    def discard(_session, previous_transaction):
+        tx = queued_in
+        while tx is not None:  # the transaction it was queued in, or one enclosing it, rolled back
+            if tx is previous_transaction:
+                state["done"] = True
+                return
+            tx = tx.parent
+        if previous_transaction.parent is None:
+            state["done"] = True
+
+    event.listen(db, "after_commit", send)
+    event.listen(db, "after_soft_rollback", discard)
 
 
 def process(db: Session, principal: Principal, payroll_id: int) -> Payroll:

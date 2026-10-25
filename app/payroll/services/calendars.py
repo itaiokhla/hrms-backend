@@ -579,6 +579,10 @@ def schedule_generation(db: Session, company_id: int, *, on: Optional[date] = No
     from app.payroll.services import notifications
 
     notifications.schedule_daily(db, company_id, on=day)
+    # The retention sweep (payroll.retention_sweep, legal holds F-73) re-queues itself; this keeps the chain alive.
+    from app.payroll.services import legal_holds
+
+    legal_holds.schedule_sweep(db, company_id, at=datetime.combine(day, legal_holds.SWEEP_AT, tzinfo=timezone.utc))
 
 
 @jobs.register(GENERATE_JOB)
