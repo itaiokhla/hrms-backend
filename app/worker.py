@@ -2,8 +2,8 @@
 
     python -m app.worker [--poll 2.0] [--batch 10] [--once]
 
-Loops: re-queue stale jobs (reaper, every minute), claim due jobs with SKIP LOCKED, run each in a
-session bound to its tenant. Several workers may run side by side. With JOBS_MODE=thread the API process
+Loops: re-queue stale jobs (reaper, every minute), tick the periodic scheduler (every minute, LH 02 §8.2), claim
+due jobs with SKIP LOCKED, run each in a session bound to its tenant. Several workers may run side by side. With JOBS_MODE=thread the API process
 runs the same loop in an embedded daemon thread (start_embedded / stop_embedded, wired in app.main).
 """
 
@@ -20,6 +20,21 @@ from app.payroll.services import jobs
 logger = logging.getLogger("hrms.worker")
 
 REAP_EVERY_SECONDS = 60
+SCHEDULE_EVERY_SECONDS = 60
+
+
+def schedule_tick() -> int:
+    """One scheduler tick in a system session (app/core/scheduler.py); several workers may tick at once."""
+    from app.core import clock, scheduler
+    from app.database.db import SystemSessionLocal
+
+    db = SystemSessionLocal()
+    try:
+        enqueued = scheduler.tick(db, clock.utcnow())
+        db.commit()
+        return enqueued
+    finally:
+        db.close()
 
 
 class Worker:
@@ -28,6 +43,7 @@ class Worker:
         self.poll_seconds = poll_seconds
         self.batch = batch
         self._last_reap = 0.0
+        self._last_schedule = 0.0
 
     def tick(self) -> int:
         """One pass: reap when due, then claim and run one batch. Returns how many jobs ran."""
@@ -35,6 +51,12 @@ class Worker:
         if now - self._last_reap >= REAP_EVERY_SECONDS:
             self._last_reap = now
             jobs.reap()
+        if now - self._last_schedule >= SCHEDULE_EVERY_SECONDS:
+            self._last_schedule = now
+            try:
+                schedule_tick()
+            except Exception:
+                logger.exception("Scheduler tick failed")
         claimed = jobs.claim(self.worker_id, limit=self.batch)
         for job in claimed:
             jobs.run_job(job, self.worker_id)

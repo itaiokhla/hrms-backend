@@ -37,8 +37,7 @@ from app.models.attendance import Attendance
 from app.models.employee import Employee, Shift
 from app.models.holiday import Holiday
 from app.models.leave import Leave, LeaveType
-from app.models.org import Branch, EmployeeAssignment, LegalEntity
-from app.models.pay_org import WorkWeekPattern as WorkWeekRow
+from app.models.org import EmployeeAssignment
 from app.models.time_inputs import (
     EmployeeOptionalHoliday,
     EmployeeSuspension,
@@ -49,7 +48,7 @@ from app.models.time_inputs import (
     SourceChangeLog,
 )
 from app.payroll import audit as payroll_audit
-from app.payroll import countries, ledger, policy_types, workweek
+from app.payroll import ledger, policy_types, workweek
 from app.payroll.services import access, approvals
 from app.services import attendance_policy, attendance_service, holiday_service
 from app.services.audit_log_service import AuditLogService
@@ -140,6 +139,12 @@ class DayFacts:
     work_week_id: Optional[int]
     weekly_off: bool
     holiday: Optional[HolidayFact]
+    # LH-M1 (04-holiday/03 §5.4, SPINE §7): the version of the pattern valid on the date, where the pattern came
+    # from, the weekly-off portion (half-day offs are working days for ``weekly_off``) and whether it is a rest day.
+    pattern_version: Optional[int] = None
+    work_source: str = "PATTERN"
+    weekly_off_portion: Optional[str] = None
+    rest_day: bool = False
 
     @property
     def working(self) -> bool:
@@ -193,52 +198,12 @@ def employed_on(employee: Employee, assignment: Optional[EmployeeAssignment], da
     return employee.termination_date is None or day <= employee.termination_date
 
 
-class _Patterns:
-    """Work-week patterns resolved per placement: assignment, then branch, then entity, then country weekend."""
+def _resolver(db: Session, company_id: int):
+    """The effective-dated work-week resolver (LH-M1: roster > placement > criteria > branch link > entity >
+    country weekend > MON_FRI, rules of the version valid on each date; app.services.holiday_assignments)."""
+    from app.services.holiday_assignments import WorkWeekResolver
 
-    def __init__(self, db: Session, company_id: int):
-        self.db, self.company_id = db, company_id
-        self.rows: Dict[int, workweek.WorkWeekPattern] = {}
-        self.branches: Dict[int, Optional[Branch]] = {}
-        self.entities: Dict[int, Optional[LegalEntity]] = {}
-
-    def branch(self, branch_id: Optional[int]) -> Optional[Branch]:
-        if branch_id is None:
-            return None
-        if branch_id not in self.branches:
-            self.branches[branch_id] = self.db.get(Branch, branch_id)
-        return self.branches[branch_id]
-
-    def entity(self, entity_id: Optional[int]) -> Optional[LegalEntity]:
-        if entity_id is None:
-            return None
-        if entity_id not in self.entities:
-            self.entities[entity_id] = self.db.get(LegalEntity, entity_id)
-        return self.entities[entity_id]
-
-    def pattern(self, pattern_id: int) -> workweek.WorkWeekPattern:
-        if pattern_id not in self.rows:
-            row = self.db.query(WorkWeekRow).filter(WorkWeekRow.company_id == self.company_id,
-                                                    WorkWeekRow.id == pattern_id).one()
-            self.rows[pattern_id] = workweek.WorkWeekPattern.from_json(
-                {"weekly_off_days": list(row.weekly_off_days or []), "nth_weekday_offs": list(row.nth_weekday_offs or [])})
-        return self.rows[pattern_id]
-
-    def resolve(self, assignment: Optional[EmployeeAssignment]) -> Tuple[Optional[int], workweek.WorkWeekPattern]:
-        if assignment is None:
-            return None, workweek.MON_FRI
-        branch = self.branch(assignment.branch_id)
-        entity = self.entity(assignment.legal_entity_id)
-        for pattern_id in (assignment.work_week_pattern_id, getattr(branch, "work_week_pattern_id", None),
-                           getattr(entity, "default_work_week_pattern_id", None)):
-            if pattern_id:
-                return pattern_id, self.pattern(pattern_id)
-        if entity is not None:
-            try:
-                return None, workweek.WorkWeekPattern(frozenset(countries.default_weekend(entity.country_code)))
-            except Exception:
-                pass
-        return None, workweek.MON_FRI
+    return WorkWeekResolver(db, company_id)
 
 
 def _holiday_fact(holiday: Holiday, chosen: set) -> HolidayFact:
@@ -262,7 +227,7 @@ def day_facts(db: Session, company_id: int, employee_id: int, start: date, end: 
     days = _dates(start, end)
     employee = _employee(db, company_id, employee_id)
     assignments = primary_assignments(db, company_id, employee_id)
-    patterns = _Patterns(db, company_id)
+    patterns = _resolver(db, company_id)
     placed: List[Tuple[date, Optional[EmployeeAssignment], bool]] = []
     by_branch: Dict[Optional[int], List[date]] = defaultdict(list)
     for day in days:
@@ -274,13 +239,15 @@ def day_facts(db: Session, company_id: int, employee_id: int, start: date, end: 
     chosen = _chosen_optional(db, company_id, employee_id, {h.id for items in holidays.values() for h in items})
     result: List[DayFacts] = []
     for day, placement, employed in placed:
-        pattern_id, pattern = patterns.resolve(placement)
+        week = patterns.resolve(placement, day, employee_id)
         options = sorted(holidays.get(day, ()), key=lambda h: (HOLIDAY_RANK.get(h.holiday_type, 3), h.id))
         facts = [_holiday_fact(h, chosen) for h in options]
         paid = [f for f in facts if f.paid]
         holiday = paid[0] if paid else (facts[0] if facts else None)
+        portion = week.portion(day)
         result.append(DayFacts(day, employed, placement, placement.branch_id if placement else None,
-                               pattern_id, workweek.is_weekly_off(pattern, day), holiday))
+                               week.pattern_id, portion == workweek.FULL, holiday, week.version, week.work_source,
+                               portion, week.rest_day(day)))
     return result
 
 
@@ -641,7 +608,7 @@ def on_duty_content(row: OnDutyRequest) -> dict:
 def ledger_inputs(
     db: Session, company_id: int, employee_id: int, start: date, end: date, *,
     lock_at: Optional[datetime] = None, early_exit_grace_minutes: int = 0,
-    standard_hours_per_day: Optional[Decimal] = None,
+    standard_hours_per_day: Optional[Decimal] = None, use_shift_duration: bool = True,
 ) -> List[ledger.DayInput]:
     """Every date of ``start..end`` as a ledger.DayInput (F-02, F-03, F-04).
 
@@ -650,8 +617,10 @@ def ledger_inputs(
     employee's choice), approved manual LOP and on-duty, unpaid suspensions and attendance with canonical
     net seconds (None when the punch-out is missing). With ``lock_at`` live sessions that are past the
     maximum shift length at that instant are first closed as missing punch-outs (audit 03 §1.3).
-    ``segment`` is the primary assignment id; ``standard_hours`` is the shift's net hours (or
-    ``standard_hours_per_day``) times the assignment FTE when either differs from the default.
+    ``segment`` is the primary assignment id; ``standard_hours`` is the net hours of the shift that resolves on
+    the date (``shift_resolution``: rule > placement, JC-AS-02), or ``standard_hours_per_day``, times the
+    assignment FTE when either differs from the default; ``use_shift_duration = False`` uses the standard hours
+    for everyone (BUG-AS-31).
     """
     facts = day_facts(db, company_id, employee_id, start, end)
     leaves = _leave_portions(db, company_id, employee_id, start, end)
@@ -659,7 +628,9 @@ def ledger_inputs(
     lops = _lop_by_date(db, company_id, employee_id, start, end)
     duties = _on_duty_by_date(db, company_id, employee_id, start, end)
     suspensions = _suspensions(db, company_id, employee_id, start, end)
-    shifts: Dict[int, Optional[Shift]] = {}
+    from app.services import shift_resolution
+
+    resolved = shift_resolution.shifts_for_many(db, company_id, [employee_id], start, end)
     days: List[ledger.DayInput] = []
     for fact in facts:
         assignment = fact.assignment
@@ -669,15 +640,9 @@ def ledger_inputs(
             holiday = ledger.HolidayInput(fact.holiday.id, fact.holiday.type, fact.holiday.name, fact.holiday.content_hash)
         standard = None
         if assignment is not None and fact.employed:
-            shift_id = assignment.shift_id
-            if shift_id is not None and shift_id not in shifts:
-                shifts[shift_id] = db.get(Shift, shift_id)
-            base = _shift_hours(shifts.get(shift_id)) if shift_id is not None else None
             fte = Decimal(assignment.fte if assignment.fte is not None else 1)
-            if base is None and fte != ONE and standard_hours_per_day is not None:
-                base = Decimal(standard_hours_per_day)
-            if base is not None:
-                standard = base * fte
+            standard = shift_resolution.standard_hours(resolved.get((employee_id, fact.date)), fte,
+                                                       standard_hours_per_day, use_shift_duration=use_shift_duration)
         days.append(ledger.DayInput(
             date=fact.date,
             employed=fact.employed,
@@ -748,8 +713,9 @@ def _ensure_in_scope(db: Session, principal: Principal, permission: str, employe
 
 
 def _check_row_version(row: Any, expected: Optional[int]) -> None:
-    if expected is not None and expected != row.row_version:
-        raise conflict("This record was changed by someone else. Reload and try again.", "ROW_VERSION_CONFLICT")
+    from app.core import concurrency
+
+    concurrency.check_row_version(row, expected)
 
 
 # ---------------------------------------------------------------------------

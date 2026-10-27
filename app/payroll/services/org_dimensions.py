@@ -22,7 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.clock import company_today
-from app.core.errors import bad_request, conflict, not_found
+from app.core.errors import AppError, bad_request, conflict, not_found
 from app.core.principal import Principal
 from app.models.employee import Employee, Shift
 from app.models.org import Branch, EmployeeAssignment, LegalEntity
@@ -195,9 +195,15 @@ def usage(db: Session, company_id: int, kind: str, object_id: int) -> Optional[s
     ).first():
         return "current or future placements"
     if kind == "work_week":
+        from app.services import holiday_work_weeks
+
         if db.query(Branch.id).filter(Branch.company_id == company_id, Branch.status == "ACTIVE",
                                       Branch.work_week_pattern_id == object_id).first():
             return "a branch"
+        # Effective-dated links, criteria rows and entity defaults (LH 04-holiday/03 §5.8 step 6).
+        where = holiday_work_weeks.usage_reason(db, company_id, object_id)
+        if where:
+            return where
         if db.query(LegalEntity.id).filter(LegalEntity.company_id == company_id, LegalEntity.status == "ACTIVE",
                                            LegalEntity.default_work_week_pattern_id == object_id).first():
             return "a legal entity"
@@ -489,8 +495,16 @@ def save_designation(db: Session, principal: Principal, data: Mapping[str, Any],
 # Work weeks and holiday calendars
 # ---------------------------------------------------------------------------
 def save_work_week(db: Session, principal: Principal, data: Mapping[str, Any], pattern_id: Optional[int] = None) -> WorkWeekPattern:
+    """Legacy alias of /api/v1/work-weeks (LH 04-holiday/03 §5.8 step 5): a create gets version 1 for every date;
+    rule fields on an existing pattern post a new version effective the pattern-local today (no history rewrite)."""
+    from app.services import holiday_work_weeks
+
+    pending: Dict[str, Any] = {}
+
     def apply(row: WorkWeekPattern) -> None:
         if row.id is None or "weekly_off_days" in data or "nth_weekday_offs" in data:
+            if row.id is not None and row.kind != workweek.WEEKLY:
+                raise bad_request("Edit cycle work weeks under Holidays > Work weeks.", "KIND_MISMATCH")
             raw = {
                 "weekly_off_days": data.get("weekly_off_days", row.weekly_off_days if row.id else []),
                 "nth_weekday_offs": data.get("nth_weekday_offs", row.nth_weekday_offs if row.id else []),
@@ -499,9 +513,17 @@ def save_work_week(db: Session, principal: Principal, data: Mapping[str, Any], p
                 pattern = workweek.WorkWeekPattern.from_json(raw).to_json()
             except workweek.WorkWeekError as exc:
                 raise bad_request(f"Work week: {exc.message}.", exc.code)
-            row.weekly_off_days, row.nth_weekday_offs = pattern["weekly_off_days"], pattern["nth_weekday_offs"]
+            if row.id is None:
+                row.weekly_off_days, row.nth_weekday_offs = pattern["weekly_off_days"], pattern["nth_weekday_offs"]
+            else:
+                pending["rules"] = pattern
 
-    return _save_simple(db, principal, "work_week", data, pattern_id, ("weekly_off_days", "nth_weekday_offs"), apply)
+    row = _save_simple(db, principal, "work_week", data, pattern_id, ("weekly_off_days", "nth_weekday_offs"), apply)
+    if pattern_id is None:
+        holiday_work_weeks.ensure_first_version(db, row, actor_user_id=principal.user_id)
+    elif pending:
+        holiday_work_weeks.new_version_for_legacy(db, principal, row, pending["rules"])
+    return row
 
 
 def _calendar_ancestors(db: Session, company_id: int, calendar_id: int) -> List[int]:
@@ -553,23 +575,28 @@ def save_holiday_calendar(db: Session, principal: Principal, data: Mapping[str, 
 
 
 def link_branch(db: Session, principal: Principal, branch_id: int, data: Mapping[str, Any]) -> Branch:
-    """Point a branch at a holiday calendar and/or a work week (3.4 §3, §8)."""
+    """Point a branch at a holiday calendar and/or a work week (3.4 §3, §8).
+
+    Legacy alias of PUT /api/v1/branches/{id}/calendar-link (LH 04-holiday/01 §4.3): an effective-dated link from
+    T_link (the branch's local today, or later when the patterns' users are ahead), never backdated.
+    """
+    from app.services import holiday_assignments
+
     cid = principal.company_id
     branch = db.query(Branch).filter(Branch.company_id == cid, Branch.id == branch_id).first()
     if branch is None:
         raise not_found("Branch")
-    before = {"holiday_calendar_id": branch.holiday_calendar_id, "work_week_pattern_id": branch.work_week_pattern_id}
-    for key, kind in (("holiday_calendar_id", "holiday_calendar"), ("work_week_pattern_id", "work_week")):
-        if key in data:
-            if data[key] is None:
-                raise bad_request("A branch always needs a holiday calendar and a work week.", "ORG_BRANCH_LINK_REQUIRED")
-            setattr(branch, key, _active(db, cid, kind, data[key]).id)
-    db.flush()
-    after = {"holiday_calendar_id": branch.holiday_calendar_id, "work_week_pattern_id": branch.work_week_pattern_id}
-    AuditLogService.log(db, principal, AUDIT_MODULE, "BRANCH_CALENDAR_LINKED",
-                        f"Branch {branch.code}: holiday calendar #{branch.holiday_calendar_id}, "
-                        f"work week #{branch.work_week_pattern_id}", "branch", branch.id,
-                        details={"before": before, "after": after})
+    for key in ("holiday_calendar_id", "work_week_pattern_id"):
+        if key in data and data[key] is None:
+            raise bad_request("A branch always needs a holiday calendar and a work week.", "ORG_BRANCH_LINK_REQUIRED")
+    if "holiday_calendar_id" in data:
+        _active(db, cid, "holiday_calendar", data["holiday_calendar_id"])
+    if "work_week_pattern_id" in data:
+        _active(db, cid, "work_week", data["work_week_pattern_id"])
+    if any(k in data for k in ("holiday_calendar_id", "work_week_pattern_id")):
+        holiday_assignments.set_branch_link(db, principal, branch.id, {
+            k: data[k] for k in ("holiday_calendar_id", "work_week_pattern_id") if k in data}, legacy=True)
+        db.refresh(branch)
     return branch
 
 
@@ -742,12 +769,17 @@ def placement_dimensions(db: Session, company_id: int, *, entity_id: int, branch
         center = db.get(CostCenter, kept) if kept else None
         out["cost_center_id"] = kept if center is not None and center.legal_entity_id in (None, entity_id) else None
 
+    # LH V3-014: only an explicit employee-level pattern is stored (it moves with the placement while the branch
+    # stays); otherwise NULL, so the branch link, criteria rows and entity default resolve it per date.
     if given("work_week_pattern_id"):
-        out["work_week_pattern_id"] = _active(db, company_id, "work_week", data["work_week_pattern_id"]).id
+        week = _active(db, company_id, "work_week", data["work_week_pattern_id"])
+        if week.legal_entity_id is not None and week.legal_entity_id != entity_id:
+            raise AppError(422, f"Work week {week.code} belongs to another legal entity.", "PATTERN_ENTITY_MISMATCH")
+        out["work_week_pattern_id"] = week.id
     elif base is not None and "work_week_pattern_id" not in data and base.branch_id == branch.id and base.work_week_pattern_id:
         out["work_week_pattern_id"] = base.work_week_pattern_id
     else:
-        out["work_week_pattern_id"] = default_work_week_id(db, branch)
+        out["work_week_pattern_id"] = None
 
     if given("shift_id"):
         shift = db.query(Shift).filter(Shift.company_id == company_id, Shift.id == int(data["shift_id"])).first()
@@ -756,10 +788,12 @@ def placement_dimensions(db: Session, company_id: int, *, entity_id: int, branch
         if not shift.is_active:
             raise bad_request(f"Shift {shift.name} is inactive.", "ORG_DIMENSION_INACTIVE")
         out["shift_id"] = shift.id
+    elif data.get("clear_shift"):
+        out["shift_id"] = None  # the employee form cleared the placement shift (BUG-AS-34)
     elif base is not None and "shift_id" not in data:
-        # The employee form edits only employees.shift_id: for the row in effect today that value wins.
-        in_effect = base.effective_from <= date.today()
-        out["shift_id"] = (employee.shift_id if in_effect else None) or base.shift_id or employee.shift_id
+        # The placement is the source of truth (BUG-AS-34): employees.shift_id is only a display mirror of the
+        # resolved shift (possibly a rule's), so it is used only when the placement has none (legacy rows).
+        out["shift_id"] = base.shift_id or employee.shift_id
     else:
         out["shift_id"] = employee.shift_id
 
@@ -791,6 +825,10 @@ def ensure_starter_rows(db: Session, company_id: int) -> Dict[str, Any]:
         week = WorkWeekPattern(company_id=company_id, code=DEFAULT_WORK_WEEK, name="Monday to Friday",
                                weekly_off_days=[5, 6], nth_weekday_offs=[], status="ACTIVE")
         db.add(week)
+        db.flush()
+        from app.services import holiday_work_weeks
+
+        holiday_work_weeks.ensure_first_version(db, week)
     calendar = _by_code(db, HolidayCalendar, company_id, COMPANY_CALENDAR, active_only=False)
     if calendar is None:
         calendar = HolidayCalendar(company_id=company_id, code=COMPANY_CALENDAR, name="Company holidays", status="ACTIVE")

@@ -9,7 +9,8 @@ snapshot builder and engine, jobs inline) -> /summary, /employees, lines.
 
 The fixed facts of 2026 used below (checked in the comments): 1 Feb 2026 is a Sunday (28 days, 4 Sundays,
 24 Mon-Sat working days); 1 Sep 2026 is a Tuesday (30 days, 4 Sundays, 26 Mon-Sat working days); 7 Sep 2026 is
-a Monday. The tenant's work week is changed to Monday-Saturday through PATCH /org/work-weeks (3.4 §5.2 table).
+a Monday. The tenant's work week is Monday-Saturday for every date: a MON_SAT pattern linked as each branch's first
+link (LH 04-holiday/03 §5.8: a PATCH of a pattern's rules is a new version from today and no longer rewrites history).
 The legal entity is moved to GB (no country pack: no statutory lines, I-15 attestation at finalization) except in
 the IN fixture-pack scenario. Settings that change per scenario are written at PAY_GROUP scope so each pay group
 is an independent fixture (and the inheritance PAY_GROUP -> TENANT is exercised).
@@ -74,9 +75,13 @@ def gold_world(app, name="Gold Corp", country="GB"):
     le01 = sql("SELECT id FROM legal_entities WHERE company_id = :c AND code = 'LE01'", c=cid)[0][0]
     sql("UPDATE legal_entities SET country_code = :cc, country_confirmed = true WHERE id = :e", cc=country, e=le01)
     set_setting(cid, "payroll.attendance.enabled", False)
-    weeks = ok(acme.get(f"{PAY}/org/work-weeks"))
-    week = next(w for w in weeks if w["code"] == "MON_FRI")
-    assert ok(acme.patch(f"{PAY}/org/work-weeks/{week['id']}", json={"weekly_off_days": [6]}))["weekly_off_days"] == [6]
+    created = acme.post(f"{PAY}/org/work-weeks", json={"code": "MON_SAT", "name": "Monday to Saturday",
+                                                       "weekly_off_days": [6]})
+    assert created.status_code == 201, created.text
+    week = created.json()
+    for branch in ok(acme.get("/api/v1/branches")):
+        ok(acme.put(f"{PAY}/org/branches/{branch['id']}/calendar", json={"work_week_pattern_id": week["id"]}))
+    sql("UPDATE legal_entities SET default_work_week_pattern_id = :w WHERE company_id = :c", w=week["id"], c=cid)
     users = {
         "approver": login_as(app, acme, create_employee(acme, "Ava", "Approver"), ["payroll_approver"]),
         "processor": login_as(app, acme, create_employee(acme, "Pia", "Processor"), ["payroll_processor"]),

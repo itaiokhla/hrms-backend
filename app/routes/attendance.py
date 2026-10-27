@@ -14,7 +14,7 @@ from app.database.db import get_db
 from app.modules.face_recognition import engine as face_engine
 from app.schemas.admin import ManualAttendance
 from app.schemas.attendance import EventMeta, ReviewDecision, SampleSubmission
-from app.services import attendance_policy, attendance_service, location_service, settings_service
+from app.services import attendance_policy, attendance_service, location_service, org_structure_service, settings_service
 
 router = APIRouter(prefix="/api/v1", tags=["Attendance"])
 
@@ -99,7 +99,8 @@ def submit_location(data: SampleSubmission, principal: Principal = Depends(requi
 def my_history(start_date: Optional[date] = None, end_date: Optional[date] = None,
                principal: Principal = Depends(require("attendance:read")), db: Session = Depends(get_db)):
     employee = authz.own_employee(db, principal)
-    end = end_date or date.today()
+    # The employee's own "today", never the server's date (BUG-AS-10).
+    end = end_date or org_structure_service.employee_local_today(db, employee)
     start = start_date or end - timedelta(days=30)
     total, items = attendance_service.list_records(db, principal, start, end, employee_id=employee.id, limit=200)
     return {"total": total, "items": items}

@@ -1,0 +1,163 @@
+{
+ "holidays": {
+  "alpha/2025-10-02/Gandhi Jayanti": {
+   "hash": "c92e6002ebb77488a0b8f89db87e516d2b2eae9bc0238d5d551c2c2523845af8",
+   "location": null,
+   "type": "COMPANY"
+  },
+  "alpha/2025-12-25/Christmas": {
+   "hash": "5e3cfcc90a42cdcef01f8a0c9f3f3fce5d9ad6da9e81d729e650b7145ac44577",
+   "location": null,
+   "type": "COMPANY"
+  },
+  "alpha/2026-01-26/Republic Day": {
+   "hash": "007e6965857b28cfedd2814b674054a3bfe3d465c7bce351925357a039435c24",
+   "location": null,
+   "type": "COMPANY"
+  },
+  "alpha/2026-05-01/Maharashtra Day": {
+   "hash": "0843c2f8062fed2b4e38b79513e7bc4c8ff04136f1a51a38a47dbf0f435a8442",
+   "location": "Pune Plant",
+   "type": "COMPANY"
+  },
+  "alpha/2026-10-02/Gandhi Jayanti": {
+   "hash": "f36929a4030377d5b525d3858c15492286bca332e32ebf29036e522e0edd8dc2",
+   "location": null,
+   "type": "COMPANY"
+  },
+  "alpha/2026-11-02/Kannada Rajyotsava": {
+   "hash": "51c36a0ce7606ef6aaa59f6e06c4b92b94074a4c45102826918a9a5312e6f06a",
+   "location": "Bengaluru Office",
+   "type": "COMPANY"
+  },
+  "alpha/2026-11-09/Diwali (optional)": {
+   "hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+   "location": null,
+   "type": "OPTIONAL"
+  },
+  "alpha/2026-12-25/Christmas": {
+   "hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+   "location": null,
+   "type": "COMPANY"
+  },
+  "alpha/2027-01-26/Republic Day": {
+   "hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+   "location": null,
+   "type": "COMPANY"
+  },
+  "beta/2025-12-02/UAE National Day": {
+   "hash": "32e3214817b8639c81e26d599386ef89f06d7ae91ef07158cf55fad11085f484",
+   "location": null,
+   "type": "COMPANY"
+  },
+  "beta/2026-03-20/Eid al-Fitr": {
+   "hash": "15d008b48a93058c66543b4c5dea3cb946174b404cb8d7ac98cd9aa8401995a7",
+   "location": null,
+   "type": "COMPANY"
+  },
+  "beta/2026-12-02/UAE National Day": {
+   "hash": "b8e699c9fd9f358e9bc5d6518c71aceeb8842d52083b57bd10f1f0396a3d8ac1",
+   "location": null,
+   "type": "COMPANY"
+  },
+  "gamma/2025-11-27/Thanksgiving": {
+   "hash": "20b6ac656843211a5b7360a4e9d470d33a2c74336f59524dfecb24002e4f05e3",
+   "location": null,
+   "type": "COMPANY"
+  },
+  "gamma/2025-12-25/Christmas": {
+   "hash": "8d6d9e1b8ba0df234d1b70fcfbe275fa617f90ebb268c456b64653a668470862",
+   "location": null,
+   "type": "COMPANY"
+  },
+  "gamma/2026-07-03/Independence Day (observed)": {
+   "hash": "635345557509f7e5d2221829b7f162a658da265668343b7fd8b96c5515882b09",
+   "location": null,
+   "type": "COMPANY"
+  },
+  "gamma/2026-11-26/Thanksgiving": {
+   "hash": "654d4eb2ba1f0429dbffd7a3d6ed0dbb8d3796034c5e71664955354f29c399f5",
+   "location": null,
+   "type": "COMPANY"
+  },
+  "gamma/2026-12-25/Christmas": {
+   "hash": "18166be1c55d5f7a877ace5fa0e884d99274db464b81a271426eefc928e86179",
+   "location": null,
+   "type": "COMPANY"
+  }
+ },
+ "leaves": {
+  "alpha/AT-006 Meghna Rao/casual/2026-12-30": {
+   "days": 3,
+   "hash": "e10ed67d5229d9b25235d928f1c254787aa0282c05aec9fb19722e86c1bc1a3f",
+   "number_of_days": 3,
+   "status": "approved"
+  },
+  "alpha/AT-007 Priya Shah/casual/2026-11-16": {
+   "days": 2,
+   "hash": "df7b902aed5d17fe9a8bbaba06cfee5a71be1ebb8aad4dc29a5d541a0ef293ce",
+   "number_of_days": 2,
+   "status": "approved"
+  },
+  "alpha/AT-008 Rohan Verma/sick/2026-11-20": {
+   "days": 0,
+   "hash": "9e368362ce97a4171cf671e29f32ac2cba81dc058248da02baabd71fea881324",
+   "number_of_days": 1,
+   "status": "pending"
+  },
+  "alpha/AT-010 Sameer Khan/sick/2026-11-04": {
+   "days": 1,
+   "hash": "b22a5365a0312bb5ed57aa11c7d7c562707e828967cb8093fe9e410ec476afa6",
+   "number_of_days": "0.5",
+   "status": "approved"
+  },
+  "alpha/AT-012 Nitin Gowda/earned/2026-11-03": {
+   "days": 0,
+   "hash": "a768c3cae0d894734b04713c6d733b9553ffbe67bf10e54b6f721f2a4560323a",
+   "number_of_days": 4,
+   "status": "pending"
+  },
+  "alpha/AT-016 Kiran Joshi/casual/2026-12-07": {
+   "days": 0,
+   "hash": "99ad51ae4825a4a9d79834b69d64647a184ae0e2f1aa96ba007fd0c555df0d0c",
+   "number_of_days": 1,
+   "status": "cancelled"
+  },
+  "alpha/AT-017 Ravi Kumar/earned/2026-11-12": {
+   "days": 2,
+   "hash": "c1cc23c710edc2ad70272deeaf71741fdd0cf148437d6a0457eb11ca51d4d5f6",
+   "number_of_days": "1.5",
+   "status": "approved"
+  },
+  "alpha/AT-018 Sunita Patil/casual/2026-11-23": {
+   "days": 0,
+   "hash": "d5f0f488d3d58e46c3fd0f43ff6a628f140835d929239e8c8b1e5586eabaadc3",
+   "number_of_days": 1,
+   "status": "rejected"
+  },
+  "beta/BT-003 Layla Hassan/casual/2026-11-10": {
+   "days": 1,
+   "hash": "944ff5824982c0913461f5e7d4ec5f5f52eee3db61548cead4a50e300db4eae9",
+   "number_of_days": 1,
+   "status": "approved"
+  },
+  "beta/BT-004 Maria Santos/sick/2026-11-11": {
+   "days": 0,
+   "hash": "67bf7e0477bc29376417c1faf902cade93494e8ac1bc92ed084a26ee79e0ce53",
+   "number_of_days": 1,
+   "status": "pending"
+  },
+  "gamma/GT-002 Jordan Lee/casual/2026-11-27": {
+   "days": 1,
+   "hash": "f60b711f2eda9370402b8cfcbeb496ccca750153a5bc8c71d2a9115d1e2b96ee",
+   "number_of_days": 1,
+   "status": "approved"
+  },
+  "gamma/GT-003 Carlos Diaz/casual/2026-12-01": {
+   "days": 0,
+   "hash": "672d51127d993419aee210de93ae68bb64b394723c8ab2295e07c51bd7570f9f",
+   "number_of_days": 1,
+   "status": "pending"
+  }
+ }
+}

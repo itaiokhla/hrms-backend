@@ -27,6 +27,16 @@ class LeaveTypeWrite(StrictModel):
     is_paid: bool = True
     is_unlimited: bool = False
     is_active: bool = True
+    # Writable since LH BUG-02; a request that omits them keeps the stored values (an update never resets them).
+    kind: Optional[Literal["COMP_OFF"]] = None
+    allow_half_day: Optional[bool] = None
+    counts_non_working_days: Optional[bool] = None
+
+
+class CancelIn(StrictModel):
+    """Optional body of POST /leaves/{id}/cancel (LH BUG-01)."""
+
+    reason: Optional[str] = Field(None, max_length=500)
 
 
 class ChainStepWrite(StrictModel):

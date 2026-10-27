@@ -543,12 +543,88 @@ def _validate_breaks(items, start: datetime, end: Optional[datetime]) -> None:
             raise conflict("Lunch breaks cannot overlap.", "BREAKS_OVERLAP")
 
 
+LOCAL_TIME_FIELDS = ("check_in_local", "check_out_local", "lunch_start_local", "lunch_end_local")
+
+
+def work_zone(db: Session, employee: Employee, day: date):
+    """The employee's work time zone on ``day``: the primary placement's branch, then its legal entity, then the
+    company (LH-M1 adds employee_assignments.work_timezone in front)."""
+    from app.models.org import Branch, EmployeeAssignment, LegalEntity
+
+    placement = (
+        db.query(EmployeeAssignment)
+        .filter(EmployeeAssignment.company_id == employee.company_id, EmployeeAssignment.employee_id == employee.id,
+                EmployeeAssignment.is_primary.is_(True), EmployeeAssignment.effective_from <= day)
+        .order_by(EmployeeAssignment.effective_from.desc(), EmployeeAssignment.id.desc())
+        .first()
+    )
+    zones = []
+    if placement is not None:
+        branch = db.get(Branch, placement.branch_id) if placement.branch_id else None
+        entity = db.get(LegalEntity, placement.legal_entity_id) if placement.legal_entity_id else None
+        zones = [getattr(branch, "timezone", None), getattr(entity, "timezone", None)]
+    company = db.get(Company, employee.company_id)
+    for zone in [*zones, company.timezone if company else None, "UTC"]:
+        if zone and zone in pytz.all_timezones_set:
+            return pytz.timezone(zone)
+    return pytz.utc
+
+
+def _wall(tz, day: date, hhmm: str) -> datetime:
+    hour, minute = (int(x) for x in hhmm.split(":"))
+    return tz.localize(datetime.combine(day, time(hour, minute)))
+
+
+def _manual_times(db: Session, employee: Employee, data):
+    """Instants of a manual entry: wall times converted in the work zone (BUG-AS-05), naive instants refused
+    (BUG-AS-14), an absence without times recorded as a zero-length mark at the start of its day (BUG-AS-04)."""
+    local = any(getattr(data, f, None) for f in LOCAL_TIME_FIELDS)
+    if local and (data.check_in_time or data.check_out_time or data.breaks is not None):
+        raise bad_request("Send either instants with an offset or wall times, not both.", "MIXED_TIME_FORMATS")
+    instants = [data.check_in_time, data.check_out_time]
+    for item in data.breaks or []:
+        instants += [item.started_at, item.ended_at]
+    if any(value is not None and value.tzinfo is None for value in instants):
+        raise bad_request("Give every time with a timezone offset (for example +05:30).", "TIMEZONE_REQUIRED")
+    update: dict = {}
+    tz = work_zone(db, employee, data.date) if local or data.check_in_time is None else None
+    if local:
+        if not data.check_in_local:
+            raise bad_request("Enter the check-in time.", "CHECK_IN_REQUIRED")
+        check_in = _wall(tz, data.date, data.check_in_local)
+        check_out = None
+        if data.check_out_local:
+            check_out = _wall(tz, data.date, data.check_out_local)
+            if check_out <= check_in:  # ends the next day
+                check_out = _wall(tz, data.date + timedelta(days=1), data.check_out_local)
+        update.update(check_in_time=check_in, check_out_time=check_out)
+        if data.lunch_start_local or data.lunch_end_local:
+            if not (data.lunch_start_local and data.lunch_end_local):
+                raise bad_request("Give both the lunch start and end, or neither.", "INVALID_BREAK")
+            started = _wall(tz, data.date, data.lunch_start_local)
+            if started < check_in:
+                started = _wall(tz, data.date + timedelta(days=1), data.lunch_start_local)
+            ended = _wall(tz, started.date(), data.lunch_end_local)
+            if ended <= started:
+                ended = _wall(tz, started.date() + timedelta(days=1), data.lunch_end_local)
+            from app.schemas.admin import BreakWrite
+
+            update["breaks"] = [BreakWrite(started_at=started, ended_at=ended)]
+    elif data.check_in_time is None:
+        if data.status != "absent":
+            raise bad_request("Enter the check-in time.", "CHECK_IN_REQUIRED")
+        start = _wall(tz, data.date, "00:00")
+        update.update(check_in_time=start, check_out_time=start)
+    return data.model_copy(update=update) if update else data
+
+
 def record_manual(db: Session, principal: Principal, data) -> Attendance:
     # Checked before the scope lookup, which would otherwise answer a manager's attempt on
     # their own attendance with a misleading 404. It only compares ids, so it reveals nothing.
     if authz.is_self(principal, data.employee_id):
         raise forbidden("You cannot correct your own attendance.")
     employee = authz.ensure_employee_access(db, principal, "attendance:regularize", data.employee_id)
+    data = _manual_times(db, employee, data)
     if data.check_out_time and data.check_out_time < data.check_in_time:
         raise bad_request("Check-out must be after check-in.")
     company = _company(db, principal)
@@ -809,6 +885,8 @@ def list_records(
     skip: int = 0,
     limit: int = 100,
 ):
+    if end < start:
+        raise bad_request("The end date is before the start date.", "INVALID_RANGE")
     if (end - start).days > 366:
         raise bad_request("Choose a range of at most one year.")
     scope = authz.employee_scope(db, principal, "attendance:read")

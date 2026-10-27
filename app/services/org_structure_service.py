@@ -29,7 +29,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.clock import utcnow
+from app.core import clock
 from app.core.errors import bad_request, conflict, not_found
 from app.core.principal import Principal
 from app.models.company import Company
@@ -536,14 +536,22 @@ def _assert_destination_allowed(principal: Principal, entity_id: int, branch_id:
 
 
 def _sync_legacy(db: Session, employee: Employee, assignment: EmployeeAssignment) -> None:
-    """Mirror the placement that is in effect today into the legacy employee columns."""
-    today = date.today()
+    """Mirror the placement that is in effect on the employee-local today into the legacy employee columns
+    (BUG-AS-36: never the server date). ``employees.shift_id`` is a display mirror of the shift that resolves
+    today, from any source (BUG-AS-34, 03-shifts/01 §14); without a resolved shift the placement's value stays."""
+    db.flush()
+    today = employee_local_today(db, employee)
     if assignment.effective_from > today or (assignment.effective_to and assignment.effective_to < today):
         return
     branch = db.get(Branch, assignment.branch_id)
     employee.department_id = assignment.department_id
     employee.location = branch.name if branch else employee.location
-    if assignment.shift_id:
+    from app.services import shift_resolution
+
+    resolved = shift_resolution.shift_for(db, employee.company_id, employee.id, today) if employee.id else None
+    if resolved is not None:
+        employee.shift_id = resolved.shift_id
+    elif assignment.shift_id:
         employee.shift_id = assignment.shift_id
     # Flush now: callers such as org_service.assign_manager refresh the employee from the
     # database, which would silently discard these values (regional holidays then miss them).
@@ -681,7 +689,8 @@ def employee_local_today(db: Session, employee: Employee) -> date:
         tz = pytz.timezone(zone or "UTC")
     except pytz.UnknownTimeZoneError:
         tz = pytz.utc
-    return utcnow().astimezone(tz).date()
+    # Through the module, so a test's attendance clock applies too.
+    return clock.utcnow().astimezone(tz).date()
 
 
 def record_rehire(db: Session, employee: Employee, user_id: Optional[int], start: date,
@@ -776,6 +785,24 @@ def record_department_change(db: Session, principal: Principal, employee: Employ
     })
 
 
+def record_shift_change(db: Session, principal: Principal, employee: Employee, shift_id: Optional[int], *,
+                        effective: Optional[date] = None) -> None:
+    """The employee form's shift edits the placement from the employee-local today (BUG-AS-34): a dated
+    placement change, or an in-place correction of a placement that starts that day. ``None`` clears it."""
+    start = effective or employee_local_today(db, employee)
+    current = current_assignment(db, employee.id, start)
+    if current is None or current.shift_id == shift_id or not employee.is_active:
+        return
+    if current.effective_from >= start:
+        _correct_in_place(db, principal, employee, current, shift_id=shift_id)
+        return
+    change_placement(db, principal, employee, {
+        "branch_id": current.branch_id, "legal_entity_id": current.legal_entity_id,
+        "department_id": current.department_id, "shift_id": shift_id, "clear_shift": shift_id is None,
+        "effective_from": start.isoformat(), "reason": "REORG", "note": "Shift changed",
+    })
+
+
 def history(db: Session, company_id: int, employee_id: int) -> List[dict]:
     rows = (
         db.query(EmployeeAssignment)
@@ -788,6 +815,19 @@ def history(db: Session, company_id: int, employee_id: int) -> List[dict]:
     departments = {d.id: d.name for d in db.query(Department).filter(Department.company_id == company_id)}
     codes = org_dimensions.dimension_codes_map(db, company_id)
     today = date.today()
+    from app.services.holiday_assignments import WorkWeekResolver
+
+    resolver = WorkWeekResolver(db, company_id)
+
+    def work_week(a: EmployeeAssignment) -> dict:
+        """An explicit employee-level pattern, else the inherited one on the placement's first day (LH V3-014:
+        placements no longer store the branch default; the form shows it with an inheritance badge)."""
+        if a.work_week_pattern_id:
+            return {"work_week_inherited": False}
+        resolved = resolver.resolve(a, a.effective_from)
+        return {"work_week_inherited": True, "work_week_source": resolved.source,
+                "work_week_code": codes["work_week"].get(resolved.pattern_id)}
+
     return [
         {
             "id": a.id,
@@ -808,6 +848,7 @@ def history(db: Session, company_id: int, employee_id: int) -> List[dict]:
             **{key: getattr(a, key) for key in org_dimensions.PLACEMENT_FIELDS if key != "fte"},
             "fte": str(a.fte) if a.fte is not None else None,
             **{f"{kind}_code": codes[kind].get(getattr(a, column)) for kind, column in org_dimensions.CODE_COLUMNS},
+            **work_week(a),
         }
         for a in rows
     ]

@@ -33,6 +33,8 @@ OPTIONAL_HOLIDAY_STATUSES = ("CHOSEN", "CANCELLED")
 CHANGE_RECORD_TYPES = (
     "attendance", "leave", "holiday", "lop_input", "suspension", "on_duty", "optional_holiday",
     "overtime", "task", "wage_input", "assignment",
+    # LH-M1 (migration lh_m1_work_weeks_links): work-week pattern versions and effective-dated calendar links.
+    "work_week_version", "calendar_link",
 )
 CHANGE_KINDS = ("CREATED", "UPDATED", "VOIDED", "DELETED")
 ACTIVE_LEAVE_DAY = "voided_at IS NULL"

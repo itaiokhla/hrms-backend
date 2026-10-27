@@ -348,6 +348,22 @@ def action_result(entry: OvertimeEntry) -> dict[str, Any]:
 # --------------------------------------------------------------------------- queries
 
 
+LIST_SORTS = ("date", "employee", "minutes", "status")
+
+
+def _list_order(sort: str | None) -> tuple:
+    if not sort:
+        return (OvertimeEntry.date.desc(), OvertimeEntry.id.desc())
+    name = sort.lstrip("-")
+    if name not in LIST_SORTS:
+        raise bad_request("This list cannot be sorted that way.", "INVALID_SORT")
+    descending = sort.startswith("-")
+    columns = {"date": (OvertimeEntry.date,), "employee": (Employee.first_name, Employee.last_name),
+               "minutes": (OvertimeEntry.minutes_requested,), "status": (OvertimeEntry.status,)}[name]
+    keyed = tuple(c.desc() if descending else c.asc() for c in columns)
+    return keyed + ((OvertimeEntry.id.desc(),) if descending else (OvertimeEntry.id.asc(),))
+
+
 def list_entries(
     db: Session,
     principal: Principal,
@@ -358,14 +374,31 @@ def list_entries(
     end: date | None = None,
     mine: bool = False,
     awaiting: bool = False,
+    q: str | None = None,
+    sort: str | None = None,
     skip: int = 0,
     limit: int = 50,
 ) -> tuple[int, list[dict[str, Any]]]:
-    """Entries the caller may see; totals count only those (EC-SEC-05)."""
+    """Entries the caller may see; totals count only those (EC-SEC-05).
+
+    ``q`` searches employee names and codes (wildcards literal); ``sort`` is one of LIST_SORTS ('-' = descending,
+    ties broken by id); an unknown sort is 400 INVALID_SORT (X 04 §2.2 rule 3). Default order: newest date first.
+    """
     clause = _visible_clause(db, principal, OvertimeEntry.employee_id)
     if clause is None:
         raise forbidden()
     query = db.query(OvertimeEntry).filter(OvertimeEntry.company_id == principal.company_id, clause)
+    order = _list_order(sort)
+    if q or (sort and sort.lstrip("-") == "employee"):
+        query = query.join(Employee, (Employee.company_id == OvertimeEntry.company_id)
+                           & (Employee.id == OvertimeEntry.employee_id))
+    if q and q.strip():
+        for token in q.strip().split()[:5]:
+            pattern = "%" + token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            query = query.filter(or_(Employee.first_name.ilike(pattern, escape="\\"),
+                                     Employee.last_name.ilike(pattern, escape="\\"),
+                                     Employee.employee_code.ilike(token.replace("\\", "\\\\").replace("%", "\\%")
+                                                                  .replace("_", "\\_") + "%", escape="\\")))
     if mine:
         if principal.employee_id is None:
             return 0, []
@@ -381,9 +414,8 @@ def list_entries(
     if awaiting:
         ids = approvals.subjects_awaiting(db, principal, MODULE, SUBJECT_TYPE)
         query = query.filter(OvertimeEntry.id.in_(ids or [0]))
-    total = query.count()
-    rows = (query.order_by(OvertimeEntry.date.desc(), OvertimeEntry.id.desc())
-            .offset(skip).limit(min(limit, MAX_LIST)).all())
+    total = query.order_by(None).count()
+    rows = query.order_by(*order).offset(skip).limit(min(limit, MAX_LIST)).all()
     employees = {e.id: e for e in db.query(Employee).filter(
         Employee.company_id == principal.company_id, Employee.id.in_({r.employee_id for r in rows} or {0}))}
     requests = {r.id: r for r in db.query(ApprovalRequest).filter(
@@ -643,17 +675,23 @@ class _Day:
 
 
 def _day_types(db: Session, company_id: int, employee: Employee, first: date, last: date) -> dict[date, _Day]:
-    """Day type (WORKDAY, WEEKLY_OFF, HOLIDAY) and placement shift per employed date in [first, last].
+    """Day type (WORKDAY, WEEKLY_OFF, HOLIDAY) and the shift that resolves per employed date in [first, last].
 
-    Uses the day facts of the time inputs (branch calendar lineage, work week, chosen optional holidays).
+    Uses the day facts of the time inputs (branch calendar lineage, work week, chosen optional holidays) and
+    ``shift_resolution`` (rule > placement, spine §15.4); the legacy employee column only when nothing resolves.
     """
+    from app.services import shift_resolution
+
+    resolved = shift_resolution.shifts_for_many(db, company_id, [employee.id], first, last)
     found: dict[date, _Day] = {}
     for facts in time_inputs.day_facts(db, company_id, employee.id, first, last):
         if not facts.employed:
             continue
         kind = tpo.HOLIDAY if facts.holiday is not None and facts.holiday.paid else (
             tpo.WEEKLY_OFF if facts.weekly_off else tpo.WORKDAY)
-        shift_id = (facts.assignment.shift_id if facts.assignment is not None else None) or employee.shift_id
+        item = resolved.get((employee.id, facts.date))
+        shift_id = (item.shift_id if item is not None else None) or (
+            facts.assignment.shift_id if facts.assignment is not None else None) or employee.shift_id
         found[facts.date] = _Day(kind, shift_id)
     return found
 

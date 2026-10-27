@@ -27,5 +27,8 @@ class AuditLog(BaseModel):
     description = Column(String(500), nullable=False)
     ip_address = Column(String(64), nullable=True)
     details = Column(JSONB, nullable=True)
+    # Correlation of the HTTP request that wrote the row (migration lh_m0_baseline); NULL for jobs and older rows.
+    request_id = Column(String(64), nullable=True)
+    user_agent = Column(String(300), nullable=True)
 
     __table_args__ = (Index("ix_audit_logs_company_created", "company_id", "created_at"),)

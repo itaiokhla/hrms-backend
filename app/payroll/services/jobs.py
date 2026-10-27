@@ -24,7 +24,7 @@ import re
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Tuple
 
 from sqlalchemy import event, func, literal_column, text, update
 from sqlalchemy.dialects.postgresql import insert
@@ -146,8 +146,20 @@ def register(job_type: str, *, platform: bool = False, access: Optional[AccessCh
     return decorator
 
 
+# Handler modules outside app/payroll/services (JC-AS-15, LH V3-103): an explicit list, never a package scan of
+# app/services. Each program goal appends the modules it ships; a module that a later goal ships is listed in
+# FUTURE_HANDLER_MODULES until then and skipped while it does not exist.
+HANDLER_MODULES: Tuple[str, ...] = ("app.services.scheduler_fanout", "app.services.holiday_assignments",
+                                   "app.services.leave_jobs")
+FUTURE_HANDLER_MODULES: FrozenSet[str] = frozenset({
+    "app.services.scheduler_fanout", "app.services.holiday_rollover", "app.services.holiday_assignments",
+    "app.services.holiday_calendar_service", "app.services.leave_jobs", "app.services.shift_catalogue",
+    "app.services.attendance_jobs", "app.services.team_service", "app.services.access_changes",
+})
+
+
 def load_handlers() -> None:
-    """Import every payroll service module so their @register decorators run (worker start-up)."""
+    """Import every payroll service module and HANDLER_MODULES so their @register decorators run (worker start-up)."""
     from app.payroll import services
 
     for module in pkgutil.iter_modules(services.__path__):
@@ -157,6 +169,15 @@ def load_handlers() -> None:
             importlib.import_module(f"{services.__name__}.{module.name}")
         except Exception:
             logger.exception("Could not import job handlers from %s", module.name)
+    for name in HANDLER_MODULES:
+        try:
+            importlib.import_module(name)
+        except ModuleNotFoundError as exc:
+            if exc.name == name and name in FUTURE_HANDLER_MODULES:
+                continue
+            logger.exception("Could not import job handlers from %s", name)
+        except Exception:
+            logger.exception("Could not import job handlers from %s", name)
 
 
 def find_handler(job_type: str) -> Optional[HandlerDef]:
@@ -173,6 +194,11 @@ _SENSITIVE_WORDS = frozenset({
     "routing", "ifsc", "bic", "swift", "password", "secret", "token", "otp", "pin", "pan", "ssn", "tax",
 })
 _ID_SUFFIXES = ("id", "ids", "count", "type", "code", "status", "key", "date", "period", "month", "year")
+# Free text people write (reasons, notes, messages, diagnoses, file names) never travels in a payload (LH V3-104,
+# LH-SEC-20): ``reason`` is refused, ``reason_code`` passes.
+_FREE_TEXT_WORDS = frozenset({"reason", "reasons", "note", "notes", "message", "messages", "body", "comment",
+                              "comments", "diagnosis", "remarks", "justification"})
+_FREE_TEXT_KEYS = frozenset({"file_name", "filename"})
 
 
 def _key_words(key: str) -> List[str]:
@@ -192,6 +218,9 @@ def check_payload(payload: Mapping[str, Any], *, _depth: int = 0) -> None:
         words = _key_words(key)
         if words and words[-1] not in _ID_SUFFIXES and _SENSITIVE_WORDS.intersection(words):
             raise ValueError(f"job payload key {key!r} looks like money, bank or credential data; pass ids only")
+        if words and words[-1] not in _ID_SUFFIXES and (
+                _FREE_TEXT_WORDS.intersection(words) or "_".join(words) in _FREE_TEXT_KEYS):
+            raise ValueError(f"job payload key {key!r} looks like free text; pass ids or codes only")
         _check_value(key, value, _depth)
 
 

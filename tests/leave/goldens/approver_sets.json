@@ -1,0 +1,20 @@
+{
+ "alpha/AT-008 Rohan Verma/sick/2026-11-20": {
+  "ananya.rao@alpha-time.example": "override",
+  "arjun.mehta@alpha-time.example": "approver",
+  "kavya.nair@alpha-time.example": "override"
+ },
+ "alpha/AT-012 Nitin Gowda/earned/2026-11-03": {
+  "ananya.rao@alpha-time.example": "override",
+  "arjun.mehta@alpha-time.example": "approver",
+  "kavya.nair@alpha-time.example": "override"
+ },
+ "beta/BT-004 Maria Santos/sick/2026-11-11": {
+  "mariam.saeed@beta-time.example": "approver",
+  "salem.almansoori@beta-time.example": "override"
+ },
+ "gamma/GT-003 Carlos Diaz/casual/2026-12-01": {
+  "emily.clark@gamma-time.example": "approver",
+  "grace.miller@gamma-time.example": "override"
+ }
+}

@@ -1,14 +1,25 @@
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 from fastapi import HTTPException, status
 
+# Keys an error body may carry beside detail and code (LH IG-06, V3-091).
+EXTRA_KEYS = frozenset({"issues", "details", "allowed_actions"})
+
 
 class AppError(HTTPException):
-    """HTTP error carrying a stable machine-readable code for the frontend."""
+    """HTTP error carrying a stable machine-readable code for the frontend.
 
-    def __init__(self, status_code: int, detail: str, code: Optional[str] = None, headers=None):
+    ``extra`` adds structured fields to the JSON body beside ``detail`` and ``code`` (only EXTRA_KEYS).
+    """
+
+    def __init__(self, status_code: int, detail: str, code: Optional[str] = None, headers=None,
+                 extra: Optional[Mapping[str, Any]] = None):
         super().__init__(status_code=status_code, detail=detail, headers=headers)
         self.code = code
+        unknown = set(extra or ()) - EXTRA_KEYS
+        if unknown:
+            raise ValueError(f"AppError extra keys not allowed: {sorted(unknown)}")
+        self.extra = dict(extra or {})
 
 
 def not_found(what: str = "Resource") -> AppError:

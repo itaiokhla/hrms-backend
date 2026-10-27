@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Union
 from sqlalchemy import extract, func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from app.core import authz
+from app.core import authz, concurrency
 from app.core.errors import bad_request, conflict, forbidden, not_found
 from app.core.principal import Principal, build_principal
 from app.core.security import utcnow
@@ -53,6 +53,9 @@ APPROVER_LABELS = {
 # ---------------------------------------------------------------------------
 # Leave types and balances
 # ---------------------------------------------------------------------------
+LEAVE_TYPE_FLAGS = ("kind", "allow_half_day", "counts_non_working_days")
+
+
 def leave_types(db: Session, company_id: int, include_inactive: bool = False) -> List[LeaveType]:
     query = db.query(LeaveType).filter(LeaveType.company_id == company_id)
     if not include_inactive:
@@ -94,8 +97,17 @@ def balance_totals(db: Session, company_id: int, employee_id: int, year: int) ->
     return totals
 
 
+def _local_today(db: Session, employee: Optional[Employee]) -> date:
+    """Today for one person (LH BUG-07): their work location's date, never the server's or the company's."""
+    from app.services import org_structure_service
+
+    return org_structure_service.employee_local_today(db, employee)
+
+
 def balances(db: Session, company_id: int, employee_id: int, year: Optional[int] = None) -> Dict[str, dict]:
-    year = year or today_for(db.get(Company, company_id)).year
+    if not year:
+        subject = db.query(Employee).filter(Employee.company_id == company_id, Employee.id == employee_id).first()
+        year = _local_today(db, subject).year if subject else today_for(db.get(Company, company_id)).year
     totals = balance_totals(db, company_id, employee_id, year)
     result = {}
     for lt in leave_types(db, company_id):
@@ -165,7 +177,8 @@ def _step_has_approver(db: Session, requester: Employee, step: LeaveApproval) ->
 
 def _notify_step(db: Session, leave: Leave, requester: Employee, step: LeaveApproval) -> None:
     title = "Leave request awaiting your approval"
-    message = f"{requester.full_name} requested {days_out(leave.number_of_days)} day(s) of {leave.leave_type} leave."
+    # Never the leave type: a type name can reveal health or family matters (LH BUG-30, V3-106).
+    message = f"{requester.full_name} requested {days_out(leave.number_of_days)} day(s) of leave."
     if step.approver_type == "role":
         for user_id in role_member_user_ids(db, step.role_id, exclude_user_id=requester.user_id)[:25]:
             NotificationService.create(db, user_id, title, message, "leave", "/leaves")
@@ -191,7 +204,7 @@ def _finalize(db: Session, leave: Leave, requester: Employee, status: str, actor
     if requester.user_id:
         NotificationService.create(
             db, requester.user_id, f"Leave request {status}",
-            f"Your {leave.leave_type} leave from {leave.start_date} to {leave.end_date} was {status}.",
+            f"Your leave from {leave.start_date} to {leave.end_date} was {status}.",
             "leave", "/employee/leaves",
         )
 
@@ -338,10 +351,12 @@ def apply(db: Session, principal: Principal, data) -> Leave:
     if not principal.has("leave:apply"):
         raise forbidden()
     employee = authz.own_employee(db, principal)
-    company = db.get(Company, principal.company_id)
+    # One request at a time per person (LH BUG-03, LCK-02): the overlap and balance checks below then see every
+    # earlier request, so parallel or double-clicked applies cannot book the same days twice.
+    concurrency.lock_employees(db, [employee.id])
     if data.start_date > data.end_date:
         raise bad_request("Start date must be on or before the end date.")
-    if data.start_date < today_for(company):
+    if data.start_date < _local_today(db, employee):  # the applicant's date, not the company's (LH BUG-07)
         raise bad_request("Leave cannot start in the past.")
     if (data.end_date - data.start_date).days > 365:
         raise bad_request("A single request cannot exceed one year.")
@@ -489,7 +504,7 @@ def _decide_cancellation(db: Session, principal: Principal, leave: Leave, reques
     if requester.user_id:
         NotificationService.create(
             db, requester.user_id, f"Leave cancellation {outcome}",
-            f"Cancelling your {leave.leave_type} leave from {leave.start_date} to {leave.end_date} was {outcome}.",
+            f"Cancelling your leave from {leave.start_date} to {leave.end_date} was {outcome}.",
             "leave", "/employee/leaves",
         )
     AuditLogService.log(
@@ -500,14 +515,21 @@ def _decide_cancellation(db: Session, principal: Principal, leave: Leave, reques
     return leave
 
 
-def cancel(db: Session, principal: Principal, leave_id: int) -> Leave:
-    """Pending leave is withdrawn at once; approved leave gets a cancellation request (EC-LV-04)."""
+def cancel(db: Session, principal: Principal, leave_id: int, reason: Optional[str] = None) -> Leave:
+    """Pending leave is withdrawn at once; approved leave gets a cancellation request (EC-LV-04).
+
+    ``reason`` is kept on the request (LH BUG-01) and never copied into notifications or the audit trail.
+    """
     leave = _load_leave(db, principal, leave_id, lock=True)
     if leave.employee_id != principal.employee_id:
         raise not_found("Leave request")
+    if leave.status not in ("approved", "pending"):
+        raise bad_request("Only pending or approved requests can be cancelled.")
+    if leave.status == "approved" and leave.cancellation_status == "pending":
+        raise conflict("Cancelling this leave is already awaiting approval.", "CANCELLATION_PENDING")
+    if reason is not None:
+        leave.cancellation_reason = reason.strip() or None
     if leave.status == "approved":
-        if leave.cancellation_status == "pending":
-            raise conflict("Cancelling this leave is already awaiting approval.", "CANCELLATION_PENDING")
         leave.cancellation_status = "pending"
         leave.cancellation_requested_at = utcnow()
         leave.cancellation_decided_at = None
@@ -517,14 +539,12 @@ def cancel(db: Session, principal: Principal, leave_id: int) -> Leave:
         if manager is not None and manager.user_id:
             NotificationService.create(
                 db, manager.user_id, "Leave cancellation awaiting your approval",
-                f"{requester.full_name} asked to cancel approved {leave.leave_type} leave from {leave.start_date}.",
+                f"{requester.full_name} asked to cancel approved leave from {leave.start_date}.",
                 "leave", "/leaves",
             )
         AuditLogService.log(db, principal, "Leave", "CANCEL_REQUESTED", f"Requested cancellation of leave #{leave.id}",
                             "leave", leave.id)
         return leave
-    if leave.status != "pending":
-        raise bad_request("Only pending or approved requests can be cancelled.")
     leave.status = "cancelled"
     leave.current_step = None
     for step in leave.approvals:
@@ -640,7 +660,9 @@ def my_leaves(db: Session, principal: Principal) -> List[dict]:
 
 def upcoming_approved(db: Session, principal: Principal, days: int = 30) -> List[dict]:
     scope = authz.employee_scope(db, principal, "leave:read")
-    today = date.today()
+    # The viewer's own today anchors the window of this many-person list (LH BUG-07).
+    viewer = db.get(Employee, principal.employee_id) if principal.employee_id else None
+    today = _local_today(db, viewer) if viewer else today_for(db.get(Company, principal.company_id))
     rows = (
         db.query(Leave, Employee)
         .join(Employee, Employee.id == Leave.employee_id)
@@ -686,9 +708,15 @@ def save_leave_type(db: Session, principal: Principal, data, type_id: Optional[i
             raise conflict("This leave type has leave history; its code cannot change. Deactivate it instead.",
                            "LEAVE_TYPE_CODE_FROZEN")
     else:
-        lt = LeaveType(company_id=principal.company_id)
+        lt = LeaveType(company_id=principal.company_id, kind=None, allow_half_day=True, counts_non_working_days=False)
         db.add(lt)
-    for key, value in data.model_dump().items():
+    values = data.model_dump()
+    # LH BUG-02: the type flags are written only when sent (today's policy tab sends none of them), so a legacy
+    # update never turns a comp-off type into ordinary leave; the booleans never become NULL.
+    for key in LEAVE_TYPE_FLAGS:
+        if key not in data.model_fields_set or (key != "kind" and values[key] is None):
+            values.pop(key)
+    for key, value in values.items():
         setattr(lt, key, value)
     db.flush()
     AuditLogService.log(db, principal, "Leave", "TYPE_SAVED", f"Saved leave type {lt.code}", "leave_type", lt.id)

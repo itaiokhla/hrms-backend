@@ -11,7 +11,7 @@ from app.core.errors import bad_request
 from app.core.security import utcnow
 from app.database.db import bind_tenant
 from app.models.company import Company
-from app.models.employee import Department, Employee, Shift
+from app.models.employee import Department, Employee
 from app.models.leave import ApprovalChainStep, LeaveType
 from app.models.user import User
 from app.services import rbac_service
@@ -89,9 +89,12 @@ def provision_company(
         )
     )
     department = Department(name="General", description="Default department")
-    shift = Shift(name="General Shift", start_time="09:00", end_time="18:00", duration_hours=9)
-    db.add_all([department, shift])
+    db.add(department)
     db.flush()
+    from app.services import shift_catalogue
+
+    # GEN 09:00-18:00 with a 60-minute unpaid lunch: 8 scheduled hours, not 9 (BUG-AS-33).
+    shift = shift_catalogue.seed_company_shift(db, company.id)
     from app.services import org_structure_service
 
     # Default employer (legal entity) and work location; the admin confirms the country later.

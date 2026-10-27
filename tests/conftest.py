@@ -6,10 +6,14 @@ as a separate NOSUPERUSER/NOBYPASSRLS role exactly like production, so the
 RLS policies are genuinely exercised. Set TEST_DATABASE_ADMIN_URL to use an
 existing PostgreSQL server (e.g. a Neon branch) instead.
 
-HRMS_TEST_NO_DB=1 runs only the pure-logic suite (tests/payroll_unit) without
+HRMS_TEST_NO_DB=1 runs only the pure-logic suites (PURE_SUITES) without
 starting PostgreSQL, so several such runs can happen at once. Database runs
 share one server and database: run them one at a time (scripts/pytest_serial.py
 waits for a machine-wide lock).
+
+Tests marked ``module_dataset`` share one module-scoped dataset: the database is
+emptied after the last such test of the module instead of after each test
+(golden baselines seed three tenants once per module).
 """
 
 import os
@@ -25,7 +29,8 @@ APP_ROLE = "hrms_app_test"
 APP_ROLE_PASSWORD = "app-role-test-password"
 DB_NAME = "hrms_test"
 NO_DB = os.environ.get("HRMS_TEST_NO_DB") == "1"
-PURE_SUITE = ROOT / "tests" / "payroll_unit"
+PURE_SUITES = tuple(ROOT / "tests" / name for name in ("payroll_unit", "leave_unit", "attendance_unit"))
+SHARED_DATASET_MARK = "module_dataset"
 
 _server = None
 
@@ -43,6 +48,7 @@ def _start_postgres() -> str:
 
 
 def pytest_configure(config):
+    config.addinivalue_line("markers", f"{SHARED_DATASET_MARK}: keep the database between tests of the module")
     if NO_DB:
         return
     import psycopg2
@@ -125,8 +131,23 @@ def pytest_collection_modifyitems(config, items):
         return
     skip = pytest.mark.skip(reason="needs the database (unset HRMS_TEST_NO_DB)")
     for item in items:
-        if PURE_SUITE not in Path(str(item.fspath)).resolve().parents:
+        parents = Path(str(item.fspath)).resolve().parents
+        if not any(suite in parents for suite in PURE_SUITES):
             item.add_marker(skip)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    # The test that really runs next (after -k / deselection), for the shared-dataset cleanup decision.
+    item._hrms_next_item = nextitem
+    yield
+
+
+def _keeps_dataset(node) -> bool:
+    nextitem = getattr(node, "_hrms_next_item", None)
+    return (node.get_closest_marker(SHARED_DATASET_MARK) is not None and nextitem is not None
+            and nextitem.get_closest_marker(SHARED_DATASET_MARK) is not None
+            and getattr(nextitem, "module", None) is getattr(node, "module", None))
 
 
 def _empty_written_tables(conn, names) -> None:
@@ -160,8 +181,30 @@ def _empty_written_tables(conn, names) -> None:
     conn.execute(text("SET LOCAL session_replication_role = DEFAULT"))
 
 
+_SCHEDULE_SEED = []
+
+
+def _restore_scheduled_jobs(conn) -> None:
+    """Re-seed the platform schedule that migration lh_m1_scheduler installs (the cleanup empties it)."""
+    import importlib.util
+
+    from sqlalchemy import text
+
+    if not _SCHEDULE_SEED:
+        path = ROOT / "alembic" / "versions" / "0039_lh_m1_scheduler.py"
+        spec = importlib.util.spec_from_file_location("_lh_m1_scheduler", path)
+        migration = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(migration)
+        _SCHEDULE_SEED.extend(migration.SEED)
+    for job_type, cadence, minute, local, enabled in _SCHEDULE_SEED:
+        conn.execute(text(
+            "INSERT INTO scheduled_jobs (job_type, cadence, at_minute, at_local_time, enabled, next_run_at) "
+            "VALUES (:t, :c, :m, CAST(:l AS time), :e, CASE WHEN :e THEN now() END) ON CONFLICT (job_type) DO NOTHING"),
+            {"t": job_type, "c": cadence, "m": minute, "l": local, "e": enabled})
+
+
 @pytest.fixture(autouse=True)
-def clean_database():
+def clean_database(request):
     if NO_DB:
         yield
         return
@@ -177,6 +220,8 @@ def clean_database():
     invalidate_host_cache()
     invalidate_cache()
     yield
+    if _keeps_dataset(request.node):
+        return
     names = [t.name for t in Base.metadata.sorted_tables]
     with system_engine.begin() as conn:
         try:
@@ -193,6 +238,7 @@ def clean_database():
             "'People, attendance, leave and payroll in one place.', true, 'Powered by Intertech HRMS', '{}', now(), "
             "'migration 0006', 'migration 0006', '[]'::jsonb)"
         ))
+        _restore_scheduled_jobs(conn)
     limiter.reset()
     invalidate_host_cache()
     invalidate_cache()

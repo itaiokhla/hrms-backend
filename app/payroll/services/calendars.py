@@ -563,16 +563,19 @@ def generate_ahead(db: Session, company_id: int, *, pay_group_id: Optional[int] 
     return created
 
 
-def schedule_generation(db: Session, company_id: int, *, on: Optional[date] = None) -> None:
+def schedule_generation(db: Session, company_id: int, *, on: Optional[date] = None,
+                        include_generation: bool = True) -> None:
     """Queue the tenant's daily payroll maintenance (one job per type and date, idempotent): period
     generation 18 months ahead, and the activation of compensation assignments whose start date has
     come (``compensation.activate_scheduled``, FOLLOW-UPS F-38), and the daily payroll notifications (input
-    cutoff reminders and the exceptions digest, ``notifications.schedule_daily``, F-68). The generation job
-    re-queues all of them for the next day."""
+    cutoff reminders and the exceptions digest, ``notifications.schedule_daily``, F-68). The periodic scheduler
+    runs the generation job daily (scheduled type ``payroll.generate_periods``, BUG-29); the job re-queues the
+    others for the next day, and only a new tenant's first run queues the generation itself."""
     day = on or (_today(db, company_id) + _ONE_DAY)
     run_at = datetime.combine(day, time(1, 0), tzinfo=timezone.utc)
-    jobs.enqueue(db, company_id=company_id, type=GENERATE_JOB, payload={"run_date": day.isoformat()},
-                 idempotency_key=f"generate-periods:{day.isoformat()}", run_at=run_at, priority=200)
+    if include_generation:
+        jobs.enqueue(db, company_id=company_id, type=GENERATE_JOB, payload={"run_date": day.isoformat()},
+                     idempotency_key=f"generate-periods:{day.isoformat()}", run_at=run_at, priority=200)
     jobs.enqueue(db, company_id=company_id, type=ACTIVATE_COMPENSATION_JOB, payload={"run_date": day.isoformat()},
                  idempotency_key=f"activate-scheduled:{day.isoformat()}", run_at=run_at, priority=150)
     # Input cutoff reminders and the exceptions digest (notify.payroll.*, F-68) follow the same daily rhythm.
@@ -588,7 +591,7 @@ def schedule_generation(db: Session, company_id: int, *, on: Optional[date] = No
 @jobs.register(GENERATE_JOB)
 def _generate_job(ctx: jobs.JobContext) -> dict:
     created = generate_ahead(ctx.db, ctx.company_id)
-    schedule_generation(ctx.db, ctx.company_id, on=_today(ctx.db, ctx.company_id) + _ONE_DAY)
+    schedule_generation(ctx.db, ctx.company_id, on=_today(ctx.db, ctx.company_id) + _ONE_DAY, include_generation=False)
     return {"created": created}
 
 

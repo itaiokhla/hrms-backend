@@ -17,6 +17,29 @@ class ExcelExporter:
         bottom=Side(style="thin"),
     )
 
+    # A text cell starting with one of these is read as a formula (or a command) by spreadsheet programs.
+    FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+    @staticmethod
+    def _neutralize_formulas(wb: Workbook) -> None:
+        """Make every text cell inert before saving (LH BUG-26, LH-RPT-29): prefix a quote, store as text."""
+        for ws in wb.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    # A lone "-" or "+" (the "no value" placeholder) cannot run anything and stays as it is.
+                    if (isinstance(cell.value, str) and len(cell.value) > 1
+                            and cell.value.startswith(ExcelExporter.FORMULA_PREFIXES)):
+                        cell.value = "'" + cell.value
+                        cell.data_type = "s"
+
+    @staticmethod
+    def _save(wb: Workbook) -> BytesIO:
+        ExcelExporter._neutralize_formulas(wb)
+        buffer = BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        return buffer
+
     @staticmethod
     def _apply_header(cell):
         cell.font = ExcelExporter.HEADER_FONT
@@ -138,10 +161,7 @@ class ExcelExporter:
             12: 12,
         })
 
-        buffer = BytesIO()
-        wb.save(buffer)
-        buffer.seek(0)
-        return buffer
+        return ExcelExporter._save(wb)
 
     @staticmethod
     def export_attendance_report(attendance_data: List[Dict[str, Any]]) -> BytesIO:
@@ -236,10 +256,7 @@ class ExcelExporter:
             10: 12,
         })
 
-        buffer = BytesIO()
-        wb.save(buffer)
-        buffer.seek(0)
-        return buffer
+        return ExcelExporter._save(wb)
 
     @staticmethod
     def export_leave_report(leaves_data: List[Dict[str, Any]]) -> BytesIO:
@@ -299,7 +316,4 @@ class ExcelExporter:
             8: 14,
         })
 
-        buffer = BytesIO()
-        wb.save(buffer)
-        buffer.seek(0)
-        return buffer
+        return ExcelExporter._save(wb)

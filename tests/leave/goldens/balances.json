@@ -1,0 +1,5954 @@
+{
+ "alpha/AT-001 Rahul Kapoor/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-001 Rahul Kapoor/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-001 Rahul Kapoor/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-002 Kavya Nair/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-002 Kavya Nair/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-002 Kavya Nair/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-003 Sunil Rao/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-003 Sunil Rao/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-003 Sunil Rao/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-004 Asha Pillai/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-004 Asha Pillai/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-004 Asha Pillai/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-005 Arjun Mehta/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-005 Arjun Mehta/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-005 Arjun Mehta/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-006 Meghna Rao/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-006 Meghna Rao/2026": {
+  "casual": {
+   "available": 8,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 8,
+   "total": 10,
+   "used": 2
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-006 Meghna Rao/2027": {
+  "casual": {
+   "available": 9,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 9,
+   "total": 10,
+   "used": 1
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-007 Priya Shah/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-007 Priya Shah/2026": {
+  "casual": {
+   "available": 8,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 8,
+   "total": 10,
+   "used": 2
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-007 Priya Shah/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-008 Rohan Verma/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-008 Rohan Verma/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 11,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 1,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-008 Rohan Verma/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-009 Deepa Nair/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-009 Deepa Nair/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-009 Deepa Nair/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-010 Sameer Khan/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-010 Sameer Khan/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 11.5,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 11.5,
+   "total": 12,
+   "used": 0.5
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-010 Sameer Khan/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-011 Pooja Kulkarni/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-011 Pooja Kulkarni/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-011 Pooja Kulkarni/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-012 Nitin Gowda/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-012 Nitin Gowda/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 11,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 4,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-012 Nitin Gowda/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-013 Karan Desai/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-013 Karan Desai/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-013 Karan Desai/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-014 Neha Joshi/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-014 Neha Joshi/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-014 Neha Joshi/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-015 Vikram Singh/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-015 Vikram Singh/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-015 Vikram Singh/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-016 Kiran Joshi/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-016 Kiran Joshi/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-016 Kiran Joshi/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-017 Ravi Kumar/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-017 Ravi Kumar/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 13.5,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 13.5,
+   "total": 15,
+   "used": 1.5
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-017 Ravi Kumar/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-018 Sunita Patil/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-018 Sunita Patil/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-018 Sunita Patil/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-019 Imran Shaikh/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-019 Imran Shaikh/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-019 Imran Shaikh/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-020 Prakash More/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-020 Prakash More/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-020 Prakash More/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-021 Ramesh Yadav/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-021 Ramesh Yadav/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-021 Ramesh Yadav/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-022 Leena D'Souza/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-022 Leena D'Souza/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-022 Leena D'Souza/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-023 Anjali Menon/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-023 Anjali Menon/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-023 Anjali Menon/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-024 Omar Haddad/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-024 Omar Haddad/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-024 Omar Haddad/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-025 Farah Ali/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-025 Farah Ali/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "alpha/AT-025 Farah Ali/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "beta/BT-001 Mariam Saeed/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "beta/BT-001 Mariam Saeed/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "beta/BT-001 Mariam Saeed/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "beta/BT-002 Yusuf Rahman/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "beta/BT-002 Yusuf Rahman/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "beta/BT-002 Yusuf Rahman/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "beta/BT-003 Layla Hassan/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "beta/BT-003 Layla Hassan/2026": {
+  "casual": {
+   "available": 9,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 9,
+   "total": 10,
+   "used": 1
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "beta/BT-003 Layla Hassan/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "beta/BT-004 Maria Santos/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "beta/BT-004 Maria Santos/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 11,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 1,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "beta/BT-004 Maria Santos/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "gamma/GT-001 Emily Clark/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "gamma/GT-001 Emily Clark/2026": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "gamma/GT-001 Emily Clark/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "gamma/GT-002 Jordan Lee/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "gamma/GT-002 Jordan Lee/2026": {
+  "casual": {
+   "available": 9,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 9,
+   "total": 10,
+   "used": 1
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "gamma/GT-002 Jordan Lee/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "gamma/GT-003 Carlos Diaz/2025": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "gamma/GT-003 Carlos Diaz/2026": {
+  "casual": {
+   "available": 9,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 1,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ },
+ "gamma/GT-003 Carlos Diaz/2027": {
+  "casual": {
+   "available": 10,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Casual Leave",
+   "pending": 0,
+   "remaining": 10,
+   "total": 10,
+   "used": 0
+  },
+  "earned": {
+   "available": 15,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Earned Leave",
+   "pending": 0,
+   "remaining": 15,
+   "total": 15,
+   "used": 0
+  },
+  "maternity": {
+   "available": 90,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Maternity Leave",
+   "pending": 0,
+   "remaining": 90,
+   "total": 90,
+   "used": 0
+  },
+  "paternity": {
+   "available": 7,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Paternity Leave",
+   "pending": 0,
+   "remaining": 7,
+   "total": 7,
+   "used": 0
+  },
+  "sick": {
+   "available": 12,
+   "is_paid": true,
+   "is_unlimited": false,
+   "name": "Sick Leave",
+   "pending": 0,
+   "remaining": 12,
+   "total": 12,
+   "used": 0
+  },
+  "unpaid": {
+   "available": null,
+   "is_paid": false,
+   "is_unlimited": true,
+   "name": "Unpaid Leave",
+   "pending": 0,
+   "remaining": null,
+   "total": 0,
+   "used": 0
+  }
+ }
+}

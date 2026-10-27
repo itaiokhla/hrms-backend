@@ -196,5 +196,12 @@ def rls_status() -> dict:
         rls_enabled = conn.execute(
             text("SELECT relrowsecurity FROM pg_class WHERE relname = 'employees'")
         ).scalar()
-    enforced = bool(rls_enabled) and not role.rolsuper and not role.rolbypassrls and not owns_tables
+        # Neon's admin group bypasses RLS through membership even for a NOSUPERUSER role (LH-SEC-19).
+        # CASE (not AND) so pg_has_role never runs where the role does not exist (any non-Neon server).
+        neon_member = bool(conn.execute(text(
+            "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'neon_superuser') "
+            "THEN pg_has_role(current_user, 'neon_superuser', 'MEMBER') ELSE false END"
+        )).scalar())
+    enforced = (bool(rls_enabled) and not role.rolsuper and not role.rolbypassrls and not owns_tables
+                and not neon_member)
     return {"database": "postgresql", "rls_enforced": enforced}

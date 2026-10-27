@@ -276,8 +276,10 @@ def test_shift_edited_on_the_employee_form_is_kept_by_the_next_placement(acme):
     assert acme.put(f"/api/v1/employees/{employee['id']}", json={"shift_id": night["id"]}).status_code == 200
     main = next(b for b in acme.get("/api/v1/branches").json() if b["name"] == "Main")
     department = acme.post("/api/v1/departments", json={"name": "Ops", "is_active": True}).json()
+    # Since BUG-AS-34 the form's shift edit is itself a placement from the employee-local today, so the next
+    # placement starts after it (tomorrow) and must carry the edited shift.
     row = _move(acme, employee["id"], branch_id=main["id"], department_id=department["id"],
-                effective_from=date.today().isoformat())[0]
+                effective_from=(date.today() + timedelta(days=1)).isoformat())[0]
     assert row["shift_id"] == night["id"]
     assert acme.get(f"/api/v1/employees/{employee['id']}").json()["shift_id"] == night["id"]
 

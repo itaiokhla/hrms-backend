@@ -1,0 +1,436 @@
+{
+ "alpha/AT-004 Asha Pillai/2026-10": {
+  "absent": 0,
+  "employee_id": 5,
+  "half_day": 0,
+  "hours": {
+   "complete_sessions": 1,
+   "excluded_seconds": 3600,
+   "gross_seconds": 30900,
+   "incomplete_sessions": 0,
+   "lunch_seconds": 3600,
+   "net_seconds": 27300,
+   "provisional_sessions": 0,
+   "sessions": 1
+  },
+  "late": 1,
+  "month": 10,
+  "present": 0,
+  "year": 2026
+ },
+ "alpha/AT-007 Priya Shah/2026-10": {
+  "absent": 0,
+  "employee_id": 8,
+  "half_day": 0,
+  "hours": {
+   "complete_sessions": 11,
+   "excluded_seconds": 29700,
+   "gross_seconds": 365940,
+   "incomplete_sessions": 0,
+   "lunch_seconds": 29700,
+   "net_seconds": 336240,
+   "provisional_sessions": 0,
+   "sessions": 11
+  },
+  "late": 0,
+  "month": 10,
+  "present": 11,
+  "year": 2026
+ },
+ "alpha/AT-010 Sameer Khan/2026-10": {
+  "absent": 0,
+  "employee_id": 11,
+  "half_day": 0,
+  "hours": {
+   "complete_sessions": 10,
+   "excluded_seconds": 36000,
+   "gross_seconds": 330000,
+   "incomplete_sessions": 0,
+   "lunch_seconds": 36000,
+   "net_seconds": 294000,
+   "provisional_sessions": 0,
+   "sessions": 10
+  },
+  "late": 0,
+  "month": 10,
+  "present": 10,
+  "year": 2026
+ },
+ "alpha/AT-015 Vikram Singh/2026-10": {
+  "absent": 0,
+  "employee_id": 16,
+  "half_day": 0,
+  "hours": {
+   "complete_sessions": 1,
+   "excluded_seconds": 0,
+   "gross_seconds": 27300,
+   "incomplete_sessions": 0,
+   "lunch_seconds": 0,
+   "net_seconds": 27300,
+   "provisional_sessions": 0,
+   "sessions": 1
+  },
+  "late": 0,
+  "month": 10,
+  "present": 1,
+  "year": 2026
+ },
+ "alpha/AT-016 Kiran Joshi/2026-10": {
+  "absent": 0,
+  "employee_id": 17,
+  "half_day": 1,
+  "hours": {
+   "complete_sessions": 1,
+   "excluded_seconds": 0,
+   "gross_seconds": 14700,
+   "incomplete_sessions": 0,
+   "lunch_seconds": 0,
+   "net_seconds": 14700,
+   "provisional_sessions": 0,
+   "sessions": 1
+  },
+  "late": 0,
+  "month": 10,
+  "present": 0,
+  "year": 2026
+ },
+ "alpha/AT-017 Ravi Kumar/2026-10": {
+  "absent": 0,
+  "employee_id": 18,
+  "half_day": 0,
+  "hours": {
+   "complete_sessions": 11,
+   "excluded_seconds": 0,
+   "gross_seconds": 292200,
+   "incomplete_sessions": 0,
+   "lunch_seconds": 0,
+   "net_seconds": 292200,
+   "provisional_sessions": 1,
+   "sessions": 11
+  },
+  "late": 0,
+  "month": 10,
+  "present": 11,
+  "year": 2026
+ },
+ "alpha/AT-018 Sunita Patil/2026-10": {
+  "absent": 0,
+  "employee_id": 19,
+  "half_day": 0,
+  "hours": {
+   "complete_sessions": 1,
+   "excluded_seconds": 0,
+   "gross_seconds": 28500,
+   "incomplete_sessions": 0,
+   "lunch_seconds": 0,
+   "net_seconds": 28500,
+   "provisional_sessions": 0,
+   "sessions": 1
+  },
+  "late": 0,
+  "month": 10,
+  "present": 1,
+  "year": 2026
+ },
+ "alpha/AT-019 Imran Shaikh/2026-10": {
+  "absent": 0,
+  "employee_id": 20,
+  "half_day": 0,
+  "hours": {
+   "complete_sessions": 1,
+   "excluded_seconds": 0,
+   "gross_seconds": 529200,
+   "incomplete_sessions": 0,
+   "lunch_seconds": 0,
+   "net_seconds": 529200,
+   "provisional_sessions": 1,
+   "sessions": 1
+  },
+  "late": 0,
+  "month": 10,
+  "present": 1,
+  "year": 2026
+ },
+ "alpha/AT-021 Ramesh Yadav/2026-10": {
+  "absent": 0,
+  "employee_id": 22,
+  "half_day": 0,
+  "hours": {
+   "complete_sessions": 0,
+   "excluded_seconds": 0,
+   "gross_seconds": 0,
+   "incomplete_sessions": 1,
+   "lunch_seconds": 0,
+   "net_seconds": 0,
+   "provisional_sessions": 0,
+   "sessions": 1
+  },
+  "late": 0,
+  "month": 10,
+  "present": 1,
+  "year": 2026
+ },
+ "alpha/AT-023 Anjali Menon/2026-10": {
+  "absent": 0,
+  "employee_id": 24,
+  "half_day": 0,
+  "hours": {
+   "complete_sessions": 10,
+   "excluded_seconds": 0,
+   "gross_seconds": 438000,
+   "incomplete_sessions": 0,
+   "lunch_seconds": 0,
+   "net_seconds": 438000,
+   "provisional_sessions": 0,
+   "sessions": 10
+  },
+  "late": 0,
+  "month": 10,
+  "present": 10,
+  "year": 2026
+ },
+ "alpha/today": {
+  "absent_today": 25,
+  "attendance_percentage": 3.8,
+  "completed_today": 0,
+  "date": "2026-10-26",
+  "late_today": 0,
+  "on_leave": 0,
+  "on_lunch_now": 0,
+  "present_today": 1,
+  "total_employees": 26,
+  "working_now": 1
+ },
+ "alpha/trend": [
+  {
+   "absent": 25,
+   "date": "2026-10-20",
+   "label": "20 Oct",
+   "present": 1
+  },
+  {
+   "absent": 26,
+   "date": "2026-10-21",
+   "label": "21 Oct",
+   "present": 0
+  },
+  {
+   "absent": 26,
+   "date": "2026-10-22",
+   "label": "22 Oct",
+   "present": 0
+  },
+  {
+   "absent": 26,
+   "date": "2026-10-23",
+   "label": "23 Oct",
+   "present": 0
+  },
+  {
+   "absent": 26,
+   "date": "2026-10-24",
+   "label": "24 Oct",
+   "present": 0
+  },
+  {
+   "absent": 26,
+   "date": "2026-10-25",
+   "label": "25 Oct",
+   "present": 0
+  },
+  {
+   "absent": 25,
+   "date": "2026-10-26",
+   "label": "26 Oct",
+   "present": 1
+  }
+ ],
+ "beta/BT-003 Layla Hassan/2026-10": {
+  "absent": 0,
+  "employee_id": 30,
+  "half_day": 0,
+  "hours": {
+   "complete_sessions": 10,
+   "excluded_seconds": 36000,
+   "gross_seconds": 327600,
+   "incomplete_sessions": 0,
+   "lunch_seconds": 36000,
+   "net_seconds": 291600,
+   "provisional_sessions": 0,
+   "sessions": 10
+  },
+  "late": 0,
+  "month": 10,
+  "present": 10,
+  "year": 2026
+ },
+ "beta/BT-004 Maria Santos/2026-10": {
+  "absent": 0,
+  "employee_id": 31,
+  "half_day": 0,
+  "hours": {
+   "complete_sessions": 10,
+   "excluded_seconds": 0,
+   "gross_seconds": 438000,
+   "incomplete_sessions": 0,
+   "lunch_seconds": 0,
+   "net_seconds": 438000,
+   "provisional_sessions": 0,
+   "sessions": 10
+  },
+  "late": 0,
+  "month": 10,
+  "present": 10,
+  "year": 2026
+ },
+ "beta/today": {
+  "absent_today": 5,
+  "attendance_percentage": 0.0,
+  "completed_today": 0,
+  "date": "2026-10-26",
+  "late_today": 0,
+  "on_leave": 0,
+  "on_lunch_now": 0,
+  "present_today": 0,
+  "total_employees": 5,
+  "working_now": 0
+ },
+ "beta/trend": [
+  {
+   "absent": 5,
+   "date": "2026-10-20",
+   "label": "20 Oct",
+   "present": 0
+  },
+  {
+   "absent": 5,
+   "date": "2026-10-21",
+   "label": "21 Oct",
+   "present": 0
+  },
+  {
+   "absent": 5,
+   "date": "2026-10-22",
+   "label": "22 Oct",
+   "present": 0
+  },
+  {
+   "absent": 5,
+   "date": "2026-10-23",
+   "label": "23 Oct",
+   "present": 0
+  },
+  {
+   "absent": 5,
+   "date": "2026-10-24",
+   "label": "24 Oct",
+   "present": 0
+  },
+  {
+   "absent": 5,
+   "date": "2026-10-25",
+   "label": "25 Oct",
+   "present": 0
+  },
+  {
+   "absent": 5,
+   "date": "2026-10-26",
+   "label": "26 Oct",
+   "present": 0
+  }
+ ],
+ "gamma/GT-002 Jordan Lee/2026-10": {
+  "absent": 0,
+  "employee_id": 34,
+  "half_day": 0,
+  "hours": {
+   "complete_sessions": 10,
+   "excluded_seconds": 18000,
+   "gross_seconds": 309000,
+   "incomplete_sessions": 0,
+   "lunch_seconds": 18000,
+   "net_seconds": 291000,
+   "provisional_sessions": 0,
+   "sessions": 10
+  },
+  "late": 0,
+  "month": 10,
+  "present": 10,
+  "year": 2026
+ },
+ "gamma/GT-003 Carlos Diaz/2026-10": {
+  "absent": 0,
+  "employee_id": 35,
+  "half_day": 0,
+  "hours": {
+   "complete_sessions": 11,
+   "excluded_seconds": 19800,
+   "gross_seconds": 321600,
+   "incomplete_sessions": 0,
+   "lunch_seconds": 19800,
+   "net_seconds": 301800,
+   "provisional_sessions": 0,
+   "sessions": 11
+  },
+  "late": 0,
+  "month": 10,
+  "present": 11,
+  "year": 2026
+ },
+ "gamma/today": {
+  "absent_today": 4,
+  "attendance_percentage": 0.0,
+  "completed_today": 0,
+  "date": "2026-10-25",
+  "late_today": 0,
+  "on_leave": 0,
+  "on_lunch_now": 0,
+  "present_today": 0,
+  "total_employees": 4,
+  "working_now": 0
+ },
+ "gamma/trend": [
+  {
+   "absent": 3,
+   "date": "2026-10-19",
+   "label": "19 Oct",
+   "present": 1
+  },
+  {
+   "absent": 4,
+   "date": "2026-10-20",
+   "label": "20 Oct",
+   "present": 0
+  },
+  {
+   "absent": 4,
+   "date": "2026-10-21",
+   "label": "21 Oct",
+   "present": 0
+  },
+  {
+   "absent": 4,
+   "date": "2026-10-22",
+   "label": "22 Oct",
+   "present": 0
+  },
+  {
+   "absent": 4,
+   "date": "2026-10-23",
+   "label": "23 Oct",
+   "present": 0
+  },
+  {
+   "absent": 4,
+   "date": "2026-10-24",
+   "label": "24 Oct",
+   "present": 0
+  },
+  {
+   "absent": 4,
+   "date": "2026-10-25",
+   "label": "25 Oct",
+   "present": 0
+  }
+ ]
+}

@@ -19,6 +19,7 @@ from pydantic import Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.config import settings as app_settings
+from app.core import concurrency
 from app.core.principal import Principal, get_principal
 from app.core.rate_limit import client_ip
 from app.core.security import hash_token
@@ -153,12 +154,7 @@ def _meta(request: Request) -> service.ClientMeta:
 
 
 def _if_match(request: Request, body_version: Optional[int]) -> Optional[int]:
-    header = request.headers.get("if-match")
-    if header:
-        value = header.strip().removeprefix("W/").strip('"')
-        if value.isdigit():
-            return int(value)
-    return body_version
+    return concurrency.if_match(request, body_version)
 
 
 def _change_result(change, *, for_self: bool = False) -> dict:

@@ -57,6 +57,8 @@ from . import (  # noqa: E402,F401
     variable_inputs,
     work_items,
 )
+# Attendance-shift and cross-module models (AS 14 IG-AS-03), after the payroll block.
+from app.models import scheduler, shifts, views  # noqa: E402,F401
 
 TENANT_TABLES = sorted(
     m.__tablename__ for m in BaseModel.__subclasses__() if issubclass(m, TenantMixin)

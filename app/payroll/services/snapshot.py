@@ -79,7 +79,7 @@ from app.core import clock
 from app.core.errors import AppError, conflict, not_found
 from app.models.attendance import Attendance
 from app.models.compensation import CompensationAssignment, SalaryTemplate, SalaryTemplateVersion
-from app.models.employee import Employee, Shift
+from app.models.employee import Employee
 from app.models.org import Branch, EmployeeAssignment, LegalEntity
 from app.models.pay_org import PayGroup
 from app.models.pay_runs import (
@@ -570,9 +570,12 @@ class _Builder:
         if late is not None:
             grace = int(_dec(late["fields"].get("early_exit_grace_minutes")) or 0)
         standard = _dec(self.settings.get("payroll.standard_hours_per_day"))
+        # BUG-AS-31: the flag's consumer (JC-AS-02); a missing value keeps the default (true).
+        use_shift = self.settings.get("payroll.standard_hours.use_shift_duration")
         days = time_inputs.ledger_inputs(self.db, self.cid, self.eid, self.start, self.end,
                                          lock_at=None if self.probe else self.lock_time,
-                                         early_exit_grace_minutes=grace, standard_hours_per_day=standard)
+                                         early_exit_grace_minutes=grace, standard_hours_per_day=standard,
+                                         use_shift_duration=use_shift is not False)
         result = []
         suspensions: set = set()
         for day in days:
@@ -736,9 +739,12 @@ class _Builder:
         facts = compensation_service.employee_facts(self.db, self.cid, self.eid, self.facts_date)
         placement = self.facts_placement.row if self.facts_placement is not None else None
         standard = None
-        if placement is not None and placement.shift_id is not None:
-            shift = self.db.get(Shift, placement.shift_id)
-            standard = time_inputs._shift_hours(shift)
+        if placement is not None:
+            from app.services import shift_resolution
+
+            # The shift that resolves on the facts date (JC-AS-02; zero diff for placement shifts).
+            standard = shift_resolution.scheduled_hours(
+                shift_resolution.shift_for(self.db, self.cid, self.eid, self.facts_date))
         subdivision = facts.get("emp.subdivision")
         if placement is not None and placement.legal_entity_id == self.run.legal_entity_id:
             branch = self.db.query(Branch).filter(Branch.company_id == self.cid, Branch.id == placement.branch_id).first()

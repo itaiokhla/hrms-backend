@@ -49,12 +49,22 @@ class RoleUpdate(StrictModel):
     grants: Optional[List[GrantItem]] = Field(None, max_length=200)
 
 
+_WALL_TIME = r"^([01]\d|2[0-3]):[0-5]\d$"
+
+
 class ManualAttendance(StrictModel):
     attendance_id: Optional[int] = None
     employee_id: int
     date: date
-    check_in_time: datetime
+    # Instants with an offset (a naive value is refused with TIMEZONE_REQUIRED, BUG-AS-14) ...
+    check_in_time: Optional[datetime] = None
     check_out_time: Optional[datetime] = None
+    # ... or wall times in the employee's work time zone; an end at or before the start is the next day (BUG-AS-05).
+    check_in_local: Optional[str] = Field(None, pattern=_WALL_TIME)
+    check_out_local: Optional[str] = Field(None, pattern=_WALL_TIME)
+    lunch_start_local: Optional[str] = Field(None, pattern=_WALL_TIME)
+    lunch_end_local: Optional[str] = Field(None, pattern=_WALL_TIME)
+    # "absent" may be sent without times: it is recorded with no hours (BUG-AS-04, form part).
     status: str = Field("present", pattern=r"^(present|absent|late|half-day)$")
     notes: Optional[str] = Field(None, max_length=500)
     # When given, replaces the session's lunch breaks (the original events stay in the log).

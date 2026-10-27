@@ -1,13 +1,15 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
 from app.core import authz
 from app.core.principal import Principal, get_principal, require, require_any
 from app.database.db import get_db
 from app.models.employee import Employee
-from app.schemas.leave import ChainWrite, LeaveApply, LeaveDecision, LeaveTypeWrite
+from app.payroll.services import idempotency
+from app.schemas.leave import CancelIn, ChainWrite, LeaveApply, LeaveDecision, LeaveTypeWrite
 from app.services import leave_service
 
 router = APIRouter(prefix="/api/v1/leaves", tags=["Leave"])
@@ -15,7 +17,8 @@ router = APIRouter(prefix="/api/v1/leaves", tags=["Leave"])
 
 def _serialize_type(t) -> dict:
     return {"id": t.id, "code": t.code, "name": t.name, "annual_quota": t.annual_quota, "is_paid": t.is_paid,
-            "is_unlimited": t.is_unlimited, "is_active": t.is_active}
+            "is_unlimited": t.is_unlimited, "is_active": t.is_active, "kind": t.kind,
+            "allow_half_day": bool(t.allow_half_day), "counts_non_working_days": bool(t.counts_non_working_days)}
 
 
 @router.get("/types")
@@ -54,11 +57,19 @@ def save_chain(data: ChainWrite, principal: Principal = Depends(require("leave:m
     return result
 
 
+def _leave_result(db: Session, leave) -> dict:
+    # FastAPI's default encoding (decimals as numbers), exactly the shape these routes returned before.
+    return jsonable_encoder(leave_service.serialize(db, leave, db.get(Employee, leave.employee_id)))
+
+
+# The state-changing routes run through idempotency.execute (LH BUG-03): with an Idempotency-Key a retried or
+# double-clicked request replays the first answer; without one they behave exactly as before.
 @router.post("/apply")
-def apply_leave(data: LeaveApply, principal: Principal = Depends(require("leave:apply")), db: Session = Depends(get_db)):
-    leave = leave_service.apply(db, principal, data)
-    db.commit()
-    return leave_service.serialize(db, leave, db.get(Employee, leave.employee_id))
+def apply_leave(data: LeaveApply, request: Request, principal: Principal = Depends(require("leave:apply")),
+                db: Session = Depends(get_db)):
+    return idempotency.execute(db, principal, request,
+                               lambda: (200, _leave_result(db, leave_service.apply(db, principal, data))),
+                               body=data.model_dump(mode="json"))
 
 
 @router.get("/my")
@@ -104,23 +115,27 @@ def list_leaves(
 
 
 @router.post("/{leave_id}/approve")
-def approve(leave_id: int, data: LeaveDecision = LeaveDecision(), principal: Principal = Depends(get_principal),
-            db: Session = Depends(get_db)):
-    leave = leave_service.decide(db, principal, leave_id, True, data.remarks)
-    db.commit()
-    return leave_service.serialize(db, leave, db.get(Employee, leave.employee_id))
+def approve(leave_id: int, request: Request, data: LeaveDecision = LeaveDecision(),
+            principal: Principal = Depends(get_principal), db: Session = Depends(get_db)):
+    return idempotency.execute(db, principal, request,
+                               lambda: (200, _leave_result(db, leave_service.decide(db, principal, leave_id, True,
+                                                                                    data.remarks))),
+                               body=data.model_dump(mode="json"))
 
 
 @router.post("/{leave_id}/reject")
-def reject(leave_id: int, data: LeaveDecision = LeaveDecision(), principal: Principal = Depends(get_principal),
-           db: Session = Depends(get_db)):
-    leave = leave_service.decide(db, principal, leave_id, False, data.remarks)
-    db.commit()
-    return leave_service.serialize(db, leave, db.get(Employee, leave.employee_id))
+def reject(leave_id: int, request: Request, data: LeaveDecision = LeaveDecision(),
+           principal: Principal = Depends(get_principal), db: Session = Depends(get_db)):
+    return idempotency.execute(db, principal, request,
+                               lambda: (200, _leave_result(db, leave_service.decide(db, principal, leave_id, False,
+                                                                                    data.remarks))),
+                               body=data.model_dump(mode="json"))
 
 
 @router.post("/{leave_id}/cancel")
-def cancel(leave_id: int, principal: Principal = Depends(require("leave:apply")), db: Session = Depends(get_db)):
-    leave = leave_service.cancel(db, principal, leave_id)
-    db.commit()
-    return leave_service.serialize(db, leave, db.get(Employee, leave.employee_id))
+def cancel(leave_id: int, request: Request, data: Optional[CancelIn] = None,
+           principal: Principal = Depends(require("leave:apply")), db: Session = Depends(get_db)):
+    reason = data.reason if data else None
+    return idempotency.execute(db, principal, request,
+                               lambda: (200, _leave_result(db, leave_service.cancel(db, principal, leave_id, reason))),
+                               body={"reason": reason})

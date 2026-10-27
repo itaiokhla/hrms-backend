@@ -66,6 +66,8 @@ SELF_SERVICE = [
     ("payroll:tax_profile:read", "SELF"), ("payroll:tax_profile:edit", "SELF"),
     ("payroll:loans:read", "SELF"), ("payroll:reimbursements:read", "SELF"),
     ("overtime:request", "SELF"), ("task:read", "SELF"),
+    # LH-M1 / AS-M1 self-service (registry 2026.10.5-2026.10.6)
+    ("holiday:choose_optional", "SELF"), ("shift:read", "SELF"), ("roster:read", "SELF"), ("roster:request", "SELF"),
 ]
 
 NIMBUS = {
@@ -318,7 +320,9 @@ def main() -> None:
                                                "notes": "Release on-call"})
 
     def nxt(days: int) -> str:
-        return (today + timedelta(days=days)).isoformat()
+        # A date that falls on a weekend moves to the Monday after, so a one-day leave always has a working day.
+        day = today + timedelta(days=days)
+        return (day + timedelta(days=(7 - day.weekday()) % 7 if day.weekday() >= 5 else 0)).isoformat()
 
     leave = lambda who, kind, a, b, why: s[who].post("/leaves/apply", {"leave_type": kind, "start_date": a, "end_date": b, "reason": why})
     leave("divya", "casual", nxt(8), nxt(8), "Family function")                             # pending at Arjun (Team Lead)

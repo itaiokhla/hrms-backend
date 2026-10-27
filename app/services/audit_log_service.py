@@ -8,8 +8,10 @@ from enum import Enum
 from typing import Any, Optional
 from uuid import UUID
 
+from sqlalchemy import insert, text
 from sqlalchemy.orm import Session
 
+from app.core import request_context
 from app.core.principal import Principal
 from app.database.db import current_company_id
 from app.models.audit_log import AuditLog
@@ -100,6 +102,25 @@ def mask_sensitive(details: Optional[Mapping[str, Any]], *, amounts: bool = True
     return _mask(_jsonable(details), amounts)
 
 
+_REQUEST_COLUMNS_KEY = "audit_logs_has_request_columns"
+
+
+def _now() -> datetime:
+    from app.models.base import utcnow
+
+    return utcnow()
+
+
+def _has_request_columns(db: Session) -> bool:
+    """Whether audit_logs has request_id / user_agent (lh_m0_baseline); cached per database connection."""
+    connection = db.connection()
+    if _REQUEST_COLUMNS_KEY not in connection.info:
+        connection.info[_REQUEST_COLUMNS_KEY] = connection.execute(text(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = 'audit_logs' AND column_name = 'request_id'"
+        )).first() is not None
+    return connection.info[_REQUEST_COLUMNS_KEY]
+
+
 class AuditLogService:
     @staticmethod
     def log(
@@ -117,12 +138,15 @@ class AuditLogService:
         actor_email: Optional[str] = None,
         details: Optional[Mapping[str, Any]] = None,
         mask_amounts: bool = False,
+        request_id: Optional[str] = None,
+        user_agent: Optional[str] = None,
     ) -> AuditLog:
         """Queue an audit row in the caller's transaction (committed with the action).
 
         `details` carries structured values such as {"before": ..., "after": ..., "reason": ...}.
         Credentials and bank, tax and identity numbers are always masked; money amounts too when
-        mask_amounts is set (for events readable without payroll access).
+        mask_amounts is set (for events readable without payroll access). `request_id` / `user_agent`
+        default to the current HTTP request's (app.core.request_context).
         """
         delegation = getattr(principal, "delegation", None)
         if delegation is not None:
@@ -144,6 +168,15 @@ class AuditLogService:
             ip_address=ip_address,
             details=mask_sensitive(details, amounts=mask_amounts),
         )
+        entry.request_id = request_id or request_context.request_id.get()
+        entry.user_agent = request_context.clean_user_agent(user_agent) or request_context.user_agent.get()
+        if not _has_request_columns(db):
+            # A database mid-upgrade (migrations older than lh_m0_baseline call services that audit, payroll
+            # rehearsal EC-MIG-14): write the row without the columns that do not exist yet.
+            values = {c.name: getattr(entry, c.key) for c in AuditLog.__table__.columns
+                      if c.name not in ("id", "request_id", "user_agent", "created_at", "updated_at")}
+            db.execute(insert(AuditLog.__table__).values(**values, created_at=_now(), updated_at=_now()))
+            return entry
         db.add(entry)
         return entry
 

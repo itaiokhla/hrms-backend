@@ -70,6 +70,9 @@ def grant_app_role(connection, role: str) -> None:
     for table in ("fx_rates", "jobs"):
         connection.execute(text(f"REVOKE ALL ON {table} FROM {role}"))
         connection.execute(text(f"GRANT SELECT, INSERT, UPDATE ON {table} TO {role}"))
+    # The periodic schedule (lh_m1_scheduler): rows are seeded by the migration; the tick only moves next_run_at.
+    connection.execute(text(f"REVOKE ALL ON scheduled_jobs FROM {role}"))
+    connection.execute(text(f"GRANT SELECT, UPDATE ON scheduled_jobs TO {role}"))
     connection.execute(text(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {role}"))
 
 

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, FrozenSet, Iterable, List, Optional, Tuple
 
-REGISTRY_VERSION = "2026.10.4"
+REGISTRY_VERSION = "2026.10.6"
 
 
 class Scope(str, Enum):
@@ -76,10 +76,15 @@ _ORG_UNITS = (_LE, _BR, _C)
 _PAY_GROUPS = (_LE, _PG, _C)
 _OWN_PAY_GROUPS = (_S, _LE, _PG, _C)
 _OWN_ENTITY = (_S, _LE, _C)
+# AS spine §7.1 bundles; the team scopes (TM, TT, AT) join them with X-M1 (G-05).
+_ALL_T = _ALL
+_TEAM_T = _TEAM
+_ROSTER_PLANNING = (_D, _LE, _BR, _C)
 
-# Payroll confidentiality markers for PermissionDef.full_access_scopes.
+# Explicit-only markers for PermissionDef.full_access_scopes (payroll confidentiality and its generic reuse).
 _NEVER: Tuple[Scope, ...] = ()
 _OWN_ONLY: Tuple[Scope, ...] = (_S,)
+PAYROLL_MODULES = ("Payroll", "Payroll (legacy)")
 
 
 @dataclass(frozen=True)
@@ -106,9 +111,18 @@ class PermissionDef:
         return self.code.split(":", 1)[1]
 
     @property
-    def payroll_confidential(self) -> bool:
-        """Excluded from implicit full access (entirely, or except SELF)."""
+    def explicit_only(self) -> bool:
+        """Excluded from implicit full access (entirely, or except SELF); held only through an explicit grant.
+
+        The generic mechanism (AS spine A-09, LH V3-073): payroll codes use it today, attendance and leave
+        codes such as ``roster:exempt`` reuse it without being payroll-confidential.
+        """
         return self.full_access_scopes is not None
+
+    @property
+    def payroll_confidential(self) -> bool:
+        """An explicit-only code of the Payroll modules (shown and audited as payroll access)."""
+        return self.explicit_only and self.module in PAYROLL_MODULES
 
     @property
     def implied_scopes(self) -> Tuple[Scope, ...]:
@@ -165,7 +179,38 @@ PERMISSIONS: List[PermissionDef] = [
     PermissionDef("leave:manage_policy", "Leave", "Configure leave", "Manage leave types and approval chains.", _COMPANY),
     # Holidays
     PermissionDef("holiday:read", "Holidays", "View holidays", "View the company holiday calendar.", _COMPANY),
-    PermissionDef("holiday:manage", "Holidays", "Manage holidays", "Create and edit holiday calendars.", _COMPANY),
+    PermissionDef("holiday:manage", "Holidays", "Manage holidays",
+                  "Create and edit holiday calendars, work weeks and their links for the entities or branches in scope.",
+                  _ORG_UNITS),
+    PermissionDef("holiday:publish", "Holidays", "Publish and backdate holidays",
+                  "Publish holiday years, amend published years and post backdated calendar or work-week changes.",
+                  _ORG_UNITS, "restricted"),
+    PermissionDef("holiday:choose_optional", "Holidays", "Choose optional holidays",
+                  "Pick own optional or floating holidays within the quota.", _SELF),
+    # Shifts and rosters (AS 06 §3 S1-S9; module "Shifts"). roster:* codes are granted now and used from AS-M5.
+    PermissionDef("shift:read", "Shifts", "View shifts",
+                  "See the shift catalogue and the shifts that apply to people in scope.", _ALL_T),
+    PermissionDef("shift:manage", "Shifts", "Manage shifts",
+                  "Manage shifts and their versions, rotation patterns, skill tags, scheduling policies and the Shifts "
+                  "settings section (company-wide).", _ORG_UNITS),
+    PermissionDef("shift:assign", "Shifts", "Assign shifts",
+                  "Manage shift assignment rules, rotation assignments, placement shifts and employee skill tags for "
+                  "people in scope.", _TEAM_T),
+    PermissionDef("roster:read", "Shifts", "View schedules",
+                  "See published schedules of people in scope. Your own schedule always.", _ALL_T),
+    PermissionDef("roster:plan", "Shifts", "Plan schedules",
+                  "Edit roster drafts, post open shifts, see others' availability and issue schedule estimates.",
+                  _ROSTER_PLANNING),
+    PermissionDef("roster:publish", "Shifts", "Publish schedules",
+                  "Publish roster periods and approve publication requests.", _ROSTER_PLANNING),
+    PermissionDef("roster:request", "Shifts", "Request shift changes",
+                  "Ask for swaps, drops, releases, pickups and changes; state availability; acknowledge your shifts.",
+                  _SELF),
+    PermissionDef("roster:approve", "Shifts", "Approve shift requests",
+                  "Act on shift-request and availability approval steps routed to you.", _TEAM_T),
+    PermissionDef("roster:exempt", "Shifts", "Publish with exemption",
+                  "Publish over a blocking roster validation result with an exemption reference. Needs step-up.",
+                  _ORG_UNITS, "restricted", ()),
     # Overtime and tasks (approvals never include the requester's own records)
     PermissionDef("overtime:request", "Overtime", "Request overtime", "Submit own overtime for approval.", _SELF),
     PermissionDef("overtime:approve", "Overtime", "Approve overtime", "Approve overtime requests routed to you.", _TEAM_APPROVAL),
@@ -412,6 +457,12 @@ def is_payroll_grant(code: str, scope: str) -> bool:
     return perm is not None and perm.payroll_confidential and not implied_by_full_access(code, scope)
 
 
+def is_explicit_access_grant(code: str, scope: str) -> bool:
+    """A grant of any module that full access never implies (payroll-confidential ones included)."""
+    perm = PERMISSIONS_BY_CODE.get(code)
+    return perm is not None and perm.explicit_only and not implied_by_full_access(code, scope)
+
+
 def can_approve_payroll_runs(grants: Iterable[Tuple[str, str]]) -> bool:
     return grants_cover(grants, PAYROLL_RUN_APPROVE, Scope.COMPANY.value)
 
@@ -449,6 +500,7 @@ SELF_SERVICE = [
     ("leave:read", _S),
     ("leave:apply", _S),
     ("holiday:read", _C),
+    ("holiday:choose_optional", _S),
     ("payroll:read", _S),
     ("compensation:read", _S),
     ("asset:read", _S),
@@ -464,6 +516,9 @@ SELF_SERVICE = [
     ("payroll:reimbursements:read", _S),
     ("overtime:request", _S),
     ("task:read", _S),
+    ("shift:read", _S),
+    ("roster:read", _S),
+    ("roster:request", _S),
 ]
 
 
@@ -511,11 +566,13 @@ DEFAULT_ROLES: List[DefaultRole] = [
             "employee:read", "employee:read_confidential", "employee:create", "employee:update",
             "employee:deactivate", "org:manage_hierarchy", "department:manage", "face:enroll",
             "attendance:read", "attendance:regularize", "attendance:kiosk", "location:read", "location:review", "leave:read",
-            "leave:approve", "leave:manage_policy", "holiday:manage", "asset:read", "asset:manage",
+            "leave:approve", "leave:manage_policy", "holiday:manage", "holiday:publish", "asset:read", "asset:manage",
             "asset:assign", "report:read", "report:export", "user:read", "user:invite",
             "user:update", "user:deactivate", "user:assign_role", "role:read",
             "delegation:manage", "audit:read", "email_template:manage", "org:read", "org:manage_branches",
             "org:manage_entities", "org:manage_dimensions", "overtime:approve", "task:approve",
+            "shift:read", "shift:manage", "shift:assign", "roster:read", "roster:plan", "roster:publish",
+            "roster:approve",
         ),
     ),
     DefaultRole(
@@ -581,6 +638,9 @@ DEFAULT_ROLES: List[DefaultRole] = [
             ("delegation:manage", _S),
             ("overtime:approve", _RT),
             ("task:approve", _RT),
+            ("shift:read", _RT),
+            ("roster:read", _RT),
+            ("roster:approve", _RT),
         ),
     ),
     DefaultRole(
@@ -596,6 +656,7 @@ DEFAULT_ROLES: List[DefaultRole] = [
         _company_wide(
             "audit:read", "employee:read", "attendance:read", "leave:read", "holiday:read",
             "report:read", "report:export", "role:read", "user:read", "payroll:audit:read", "payroll:reports:read",
+            "shift:read", "roster:read",
         ),
     ),
 ]

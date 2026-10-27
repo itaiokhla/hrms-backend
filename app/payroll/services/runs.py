@@ -1118,7 +1118,8 @@ def _pending_findings(ctx: _Ctx) -> List[Finding]:
                 + (" (payroll.leave.unapproved_at_cutoff = EXCEPTION)." if blocking else f"; treated as {leave_mode}."),
                 f"PENDING_INPUTS:LEAVE:{row.id}", run_employee_id=row.id, employee_id=employee_id,
                 details={"kind": "LEAVE", "items": leave[:50], "policy": leave_mode}, waivable=blocking,
-                resolutions=("FIX", "WAIVE", "DEFER"), fix_link=f"/leave/approvals?employee_id={employee_id}"))
+                # A page that exists today (LH BUG-10 part 1; /leaves/approvals arrives with LH-M5a).
+                resolutions=("FIX", "WAIVE", "DEFER"), fix_link="/leaves?tab=approvals"))
         others = {"OVERTIME": pending_ot.get(employee_id, 0), "TASK": pending_tasks.get(employee_id, 0),
                   "WAGE_INPUT": pending_wage.get(employee_id, 0)}
         for kind, count in others.items():

@@ -68,6 +68,7 @@ NEVER_DELEGABLE: FrozenSet[str] = frozenset({
     "payroll:run:finalize", "payroll:run:approve", "payroll:bank_details:read_full",
     "payroll:bank_details:approve", "payroll:bank_details:edit", "payroll:funding_accounts:manage",
     "settings:approve_changes", MANAGE_CODE, "delegation:manage", "domain:manage", "face:enroll",
+    "roster:exempt",  # AS spine CV-6 (D-AS-48)
 })
 NEVER_DELEGABLE_PREFIXES = ("payroll:payment:", "user:", "role:")
 DELEGABLE_SCOPES = (Scope.COMPANY, Scope.LEGAL_ENTITY, Scope.PAY_GROUP)

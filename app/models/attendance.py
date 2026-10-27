@@ -14,7 +14,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
 
 from app.models.base import BaseModel, TenantMixin
 
@@ -23,6 +23,9 @@ TRACKING_STATES = ("NOT_APPLICABLE", "ACTIVE", "PAUSED", "STOPPED")
 BREAK_KINDS = ("LUNCH",)
 EVENT_TYPES = ("PUNCH_IN", "LUNCH_IN", "LUNCH_OUT", "PUNCH_OUT", "SESSION_CLOSED", "CORRECTION")
 EVENT_SOURCES = ("self", "kiosk", "manual", "system")
+# Every value attendance.source may hold (spine §3.1; BUG-AS-20): today's writers use the first four; the DB CHECK
+# with the same list arrives in as_m2_punches_sessions (G-06).
+ATTENDANCE_SOURCES = ("self", "kiosk", "manual", "system", "device", "import", "request", "supervisor")
 # What happened to the location check of an event.
 EVENT_LOCATION_STATUSES = ("CAPTURED", "FAILED", "EXCEPTION", "NOT_PROVIDED", "NOT_REQUIRED", "NOT_APPLICABLE")
 SAMPLE_TYPES = ("PUNCH_IN", "LUNCH_IN", "LUNCH_OUT", "PUNCH_OUT", "PERIODIC")
@@ -83,6 +86,13 @@ class Attendance(TenantMixin, BaseModel):
     last_location_at = Column(DateTime(timezone=True), nullable=True)
 
     employee = relationship("Employee", primaryjoin="Attendance.employee_id == Employee.id", foreign_keys=[employee_id])
+
+    @validates("source")
+    def _check_source(self, _key, value):
+        # Every writer goes through here (BUG-AS-20); the DB CHECK follows in as_m2_punches_sessions.
+        if value not in ATTENDANCE_SOURCES:
+            raise ValueError(f"unknown attendance source {value!r}")
+        return value
 
     __table_args__ = (
         ForeignKeyConstraint(

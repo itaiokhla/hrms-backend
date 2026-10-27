@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core import authz, storage
 from app.core.principal import Principal, get_principal, require
 from app.database.db import get_db
-from app.schemas.employees import DepartmentWrite, EmployeeCreate, EmployeeUpdate, ProfileUpdate, ShiftWrite
+from app.schemas.employees import DepartmentWrite, EmployeeCreate, EmployeeUpdate, ProfileUpdate
 from app.services import employee_service
 from app.services.employee_service import FieldAccess, serialize
 
@@ -154,29 +154,4 @@ def update_department(department_id: int, data: DepartmentWrite,
     return {"id": department_id}
 
 
-@router.get("/shifts")
-def list_shifts(principal: Principal = Depends(get_principal), db: Session = Depends(get_db)):
-    from app.models.employee import Shift
-
-    rows = db.query(Shift).filter(Shift.company_id == principal.company_id).order_by(Shift.name).all()
-    return [
-        {"id": s.id, "name": s.name, "start_time": s.start_time, "end_time": s.end_time,
-         "duration_hours": s.duration_hours, "is_flexible": s.is_flexible, "is_active": s.is_active}
-        for s in rows
-    ]
-
-
-@router.post("/shifts")
-def create_shift(data: ShiftWrite, principal: Principal = Depends(require("department:manage")),
-                 db: Session = Depends(get_db)):
-    shift = employee_service.save_shift(db, principal, data)
-    db.commit()
-    return {"id": shift.id}
-
-
-@router.put("/shifts/{shift_id}")
-def update_shift(shift_id: int, data: ShiftWrite, principal: Principal = Depends(require("department:manage")),
-                 db: Session = Depends(get_db)):
-    employee_service.save_shift(db, principal, data, shift_id)
-    db.commit()
-    return {"id": shift_id}
+# GET/POST /shifts and PUT /shifts/{id} moved to app/routes/shift_catalogue.py (AS-M1, IG-AS-09).

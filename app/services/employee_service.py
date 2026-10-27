@@ -250,6 +250,17 @@ def update_employee(db: Session, principal: Principal, employee_id: int, data: E
 
         # Keep placement history: the change becomes a dated assignment instead of an overwrite.
         org_structure_service.record_department_change(db, principal, employee, changes["department_id"])
+    if "shift_id" in changes:
+        from app.services import org_structure_service
+
+        # The shift field edits the placement from the employee-local today (BUG-AS-34); employees.shift_id is
+        # then the display mirror set by the placement sync, not the form value.
+        current = org_structure_service.current_assignment(db, employee.id,
+                                                           org_structure_service.employee_local_today(db, employee))
+        if current is not None:
+            if current.shift_id != changes["shift_id"]:
+                org_structure_service.record_shift_change(db, principal, employee, changes["shift_id"])
+            changes.pop("shift_id")
     for key, value in changes.items():
         setattr(employee, key, value)
     AuditLogService.log(
@@ -442,7 +453,10 @@ def save_shift(db: Session, principal: Principal, data, shift_id: Optional[int] 
     shift = _company_ref(db, Shift, cid, shift_id, "Shift") if shift_id else Shift(company_id=cid)
     if not shift_id:
         db.add(shift)
-    for key, value in data.model_dump().items():
+    values = data.model_dump()
+    if "unpaid_break_minutes" not in data.model_fields_set:
+        values.pop("unpaid_break_minutes", None)  # older clients never send it (BUG-AS-22)
+    for key, value in values.items():
         setattr(shift, key, value)
     db.flush()
     AuditLogService.log(db, principal, "Departments", "SAVE_SHIFT", f"Saved shift '{shift.name}'", "shift", shift.id)

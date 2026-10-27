@@ -82,6 +82,8 @@ class ShiftWrite(StrictModel):
     end_time: str = Field(..., pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     # Decimal hours such as 8.5 (shifts.duration_hours is NUMERIC(4,2) since migration 0016).
     duration_hours: Optional[Annotated[Decimal, Field(gt=0, le=24, max_digits=4, decimal_places=2)]] = None
+    # Unpaid part of duration_hours (BUG-AS-22); a client that omits it leaves the stored value unchanged.
+    unpaid_break_minutes: Optional[int] = Field(None, ge=0, le=1440)
     is_flexible: bool = False
     description: Optional[str] = Field(None, max_length=500)
     is_active: bool = True

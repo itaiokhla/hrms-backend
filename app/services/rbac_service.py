@@ -33,6 +33,7 @@ from app.core.permission_registry import (
     SCOPE_LABELS,
     Scope,
     full_access_grants,
+    is_explicit_access_grant,
     is_payroll_grant,
     is_valid_grant,
     loses_last_payroll_approver,
@@ -85,6 +86,13 @@ def is_payroll_role(role: Role) -> bool:
     if role.is_protected or role.is_full_access:
         return False
     return any(is_payroll_grant(code, scope) for code, scope in role_grants(role))
+
+
+def is_explicit_access_role(role: Role) -> bool:
+    """A non-protected role giving any explicit-only access (payroll or not), which full access never implies."""
+    if role.is_protected or role.is_full_access:
+        return False
+    return any(is_explicit_access_grant(code, scope) for code, scope in role_grants(role))
 
 
 def can_delegate(principal: Principal, code: str, scope: str) -> bool:

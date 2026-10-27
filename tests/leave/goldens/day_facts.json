@@ -1,0 +1,712 @@
+{
+ "alpha/AT-001 Rahul Kapoor/2025": {
+  "digest": "cf105f24729df16bf358b97a104801056a2fc5ceddf2e3f5be9c5e1b48ef035b",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "alpha/AT-001 Rahul Kapoor/2026": {
+  "digest": "03e8745332a505d4c97e5e69b51341d657ddc1887590f6790ec613035c7541db",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 257
+ },
+ "alpha/AT-002 Kavya Nair/2025": {
+  "digest": "cf105f24729df16bf358b97a104801056a2fc5ceddf2e3f5be9c5e1b48ef035b",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "alpha/AT-002 Kavya Nair/2026": {
+  "digest": "03e8745332a505d4c97e5e69b51341d657ddc1887590f6790ec613035c7541db",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 257
+ },
+ "alpha/AT-003 Sunil Rao/2025": {
+  "digest": "cf105f24729df16bf358b97a104801056a2fc5ceddf2e3f5be9c5e1b48ef035b",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "alpha/AT-003 Sunil Rao/2026": {
+  "digest": "03e8745332a505d4c97e5e69b51341d657ddc1887590f6790ec613035c7541db",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 257
+ },
+ "alpha/AT-004 Asha Pillai/2025": {
+  "digest": "1cd29af2d85fa78bb770346b0738eab8065dafe4243f10a9c84c2c6d123df496",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 283
+ },
+ "alpha/AT-004 Asha Pillai/2026": {
+  "digest": "a7fa750ba17b9a7ae5ae4b4f582f67ce1f097f7b4f94158a41887368411de3bd",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-05-01": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 285
+ },
+ "alpha/AT-005 Arjun Mehta/2025": {
+  "digest": "cf105f24729df16bf358b97a104801056a2fc5ceddf2e3f5be9c5e1b48ef035b",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "alpha/AT-005 Arjun Mehta/2026": {
+  "digest": "03e8745332a505d4c97e5e69b51341d657ddc1887590f6790ec613035c7541db",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 257
+ },
+ "alpha/AT-006 Meghna Rao/2025": {
+  "digest": "cf105f24729df16bf358b97a104801056a2fc5ceddf2e3f5be9c5e1b48ef035b",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "alpha/AT-006 Meghna Rao/2026": {
+  "digest": "03e8745332a505d4c97e5e69b51341d657ddc1887590f6790ec613035c7541db",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 257
+ },
+ "alpha/AT-007 Priya Shah/2025": {
+  "digest": "cf105f24729df16bf358b97a104801056a2fc5ceddf2e3f5be9c5e1b48ef035b",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "alpha/AT-007 Priya Shah/2026": {
+  "digest": "03e8745332a505d4c97e5e69b51341d657ddc1887590f6790ec613035c7541db",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 257
+ },
+ "alpha/AT-008 Rohan Verma/2025": {
+  "digest": "cf105f24729df16bf358b97a104801056a2fc5ceddf2e3f5be9c5e1b48ef035b",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "alpha/AT-008 Rohan Verma/2026": {
+  "digest": "03e8745332a505d4c97e5e69b51341d657ddc1887590f6790ec613035c7541db",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 257
+ },
+ "alpha/AT-009 Deepa Nair/2025": {
+  "digest": "cf105f24729df16bf358b97a104801056a2fc5ceddf2e3f5be9c5e1b48ef035b",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "alpha/AT-009 Deepa Nair/2026": {
+  "digest": "03e8745332a505d4c97e5e69b51341d657ddc1887590f6790ec613035c7541db",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 257
+ },
+ "alpha/AT-010 Sameer Khan/2025": {
+  "digest": "cf105f24729df16bf358b97a104801056a2fc5ceddf2e3f5be9c5e1b48ef035b",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "alpha/AT-010 Sameer Khan/2026": {
+  "digest": "03e8745332a505d4c97e5e69b51341d657ddc1887590f6790ec613035c7541db",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 257
+ },
+ "alpha/AT-011 Pooja Kulkarni/2025": {
+  "digest": "cf105f24729df16bf358b97a104801056a2fc5ceddf2e3f5be9c5e1b48ef035b",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "alpha/AT-011 Pooja Kulkarni/2026": {
+  "digest": "03e8745332a505d4c97e5e69b51341d657ddc1887590f6790ec613035c7541db",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 257
+ },
+ "alpha/AT-012 Nitin Gowda/2025": {
+  "digest": "cf105f24729df16bf358b97a104801056a2fc5ceddf2e3f5be9c5e1b48ef035b",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "alpha/AT-012 Nitin Gowda/2026": {
+  "digest": "03e8745332a505d4c97e5e69b51341d657ddc1887590f6790ec613035c7541db",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 257
+ },
+ "alpha/AT-013 Karan Desai/2025": {
+  "digest": "cf105f24729df16bf358b97a104801056a2fc5ceddf2e3f5be9c5e1b48ef035b",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "alpha/AT-013 Karan Desai/2026": {
+  "digest": "03e8745332a505d4c97e5e69b51341d657ddc1887590f6790ec613035c7541db",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 257
+ },
+ "alpha/AT-014 Neha Joshi/2025": {
+  "digest": "1cd29af2d85fa78bb770346b0738eab8065dafe4243f10a9c84c2c6d123df496",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 283
+ },
+ "alpha/AT-014 Neha Joshi/2026": {
+  "digest": "a7fa750ba17b9a7ae5ae4b4f582f67ce1f097f7b4f94158a41887368411de3bd",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-05-01": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 285
+ },
+ "alpha/AT-015 Vikram Singh/2025": {
+  "digest": "1cd29af2d85fa78bb770346b0738eab8065dafe4243f10a9c84c2c6d123df496",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 283
+ },
+ "alpha/AT-015 Vikram Singh/2026": {
+  "digest": "a7fa750ba17b9a7ae5ae4b4f582f67ce1f097f7b4f94158a41887368411de3bd",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-05-01": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 285
+ },
+ "alpha/AT-016 Kiran Joshi/2025": {
+  "digest": "1cd29af2d85fa78bb770346b0738eab8065dafe4243f10a9c84c2c6d123df496",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 283
+ },
+ "alpha/AT-016 Kiran Joshi/2026": {
+  "digest": "a7fa750ba17b9a7ae5ae4b4f582f67ce1f097f7b4f94158a41887368411de3bd",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-05-01": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 285
+ },
+ "alpha/AT-017 Ravi Kumar/2025": {
+  "digest": "1cd29af2d85fa78bb770346b0738eab8065dafe4243f10a9c84c2c6d123df496",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 283
+ },
+ "alpha/AT-017 Ravi Kumar/2026": {
+  "digest": "a7fa750ba17b9a7ae5ae4b4f582f67ce1f097f7b4f94158a41887368411de3bd",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-05-01": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 285
+ },
+ "alpha/AT-018 Sunita Patil/2025": {
+  "digest": "1cd29af2d85fa78bb770346b0738eab8065dafe4243f10a9c84c2c6d123df496",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 283
+ },
+ "alpha/AT-018 Sunita Patil/2026": {
+  "digest": "a7fa750ba17b9a7ae5ae4b4f582f67ce1f097f7b4f94158a41887368411de3bd",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-05-01": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 285
+ },
+ "alpha/AT-019 Imran Shaikh/2025": {
+  "digest": "1cd29af2d85fa78bb770346b0738eab8065dafe4243f10a9c84c2c6d123df496",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 283
+ },
+ "alpha/AT-019 Imran Shaikh/2026": {
+  "digest": "a7fa750ba17b9a7ae5ae4b4f582f67ce1f097f7b4f94158a41887368411de3bd",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-05-01": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 285
+ },
+ "alpha/AT-020 Prakash More/2025": {
+  "digest": "1cd29af2d85fa78bb770346b0738eab8065dafe4243f10a9c84c2c6d123df496",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 283
+ },
+ "alpha/AT-020 Prakash More/2026": {
+  "digest": "a7fa750ba17b9a7ae5ae4b4f582f67ce1f097f7b4f94158a41887368411de3bd",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-05-01": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 285
+ },
+ "alpha/AT-021 Ramesh Yadav/2025": {
+  "digest": "1cd29af2d85fa78bb770346b0738eab8065dafe4243f10a9c84c2c6d123df496",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 283
+ },
+ "alpha/AT-021 Ramesh Yadav/2026": {
+  "digest": "a7fa750ba17b9a7ae5ae4b4f582f67ce1f097f7b4f94158a41887368411de3bd",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-05-01": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 76,
+  "working": 285
+ },
+ "alpha/AT-022 Leena D'Souza/2025": {
+  "digest": "13b5bed2d898e5e3bf001911fe1a784fc16915bde67c04171808f18884c14812",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 52,
+  "working": 307
+ },
+ "alpha/AT-022 Leena D'Souza/2026": {
+  "digest": "7a953beb72a57f5b31ac832f5005744a7c32f7a8b719b09198d6bad0146682b4",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 52,
+  "working": 310
+ },
+ "alpha/AT-023 Anjali Menon/2025": {
+  "digest": "13b5bed2d898e5e3bf001911fe1a784fc16915bde67c04171808f18884c14812",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 52,
+  "working": 307
+ },
+ "alpha/AT-023 Anjali Menon/2026": {
+  "digest": "7a953beb72a57f5b31ac832f5005744a7c32f7a8b719b09198d6bad0146682b4",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 52,
+  "working": 310
+ },
+ "alpha/AT-024 Omar Haddad/2025": {
+  "digest": "81e4dedb8d66b98a2ebfd116b3b956474c848fc335de7580c51c9ee133766242",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "alpha/AT-024 Omar Haddad/2026": {
+  "digest": "a38e8d59816c9e322d8751f89d8d4d40b10aee505b04df77aeda9f71ba40b63d",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 258
+ },
+ "alpha/AT-025 Farah Ali/2025": {
+  "digest": "81e4dedb8d66b98a2ebfd116b3b956474c848fc335de7580c51c9ee133766242",
+  "employed": 360,
+  "holidays": {
+   "2025-10-02": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "alpha/AT-025 Farah Ali/2026": {
+  "digest": "a38e8d59816c9e322d8751f89d8d4d40b10aee505b04df77aeda9f71ba40b63d",
+  "employed": 365,
+  "holidays": {
+   "2026-01-26": "COMPANY",
+   "2026-10-02": "COMPANY",
+   "2026-11-09": "OPTIONAL_NOT_AVAILED",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 258
+ },
+ "beta/BT-001 Mariam Saeed/2025": {
+  "digest": "ad41d0aa9b4197b6284c1f922ea8a0a42ec2fdb08eacf48a9c3d81315c46d302",
+  "employed": 360,
+  "holidays": {
+   "2025-12-02": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 257
+ },
+ "beta/BT-001 Mariam Saeed/2026": {
+  "digest": "80372db19dd89797f37c28ae044cb29be87d18b6c9e10bbc250e0637dc0109c8",
+  "employed": 365,
+  "holidays": {
+   "2026-03-20": "COMPANY",
+   "2026-12-02": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 259
+ },
+ "beta/BT-002 Yusuf Rahman/2025": {
+  "digest": "5938ae42576a9fed9079ffcaf6773fe37ed899e7deaf00fcbed99b9a44463bc9",
+  "employed": 360,
+  "holidays": {
+   "2025-12-02": "COMPANY"
+  },
+  "weekly_offs": 52,
+  "working": 308
+ },
+ "beta/BT-002 Yusuf Rahman/2026": {
+  "digest": "deeae2301053cc0331bf2b63e5483c6b9d456c7c3dccbb4a6e7385037c3f3b83",
+  "employed": 365,
+  "holidays": {
+   "2026-03-20": "COMPANY",
+   "2026-12-02": "COMPANY"
+  },
+  "weekly_offs": 52,
+  "working": 311
+ },
+ "beta/BT-003 Layla Hassan/2025": {
+  "digest": "5938ae42576a9fed9079ffcaf6773fe37ed899e7deaf00fcbed99b9a44463bc9",
+  "employed": 360,
+  "holidays": {
+   "2025-12-02": "COMPANY"
+  },
+  "weekly_offs": 52,
+  "working": 308
+ },
+ "beta/BT-003 Layla Hassan/2026": {
+  "digest": "deeae2301053cc0331bf2b63e5483c6b9d456c7c3dccbb4a6e7385037c3f3b83",
+  "employed": 365,
+  "holidays": {
+   "2026-03-20": "COMPANY",
+   "2026-12-02": "COMPANY"
+  },
+  "weekly_offs": 52,
+  "working": 311
+ },
+ "beta/BT-004 Maria Santos/2025": {
+  "digest": "b27b99007b6f82197ae69758829d168d629d633e69ca23e4c3c4c99f17215d7a",
+  "employed": 360,
+  "holidays": {
+   "2025-12-02": "COMPANY"
+  },
+  "weekly_offs": 52,
+  "working": 308
+ },
+ "beta/BT-004 Maria Santos/2026": {
+  "digest": "a1b460960b15559f1636dfd25ba84da5f5ad3e542f68a85f8ba42ae8963c8ace",
+  "employed": 365,
+  "holidays": {
+   "2026-03-20": "COMPANY",
+   "2026-12-02": "COMPANY"
+  },
+  "weekly_offs": 52,
+  "working": 311
+ },
+ "gamma/GT-001 Emily Clark/2025": {
+  "digest": "25dc5ed0baa42eb7146ab95cfde48b9070d18474cc1dcf509bd1bab08400ea84",
+  "employed": 360,
+  "holidays": {
+   "2025-11-27": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "gamma/GT-001 Emily Clark/2026": {
+  "digest": "055135e8d6be4777fa4bee82e4b2d0319c255fe1c1bcfc5e5783c481f6390053",
+  "employed": 365,
+  "holidays": {
+   "2026-07-03": "COMPANY",
+   "2026-11-26": "COMPANY",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 258
+ },
+ "gamma/GT-002 Jordan Lee/2025": {
+  "digest": "25dc5ed0baa42eb7146ab95cfde48b9070d18474cc1dcf509bd1bab08400ea84",
+  "employed": 360,
+  "holidays": {
+   "2025-11-27": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "gamma/GT-002 Jordan Lee/2026": {
+  "digest": "055135e8d6be4777fa4bee82e4b2d0319c255fe1c1bcfc5e5783c481f6390053",
+  "employed": 365,
+  "holidays": {
+   "2026-07-03": "COMPANY",
+   "2026-11-26": "COMPANY",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 258
+ },
+ "gamma/GT-003 Carlos Diaz/2025": {
+  "digest": "c567c5166dc74817b32585b94f0273d95c0bab2519de584acfad12972d3b850e",
+  "employed": 360,
+  "holidays": {
+   "2025-11-27": "COMPANY",
+   "2025-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 256
+ },
+ "gamma/GT-003 Carlos Diaz/2026": {
+  "digest": "5b8511bd9d8141e6d2e7894618ed48d8349f80c3403c86d671ec40ab7919d7bb",
+  "employed": 365,
+  "holidays": {
+   "2026-07-03": "COMPANY",
+   "2026-11-26": "COMPANY",
+   "2026-12-25": "COMPANY"
+  },
+  "weekly_offs": 104,
+  "working": 258
+ }
+}

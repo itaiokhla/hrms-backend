@@ -26,6 +26,8 @@ WorkerClass = Literal[WORKER_CLASSES]  # type: ignore[valid-type]
 READ = require_any(*org_dimensions.READ_CODES)
 READ_PAY_GROUPS = require_any(*org_dimensions.PAY_GROUP_READ_CODES)
 WRITE = require("org:manage_dimensions")
+# BUG-13 (LH 14 WI-1.8): calendar and work-week writes need the holiday permission, not org:manage_dimensions.
+HOLIDAY_WRITE = require("holiday:manage")
 
 
 class _Common(StrictModel):
@@ -105,7 +107,7 @@ def _write(db: Session, principal: Principal, request: Request, kind: str, data:
     return idempotency.execute(db, principal, request, handler, body=data.model_dump(mode="json", exclude_unset=True))
 
 
-def _crud(path: str, kind: str, model: type, save: Callable, read=READ) -> None:
+def _crud(path: str, kind: str, model: type, save: Callable, read=READ, write=WRITE) -> None:
     """GET list, POST, GET one and PATCH for one dimension."""
 
     @router.get(f"/{path}", name=f"list_{kind}")
@@ -114,7 +116,7 @@ def _crud(path: str, kind: str, model: type, save: Callable, read=READ) -> None:
         return org_dimensions.list_rows(db, principal, kind, status=status, legal_entity_id=legal_entity_id)
 
     @router.post(f"/{path}", status_code=201, name=f"create_{kind}")
-    def create(data: model, request: Request, principal: Principal = Depends(WRITE),  # type: ignore[valid-type]
+    def create(data: model, request: Request, principal: Principal = Depends(write),  # type: ignore[valid-type]
                db: Session = Depends(get_db)):
         return _write(db, principal, request, kind, data, save)
 
@@ -124,7 +126,7 @@ def _crud(path: str, kind: str, model: type, save: Callable, read=READ) -> None:
 
     @router.patch(f"/{path}/{{object_id}}", name=f"update_{kind}")
     def update(object_id: int, data: model, request: Request,  # type: ignore[valid-type]
-               principal: Principal = Depends(WRITE), db: Session = Depends(get_db)):
+               principal: Principal = Depends(write), db: Session = Depends(get_db)):
         return _write(db, principal, request, kind, data, save, object_id)
 
 
@@ -133,12 +135,13 @@ _crud("grades", "grade", GradeWrite, org_dimensions.save_grade)
 _crud("cost-centers", "cost_center", CostCenterWrite, org_dimensions.save_cost_center)
 _crud("employment-types", "employment_type", EmploymentTypeWrite, org_dimensions.save_employment_type)
 _crud("designations", "designation", DesignationWrite, org_dimensions.save_designation)
-_crud("work-weeks", "work_week", WorkWeekWrite, org_dimensions.save_work_week)
-_crud("holiday-calendars", "holiday_calendar", HolidayCalendarWrite, org_dimensions.save_holiday_calendar)
+_crud("work-weeks", "work_week", WorkWeekWrite, org_dimensions.save_work_week, write=HOLIDAY_WRITE)
+_crud("holiday-calendars", "holiday_calendar", HolidayCalendarWrite, org_dimensions.save_holiday_calendar,
+      write=HOLIDAY_WRITE)
 
 
 @router.put("/branches/{branch_id}/calendar")
-def link_branch(branch_id: int, data: BranchLinkWrite, request: Request, principal: Principal = Depends(WRITE),
+def link_branch(branch_id: int, data: BranchLinkWrite, request: Request, principal: Principal = Depends(HOLIDAY_WRITE),
                 db: Session = Depends(get_db)):
     """Choose a branch's holiday calendar and/or work week."""
     def handler():

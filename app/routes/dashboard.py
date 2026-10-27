@@ -32,7 +32,8 @@ def dashboard(principal: Principal = Depends(get_principal), db: Session = Depen
     if principal.employee_id:
         data["me"] = {
             "attendance": attendance_service.my_today(db, principal),
-            "leave_balance": leave_service.balances(db, principal.company_id, principal.employee_id, date.today().year),
+            # The year of the employee's own today (LH BUG-07), resolved by balances() when no year is given.
+            "leave_balance": leave_service.balances(db, principal.company_id, principal.employee_id),
         }
         if principal.has("payroll:read", Scope.SELF.value):
             payslips = payroll_service.my_payslips(db, principal)

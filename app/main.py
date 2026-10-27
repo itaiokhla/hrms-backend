@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import settings
+from app.core import request_context
 from app.core.errors import AppError
 from app.database.db import TenantContextError, rls_status
 from app.routes import ROUTERS
@@ -33,7 +34,17 @@ app.add_middleware(
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
-    response = await call_next(request)
+    # Correlation for audit rows (LH-M0 WI-0.5): a validated client id or a new one, echoed back.
+    rid = request_context.accept_request_id(request.headers.get(request_context.REQUEST_ID_HEADER))
+    request.state.request_id = rid
+    tokens = (request_context.request_id.set(rid),
+              request_context.user_agent.set(request_context.clean_user_agent(request.headers.get("user-agent"))))
+    try:
+        response = await call_next(request)
+    finally:
+        request_context.request_id.reset(tokens[0])
+        request_context.user_agent.reset(tokens[1])
+    response.headers.setdefault(request_context.REQUEST_ID_HEADER, rid)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -110,13 +121,13 @@ def health():
         return JSONResponse(status_code=503, content={"status": "degraded"})
 
 
-def _error(status_code: int, detail, code: str):
-    return JSONResponse(status_code=status_code, content={"detail": detail, "code": code})
+def _error(status_code: int, detail, code: str, extra=None):
+    return JSONResponse(status_code=status_code, content={"detail": detail, "code": code, **(extra or {})})
 
 
 @app.exception_handler(AppError)
 async def app_error_handler(request: Request, exc: AppError):
-    response = _error(exc.status_code, exc.detail, exc.code or "ERROR")
+    response = _error(exc.status_code, exc.detail, exc.code or "ERROR", getattr(exc, "extra", None))
     for key, value in (exc.headers or {}).items():
         response.headers[key] = value
     return response

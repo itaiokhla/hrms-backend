@@ -285,15 +285,23 @@ def active_delegators_for(
     """Employees whose `module` approvals the delegate may act on, on `on` (revoked or expired never count)."""
     if delegate_employee_id is None:
         return []
-    on = on or date.today()
-    rows = db.query(ApprovalDelegation.delegator_employee_id).filter(
+    query = db.query(ApprovalDelegation.delegator_employee_id, ApprovalDelegation.starts_on,
+                     ApprovalDelegation.ends_on).filter(
         ApprovalDelegation.delegate_employee_id == delegate_employee_id,
         ApprovalDelegation.module == module,
         ApprovalDelegation.revoked_at.is_(None),
-        ApprovalDelegation.starts_on <= on,
-        ApprovalDelegation.ends_on >= on,
-    ).all()
-    return [r[0] for r in rows]
+    )
+    if on is not None:
+        return [r[0] for r in query.filter(ApprovalDelegation.starts_on <= on, ApprovalDelegation.ends_on >= on)]
+    # Without a date, each delegation is in force on its delegator's own today (LH BUG-07), not the server's.
+    from app.services.org_structure_service import employee_local_today
+
+    active = []
+    for delegator_id, starts_on, ends_on in query.all():
+        delegator = db.get(Employee, delegator_id)
+        if delegator is not None and starts_on <= employee_local_today(db, delegator) <= ends_on:
+            active.append(delegator_id)
+    return active
 
 
 def delegation_candidates(db: Session, principal: Principal, q: Optional[str] = None) -> List[dict]:

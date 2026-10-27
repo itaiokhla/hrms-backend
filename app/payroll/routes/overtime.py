@@ -13,6 +13,7 @@ from app.models.work_items import MAX_OVERTIME_MINUTES, OVERTIME_STATUSES
 from app.payroll.api_types import StrictModel
 from app.payroll.services import idempotency
 from app.payroll.services import overtime as service
+from app.services import saved_views
 
 router = APIRouter(prefix="/api/v1/overtime", tags=["Overtime"])
 
@@ -100,16 +101,32 @@ def list_entries(
     status: Optional[StatusName] = Query(None),
     start: Optional[dt.date] = Query(None),
     end: Optional[dt.date] = Query(None),
-    mine: bool = Query(False, description="Only the caller's own overtime"),
-    awaiting: bool = Query(False, description="Only entries awaiting the caller's approval"),
+    mine: Optional[bool] = Query(None, description="Only the caller's own overtime"),
+    awaiting: Optional[bool] = Query(None, description="Only entries awaiting the caller's approval"),
+    q: Optional[str] = Query(None, max_length=100, description="Employee name or code (X-M3 pilot list)"),
+    sort: Optional[str] = Query(None, max_length=20, description="date | employee | minutes | status, '-' = desc"),
+    view_id: Optional[str] = Query(None, max_length=72, description="A saved view id or sys:<key>"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=service.MAX_LIST),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ):
-    total, items = service.list_entries(db, principal, employee_id=employee_id, status=status, start=start, end=end,
-                                        mine=mine, awaiting=awaiting, skip=skip, limit=limit)
-    return {"total": total, "items": items}
+    # X-M3 pilot (list key overtime.entries): explicit parameters win over the saved view's stored values.
+    params = {"employee_id": employee_id, "status": status, "start": start, "end": end, "mine": mine,
+              "awaiting": awaiting, "q": q, "sort": sort}
+    applied = None
+    if view_id:
+        stored, applied = saved_views.resolve_view(db, principal, "overtime.entries", view_id)
+        params = saved_views.apply_view(params, stored)
+    total, items = service.list_entries(
+        db, principal, employee_id=params.get("employee_id"), status=params.get("status"),
+        start=_date(params.get("start")), end=_date(params.get("end")), mine=bool(params.get("mine")),
+        awaiting=bool(params.get("awaiting")), q=params.get("q"), sort=params.get("sort"), skip=skip, limit=limit)
+    return {"total": total, "items": items, "skip": skip, "limit": limit, "applied_view": applied}
+
+
+def _date(value):
+    return dt.date.fromisoformat(value) if isinstance(value, str) else value
 
 
 @router.post("/entries", status_code=201)

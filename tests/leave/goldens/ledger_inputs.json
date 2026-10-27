@@ -1,0 +1,1586 @@
+{
+ "alpha/AT-001 Rahul Kapoor": {
+  "days": {
+   "2026-11-02": {
+    "assignment_id": 2,
+    "employed": true,
+    "holiday": {
+     "content_hash": "51c36a0ce7606ef6aaa59f6e06c4b92b94074a4c45102826918a9a5312e6f06a",
+     "holiday_id": 6,
+     "name": "Kannada Rajyotsava",
+     "type": "COMPANY"
+    },
+    "segment": "2",
+    "work_week_id": 1
+   },
+   "2026-11-09": {
+    "assignment_id": 2,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "2",
+    "work_week_id": 1
+   },
+   "2026-12-25": {
+    "assignment_id": 2,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "2",
+    "work_week_id": 1
+   },
+   "2027-01-26": {
+    "assignment_id": 2,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "2",
+    "work_week_id": 1
+   }
+  },
+  "digest": "21e0fca8240318c1208c7f642c8e5935341b17a7d8e9b0f20ded7ec2d11b2b8c"
+ },
+ "alpha/AT-002 Kavya Nair": {
+  "days": {
+   "2026-11-02": {
+    "assignment_id": 3,
+    "employed": true,
+    "holiday": {
+     "content_hash": "51c36a0ce7606ef6aaa59f6e06c4b92b94074a4c45102826918a9a5312e6f06a",
+     "holiday_id": 6,
+     "name": "Kannada Rajyotsava",
+     "type": "COMPANY"
+    },
+    "segment": "3",
+    "work_week_id": 1
+   },
+   "2026-11-09": {
+    "assignment_id": 3,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "3",
+    "work_week_id": 1
+   },
+   "2026-12-25": {
+    "assignment_id": 3,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "3",
+    "work_week_id": 1
+   },
+   "2027-01-26": {
+    "assignment_id": 3,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "3",
+    "work_week_id": 1
+   }
+  },
+  "digest": "7b4fe0d07098f009a3109b41dfa0e71c078770d80c2a944b6ecfabc95954d30a"
+ },
+ "alpha/AT-003 Sunil Rao": {
+  "days": {
+   "2026-11-02": {
+    "assignment_id": 4,
+    "employed": true,
+    "holiday": {
+     "content_hash": "51c36a0ce7606ef6aaa59f6e06c4b92b94074a4c45102826918a9a5312e6f06a",
+     "holiday_id": 6,
+     "name": "Kannada Rajyotsava",
+     "type": "COMPANY"
+    },
+    "segment": "4",
+    "work_week_id": 1
+   },
+   "2026-11-09": {
+    "assignment_id": 4,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "4",
+    "work_week_id": 1
+   },
+   "2026-12-25": {
+    "assignment_id": 4,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "4",
+    "work_week_id": 1
+   },
+   "2027-01-26": {
+    "assignment_id": 4,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "4",
+    "work_week_id": 1
+   }
+  },
+  "digest": "87c5978872fdd80bb5d1f7a173ceeb97fb835b29c394fae579d2d0ff060d56f2"
+ },
+ "alpha/AT-004 Asha Pillai": {
+  "days": {
+   "2026-11-09": {
+    "assignment_id": 5,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "5",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2026-12-25": {
+    "assignment_id": 5,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "5",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2027-01-26": {
+    "assignment_id": 5,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "5",
+    "standard_hours": "8",
+    "work_week_id": 2
+   }
+  },
+  "digest": "9e0cbb2d99471cac9be5ce4971ddf6b0ad9dd5052a67a3386c97717b31196602"
+ },
+ "alpha/AT-005 Arjun Mehta": {
+  "days": {
+   "2026-11-02": {
+    "assignment_id": 6,
+    "employed": true,
+    "holiday": {
+     "content_hash": "51c36a0ce7606ef6aaa59f6e06c4b92b94074a4c45102826918a9a5312e6f06a",
+     "holiday_id": 6,
+     "name": "Kannada Rajyotsava",
+     "type": "COMPANY"
+    },
+    "segment": "6",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2026-11-09": {
+    "assignment_id": 6,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "6",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2026-12-25": {
+    "assignment_id": 6,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "6",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2027-01-26": {
+    "assignment_id": 6,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "6",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   }
+  },
+  "digest": "b627a2321f40c40f263a3b748c0d77c47d10c7eb3daf86fae5011873b2f74025"
+ },
+ "alpha/AT-006 Meghna Rao": {
+  "days": {
+   "2026-11-02": {
+    "assignment_id": 7,
+    "employed": true,
+    "holiday": {
+     "content_hash": "51c36a0ce7606ef6aaa59f6e06c4b92b94074a4c45102826918a9a5312e6f06a",
+     "holiday_id": 6,
+     "name": "Kannada Rajyotsava",
+     "type": "COMPANY"
+    },
+    "segment": "7",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2026-11-09": {
+    "assignment_id": 7,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "7",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2026-12-25": {
+    "assignment_id": 7,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "7",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2026-12-30": {
+    "assignment_id": 7,
+    "employed": true,
+    "leaves": [
+     {
+      "content_hash": "e10ed67d5229d9b25235d928f1c254787aa0282c05aec9fb19722e86c1bc1a3f",
+      "counts_non_working_days": false,
+      "leave_id": 3,
+      "leave_type_code": "casual",
+      "partial_percent": null,
+      "pay_treatment": "FULL",
+      "portion": "FULL",
+      "tiered": null
+     }
+    ],
+    "segment": "7",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2026-12-31": {
+    "assignment_id": 7,
+    "employed": true,
+    "leaves": [
+     {
+      "content_hash": "e10ed67d5229d9b25235d928f1c254787aa0282c05aec9fb19722e86c1bc1a3f",
+      "counts_non_working_days": false,
+      "leave_id": 3,
+      "leave_type_code": "casual",
+      "partial_percent": null,
+      "pay_treatment": "FULL",
+      "portion": "FULL",
+      "tiered": null
+     }
+    ],
+    "segment": "7",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2027-01-01": {
+    "assignment_id": 7,
+    "employed": true,
+    "leaves": [
+     {
+      "content_hash": "e10ed67d5229d9b25235d928f1c254787aa0282c05aec9fb19722e86c1bc1a3f",
+      "counts_non_working_days": false,
+      "leave_id": 3,
+      "leave_type_code": "casual",
+      "partial_percent": null,
+      "pay_treatment": "FULL",
+      "portion": "FULL",
+      "tiered": null
+     }
+    ],
+    "segment": "7",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2027-01-26": {
+    "assignment_id": 7,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "7",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   }
+  },
+  "digest": "a4cde536dc34723263243e95276e3cde7b880c7b289acadbd19f2b43ad4892fd"
+ },
+ "alpha/AT-007 Priya Shah": {
+  "days": {
+   "2026-11-02": {
+    "assignment_id": 8,
+    "employed": true,
+    "holiday": {
+     "content_hash": "51c36a0ce7606ef6aaa59f6e06c4b92b94074a4c45102826918a9a5312e6f06a",
+     "holiday_id": 6,
+     "name": "Kannada Rajyotsava",
+     "type": "COMPANY"
+    },
+    "segment": "8",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2026-11-09": {
+    "assignment_id": 8,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "8",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2026-11-16": {
+    "assignment_id": 8,
+    "employed": true,
+    "leaves": [
+     {
+      "content_hash": "df7b902aed5d17fe9a8bbaba06cfee5a71be1ebb8aad4dc29a5d541a0ef293ce",
+      "counts_non_working_days": false,
+      "leave_id": 1,
+      "leave_type_code": "casual",
+      "partial_percent": null,
+      "pay_treatment": "FULL",
+      "portion": "FULL",
+      "tiered": null
+     }
+    ],
+    "segment": "8",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2026-11-17": {
+    "assignment_id": 8,
+    "employed": true,
+    "leaves": [
+     {
+      "content_hash": "df7b902aed5d17fe9a8bbaba06cfee5a71be1ebb8aad4dc29a5d541a0ef293ce",
+      "counts_non_working_days": false,
+      "leave_id": 1,
+      "leave_type_code": "casual",
+      "partial_percent": null,
+      "pay_treatment": "FULL",
+      "portion": "FULL",
+      "tiered": null
+     }
+    ],
+    "segment": "8",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2026-12-25": {
+    "assignment_id": 8,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "8",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2027-01-26": {
+    "assignment_id": 8,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "8",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   }
+  },
+  "digest": "e85211515eb30339232da659cbfbae228e1dcd958379d71d91e20d33e9ee2be8"
+ },
+ "alpha/AT-008 Rohan Verma": {
+  "days": {
+   "2026-11-02": {
+    "assignment_id": 9,
+    "employed": true,
+    "holiday": {
+     "content_hash": "51c36a0ce7606ef6aaa59f6e06c4b92b94074a4c45102826918a9a5312e6f06a",
+     "holiday_id": 6,
+     "name": "Kannada Rajyotsava",
+     "type": "COMPANY"
+    },
+    "segment": "9",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2026-11-09": {
+    "assignment_id": 9,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "9",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2026-12-25": {
+    "assignment_id": 9,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "9",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   },
+   "2027-01-26": {
+    "assignment_id": 9,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "9",
+    "standard_hours": "8.25",
+    "work_week_id": 1
+   }
+  },
+  "digest": "292cedf41497af3f22aadc156f6744764ee6fa2c98cc5723952233cd016497b3"
+ },
+ "alpha/AT-009 Deepa Nair": {
+  "days": {
+   "2026-11-02": {
+    "assignment_id": 10,
+    "employed": true,
+    "holiday": {
+     "content_hash": "51c36a0ce7606ef6aaa59f6e06c4b92b94074a4c45102826918a9a5312e6f06a",
+     "holiday_id": 6,
+     "name": "Kannada Rajyotsava",
+     "type": "COMPANY"
+    },
+    "segment": "10",
+    "standard_hours": "8",
+    "work_week_id": 1
+   },
+   "2026-11-09": {
+    "assignment_id": 10,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "10",
+    "standard_hours": "8",
+    "work_week_id": 1
+   },
+   "2026-12-25": {
+    "assignment_id": 10,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "10",
+    "standard_hours": "8",
+    "work_week_id": 1
+   },
+   "2027-01-26": {
+    "assignment_id": 10,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "10",
+    "standard_hours": "8",
+    "work_week_id": 1
+   }
+  },
+  "digest": "c4a9363b3e33446c8a7caf0ed5a29e8d939f9060c0301d0142df034d8cfdaedc"
+ },
+ "alpha/AT-010 Sameer Khan": {
+  "days": {
+   "2026-11-02": {
+    "assignment_id": 11,
+    "employed": true,
+    "holiday": {
+     "content_hash": "51c36a0ce7606ef6aaa59f6e06c4b92b94074a4c45102826918a9a5312e6f06a",
+     "holiday_id": 6,
+     "name": "Kannada Rajyotsava",
+     "type": "COMPANY"
+    },
+    "segment": "11",
+    "standard_hours": "8",
+    "work_week_id": 1
+   },
+   "2026-11-04": {
+    "assignment_id": 11,
+    "employed": true,
+    "leaves": [
+     {
+      "content_hash": "b22a5365a0312bb5ed57aa11c7d7c562707e828967cb8093fe9e410ec476afa6",
+      "counts_non_working_days": false,
+      "leave_id": 8,
+      "leave_type_code": "sick",
+      "partial_percent": null,
+      "pay_treatment": "FULL",
+      "portion": "SECOND_HALF",
+      "tiered": null
+     }
+    ],
+    "segment": "11",
+    "standard_hours": "8",
+    "work_week_id": 1
+   },
+   "2026-11-09": {
+    "assignment_id": 11,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "11",
+    "standard_hours": "8",
+    "work_week_id": 1
+   },
+   "2026-12-25": {
+    "assignment_id": 11,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "11",
+    "standard_hours": "8",
+    "work_week_id": 1
+   },
+   "2027-01-26": {
+    "assignment_id": 11,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "11",
+    "standard_hours": "8",
+    "work_week_id": 1
+   }
+  },
+  "digest": "09d166af27f66ea145fe88a1e0752595beccfaedd9ebc34852d50c59d5c70ddb"
+ },
+ "alpha/AT-011 Pooja Kulkarni": {
+  "days": {
+   "2026-11-02": {
+    "assignment_id": 12,
+    "employed": true,
+    "holiday": {
+     "content_hash": "51c36a0ce7606ef6aaa59f6e06c4b92b94074a4c45102826918a9a5312e6f06a",
+     "holiday_id": 6,
+     "name": "Kannada Rajyotsava",
+     "type": "COMPANY"
+    },
+    "segment": "12",
+    "standard_hours": "8",
+    "work_week_id": 1
+   },
+   "2026-11-09": {
+    "assignment_id": 12,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "12",
+    "standard_hours": "8",
+    "work_week_id": 1
+   },
+   "2026-12-25": {
+    "assignment_id": 12,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "12",
+    "standard_hours": "8",
+    "work_week_id": 1
+   },
+   "2027-01-26": {
+    "assignment_id": 12,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "12",
+    "standard_hours": "8",
+    "work_week_id": 1
+   }
+  },
+  "digest": "52059699fbae42d68a586ffe03cc2d1685660066d410c073d4bb288be68fd9cf"
+ },
+ "alpha/AT-012 Nitin Gowda": {
+  "days": {
+   "2026-11-02": {
+    "assignment_id": 13,
+    "employed": true,
+    "holiday": {
+     "content_hash": "51c36a0ce7606ef6aaa59f6e06c4b92b94074a4c45102826918a9a5312e6f06a",
+     "holiday_id": 6,
+     "name": "Kannada Rajyotsava",
+     "type": "COMPANY"
+    },
+    "segment": "13",
+    "work_week_id": 1
+   },
+   "2026-11-09": {
+    "assignment_id": 13,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "13",
+    "work_week_id": 1
+   },
+   "2026-12-25": {
+    "assignment_id": 13,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "13",
+    "work_week_id": 1
+   },
+   "2027-01-26": {
+    "assignment_id": 13,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "13",
+    "work_week_id": 1
+   }
+  },
+  "digest": "ea200f0dc89ab0e8833bd491f15751838dfd82143be6d093f12f54d88aefcd98"
+ },
+ "alpha/AT-013 Karan Desai": {
+  "days": {
+   "2026-11-02": {
+    "assignment_id": 14,
+    "employed": true,
+    "holiday": {
+     "content_hash": "51c36a0ce7606ef6aaa59f6e06c4b92b94074a4c45102826918a9a5312e6f06a",
+     "holiday_id": 6,
+     "name": "Kannada Rajyotsava",
+     "type": "COMPANY"
+    },
+    "segment": "14",
+    "work_week_id": 1
+   },
+   "2026-11-09": {
+    "assignment_id": 14,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "14",
+    "work_week_id": 1
+   },
+   "2026-12-25": {
+    "assignment_id": 14,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "14",
+    "work_week_id": 1
+   },
+   "2027-01-26": {
+    "assignment_id": 14,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "14",
+    "work_week_id": 1
+   }
+  },
+  "digest": "47ae17d6586ffbbdb4307d20674fc87e872a41bed6b14baae744bcaabffae918"
+ },
+ "alpha/AT-014 Neha Joshi": {
+  "days": {
+   "2026-11-09": {
+    "assignment_id": 15,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "15",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2026-12-25": {
+    "assignment_id": 15,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "15",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2027-01-26": {
+    "assignment_id": 15,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "15",
+    "standard_hours": "8",
+    "work_week_id": 2
+   }
+  },
+  "digest": "16194d4270fefb3edc2273cb4acc510ef9634ef85eecceb10fdc4c22a00ff3ac"
+ },
+ "alpha/AT-015 Vikram Singh": {
+  "days": {
+   "2026-11-09": {
+    "assignment_id": 16,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "16",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2026-12-25": {
+    "assignment_id": 16,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "16",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2027-01-26": {
+    "assignment_id": 16,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "16",
+    "standard_hours": "8",
+    "work_week_id": 2
+   }
+  },
+  "digest": "b1fc8262f1d0d5970b045027622378d210eddd64dec2746291d56f5dcca28a43"
+ },
+ "alpha/AT-016 Kiran Joshi": {
+  "days": {
+   "2026-11-09": {
+    "assignment_id": 17,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "17",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2026-12-25": {
+    "assignment_id": 17,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "17",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2027-01-26": {
+    "assignment_id": 17,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "17",
+    "standard_hours": "8",
+    "work_week_id": 2
+   }
+  },
+  "digest": "e6a689b08941216d3edf1aad88af6e552f061625b57c9d11f26e45c32724e866"
+ },
+ "alpha/AT-017 Ravi Kumar": {
+  "days": {
+   "2026-11-09": {
+    "assignment_id": 18,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "18",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2026-11-12": {
+    "assignment_id": 18,
+    "employed": true,
+    "leaves": [
+     {
+      "content_hash": "c1cc23c710edc2ad70272deeaf71741fdd0cf148437d6a0457eb11ca51d4d5f6",
+      "counts_non_working_days": false,
+      "leave_id": 4,
+      "leave_type_code": "earned",
+      "partial_percent": null,
+      "pay_treatment": "FULL",
+      "portion": "FULL",
+      "tiered": null
+     }
+    ],
+    "segment": "18",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2026-11-13": {
+    "assignment_id": 18,
+    "employed": true,
+    "leaves": [
+     {
+      "content_hash": "c1cc23c710edc2ad70272deeaf71741fdd0cf148437d6a0457eb11ca51d4d5f6",
+      "counts_non_working_days": false,
+      "leave_id": 4,
+      "leave_type_code": "earned",
+      "partial_percent": null,
+      "pay_treatment": "FULL",
+      "portion": "FIRST_HALF",
+      "tiered": null
+     }
+    ],
+    "segment": "18",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2026-12-25": {
+    "assignment_id": 18,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "18",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2027-01-26": {
+    "assignment_id": 18,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "18",
+    "standard_hours": "8",
+    "work_week_id": 2
+   }
+  },
+  "digest": "67213aeb78e6352180d1b1d7853dd2410a0c1c6673ccbc99b75c8951db0f957e"
+ },
+ "alpha/AT-018 Sunita Patil": {
+  "days": {
+   "2026-11-09": {
+    "assignment_id": 19,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "19",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2026-12-25": {
+    "assignment_id": 19,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "19",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2027-01-26": {
+    "assignment_id": 19,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "19",
+    "standard_hours": "8",
+    "work_week_id": 2
+   }
+  },
+  "digest": "7c60a0a41bae4dabccb4abfa632d698096963a9291e4e154c9ba9a435d21c79f"
+ },
+ "alpha/AT-019 Imran Shaikh": {
+  "days": {
+   "2026-11-09": {
+    "assignment_id": 20,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "20",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2026-12-25": {
+    "assignment_id": 20,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "20",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2027-01-26": {
+    "assignment_id": 20,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "20",
+    "standard_hours": "8",
+    "work_week_id": 2
+   }
+  },
+  "digest": "d5f9587d714f91982192de4b83e80e7f3606704d8bbf3e092b56333ad090705e"
+ },
+ "alpha/AT-020 Prakash More": {
+  "days": {
+   "2026-11-09": {
+    "assignment_id": 21,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "21",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2026-12-25": {
+    "assignment_id": 21,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "21",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2027-01-26": {
+    "assignment_id": 21,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "21",
+    "standard_hours": "8",
+    "work_week_id": 2
+   }
+  },
+  "digest": "3d9e032e8fa9088ed34666f6a80df5c638ed627606fc1d94790e26595742261b"
+ },
+ "alpha/AT-021 Ramesh Yadav": {
+  "days": {
+   "2026-11-09": {
+    "assignment_id": 22,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "22",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2026-12-25": {
+    "assignment_id": 22,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "22",
+    "standard_hours": "8",
+    "work_week_id": 2
+   },
+   "2027-01-26": {
+    "assignment_id": 22,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "22",
+    "standard_hours": "8",
+    "work_week_id": 2
+   }
+  },
+  "digest": "52afe0ccd847998cd87ad3f12d3a62b641fda6ff8622e7702b228282959bfc29"
+ },
+ "alpha/AT-022 Leena D'Souza": {
+  "days": {
+   "2026-11-09": {
+    "assignment_id": 23,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "23",
+    "standard_hours": "12",
+    "work_week_id": 3
+   },
+   "2026-12-25": {
+    "assignment_id": 23,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "23",
+    "standard_hours": "12",
+    "work_week_id": 3
+   },
+   "2027-01-26": {
+    "assignment_id": 23,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "23",
+    "standard_hours": "12",
+    "work_week_id": 3
+   }
+  },
+  "digest": "4fc7f026031e71a9394ed4d6c7c9b0fdcd790b3f981bec621fd70dba7b3b863d"
+ },
+ "alpha/AT-023 Anjali Menon": {
+  "days": {
+   "2026-11-09": {
+    "assignment_id": 24,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "24",
+    "standard_hours": "12",
+    "work_week_id": 3
+   },
+   "2026-12-25": {
+    "assignment_id": 24,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "24",
+    "standard_hours": "12",
+    "work_week_id": 3
+   },
+   "2027-01-26": {
+    "assignment_id": 24,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "24",
+    "standard_hours": "12",
+    "work_week_id": 3
+   }
+  },
+  "digest": "b95a3cc09a15d48d9040c7bf53d5a4ecee1a153c8dd3bd99fa57b79a4ca8c851"
+ },
+ "alpha/AT-024 Omar Haddad": {
+  "days": {
+   "2026-11-09": {
+    "assignment_id": 25,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "25",
+    "work_week_id": 1
+   },
+   "2026-12-25": {
+    "assignment_id": 25,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "25",
+    "work_week_id": 1
+   },
+   "2027-01-26": {
+    "assignment_id": 25,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "25",
+    "work_week_id": 1
+   }
+  },
+  "digest": "3f672e9f7677993a5c9d16a5453e547508b70bacbbcccee27c58e98bc29ac905"
+ },
+ "alpha/AT-025 Farah Ali": {
+  "days": {
+   "2026-11-09": {
+    "assignment_id": 26,
+    "employed": true,
+    "holiday": {
+     "content_hash": "f1699470aedad978135d99e7537b76049f129379230f90b552c182304a3b935b",
+     "holiday_id": 7,
+     "name": "Diwali (optional)",
+     "type": "OPTIONAL_NOT_AVAILED"
+    },
+    "segment": "26",
+    "work_week_id": 1
+   },
+   "2026-12-25": {
+    "assignment_id": 26,
+    "employed": true,
+    "holiday": {
+     "content_hash": "ad4e7daafaa0b553cda005754a253385991410e2c294a640b6d6f9fea1657ebe",
+     "holiday_id": 8,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "26",
+    "work_week_id": 1
+   },
+   "2027-01-26": {
+    "assignment_id": 26,
+    "employed": true,
+    "holiday": {
+     "content_hash": "c134cf3a68797be60a50a4ed3ce96cdc3bf142481dc10bcf775b5e5424607aa1",
+     "holiday_id": 9,
+     "name": "Republic Day",
+     "type": "COMPANY"
+    },
+    "segment": "26",
+    "work_week_id": 1
+   }
+  },
+  "digest": "3a7172925ca810d9e126d19608b27adad225934acbd1489154aec2369c0db389"
+ },
+ "beta/BT-001 Mariam Saeed": {
+  "days": {
+   "2026-12-02": {
+    "assignment_id": 28,
+    "employed": true,
+    "holiday": {
+     "content_hash": "b8e699c9fd9f358e9bc5d6518c71aceeb8842d52083b57bd10f1f0396a3d8ac1",
+     "holiday_id": 12,
+     "name": "UAE National Day",
+     "type": "COMPANY"
+    },
+    "segment": "28",
+    "work_week_id": 4
+   }
+  },
+  "digest": "dbf157fa5934bb6c56a58bb757f4f709352b5371420b514c960d87a8b5446df3"
+ },
+ "beta/BT-002 Yusuf Rahman": {
+  "days": {
+   "2026-12-02": {
+    "assignment_id": 29,
+    "employed": true,
+    "holiday": {
+     "content_hash": "b8e699c9fd9f358e9bc5d6518c71aceeb8842d52083b57bd10f1f0396a3d8ac1",
+     "holiday_id": 12,
+     "name": "UAE National Day",
+     "type": "COMPANY"
+    },
+    "segment": "29",
+    "standard_hours": "8",
+    "work_week_id": 5
+   }
+  },
+  "digest": "23ec2f9956be17095d39464fd876070c9d5eb3b197ad2959f7f42a32f6761f5b"
+ },
+ "beta/BT-003 Layla Hassan": {
+  "days": {
+   "2026-11-10": {
+    "assignment_id": 30,
+    "employed": true,
+    "leaves": [
+     {
+      "content_hash": "944ff5824982c0913461f5e7d4ec5f5f52eee3db61548cead4a50e300db4eae9",
+      "counts_non_working_days": false,
+      "leave_id": 9,
+      "leave_type_code": "casual",
+      "partial_percent": null,
+      "pay_treatment": "FULL",
+      "portion": "FULL",
+      "tiered": null
+     }
+    ],
+    "segment": "30",
+    "standard_hours": "8",
+    "work_week_id": 5
+   },
+   "2026-12-02": {
+    "assignment_id": 30,
+    "employed": true,
+    "holiday": {
+     "content_hash": "b8e699c9fd9f358e9bc5d6518c71aceeb8842d52083b57bd10f1f0396a3d8ac1",
+     "holiday_id": 12,
+     "name": "UAE National Day",
+     "type": "COMPANY"
+    },
+    "segment": "30",
+    "standard_hours": "8",
+    "work_week_id": 5
+   }
+  },
+  "digest": "0110c72b68d05dc257b71be8ff132adcfef1ae5ec535ed9f8cd889b2eb6ba62e"
+ },
+ "beta/BT-004 Maria Santos": {
+  "days": {
+   "2026-12-02": {
+    "assignment_id": 31,
+    "employed": true,
+    "holiday": {
+     "content_hash": "b8e699c9fd9f358e9bc5d6518c71aceeb8842d52083b57bd10f1f0396a3d8ac1",
+     "holiday_id": 12,
+     "name": "UAE National Day",
+     "type": "COMPANY"
+    },
+    "segment": "31",
+    "standard_hours": "12",
+    "work_week_id": 5
+   }
+  },
+  "digest": "f1b4dc014f1279f30970d38e3eb10225ab31de217434f5f4a3d0fee9767d0bbe"
+ },
+ "gamma/GT-001 Emily Clark": {
+  "days": {
+   "2026-11-26": {
+    "assignment_id": 33,
+    "employed": true,
+    "holiday": {
+     "content_hash": "654d4eb2ba1f0429dbffd7a3d6ed0dbb8d3796034c5e71664955354f29c399f5",
+     "holiday_id": 16,
+     "name": "Thanksgiving",
+     "type": "COMPANY"
+    },
+    "segment": "33",
+    "standard_hours": "8",
+    "work_week_id": 6
+   },
+   "2026-12-25": {
+    "assignment_id": 33,
+    "employed": true,
+    "holiday": {
+     "content_hash": "18166be1c55d5f7a877ace5fa0e884d99274db464b81a271426eefc928e86179",
+     "holiday_id": 17,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "33",
+    "standard_hours": "8",
+    "work_week_id": 6
+   }
+  },
+  "digest": "5d69bb002fcc71fcf9bf0c4ee100db27ce43056ca2aed6a361350cc9b5412389"
+ },
+ "gamma/GT-002 Jordan Lee": {
+  "days": {
+   "2026-11-26": {
+    "assignment_id": 34,
+    "employed": true,
+    "holiday": {
+     "content_hash": "654d4eb2ba1f0429dbffd7a3d6ed0dbb8d3796034c5e71664955354f29c399f5",
+     "holiday_id": 16,
+     "name": "Thanksgiving",
+     "type": "COMPANY"
+    },
+    "segment": "34",
+    "standard_hours": "8",
+    "work_week_id": 6
+   },
+   "2026-11-27": {
+    "assignment_id": 34,
+    "employed": true,
+    "leaves": [
+     {
+      "content_hash": "f60b711f2eda9370402b8cfcbeb496ccca750153a5bc8c71d2a9115d1e2b96ee",
+      "counts_non_working_days": false,
+      "leave_id": 11,
+      "leave_type_code": "casual",
+      "partial_percent": null,
+      "pay_treatment": "FULL",
+      "portion": "FULL",
+      "tiered": null
+     }
+    ],
+    "segment": "34",
+    "standard_hours": "8",
+    "work_week_id": 6
+   },
+   "2026-12-25": {
+    "assignment_id": 34,
+    "employed": true,
+    "holiday": {
+     "content_hash": "18166be1c55d5f7a877ace5fa0e884d99274db464b81a271426eefc928e86179",
+     "holiday_id": 17,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "34",
+    "standard_hours": "8",
+    "work_week_id": 6
+   }
+  },
+  "digest": "27077b7550d8af4482572594486ad33e51a45cf81ae4406483294dbe64ad43c7"
+ },
+ "gamma/GT-003 Carlos Diaz": {
+  "days": {
+   "2026-11-26": {
+    "assignment_id": 35,
+    "employed": true,
+    "holiday": {
+     "content_hash": "654d4eb2ba1f0429dbffd7a3d6ed0dbb8d3796034c5e71664955354f29c399f5",
+     "holiday_id": 16,
+     "name": "Thanksgiving",
+     "type": "COMPANY"
+    },
+    "segment": "35",
+    "standard_hours": "7.5",
+    "work_week_id": 6
+   },
+   "2026-12-25": {
+    "assignment_id": 35,
+    "employed": true,
+    "holiday": {
+     "content_hash": "18166be1c55d5f7a877ace5fa0e884d99274db464b81a271426eefc928e86179",
+     "holiday_id": 17,
+     "name": "Christmas",
+     "type": "COMPANY"
+    },
+    "segment": "35",
+    "standard_hours": "7.5",
+    "work_week_id": 6
+   }
+  },
+  "digest": "6d8ed2b262f54e5349d3a81516b207fd27a58158078138b6368f6b0d3e2c02dd"
+ }
+}

@@ -155,14 +155,13 @@ def audit_logs(skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
         query = query.filter(AuditLog.module.notin_(PAYROLL_AUDIT_MODULES))
     total = query.count()
     rows = query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).offset(skip).limit(limit).all()
-    return {
-        "total": total,
-        "logs": [
-            {
-                "id": r.id, "created_at": r.created_at.isoformat(), "actor_email": r.actor_email,
-                "actor_type": r.actor_type, "module": r.module, "action": r.action, "entity_type": r.entity_type,
-                "entity_id": r.entity_id, "description": r.description, "ip_address": r.ip_address,
-            }
-            for r in rows
-        ],
-    }
+    items = [
+        {
+            "id": r.id, "created_at": r.created_at.isoformat(), "actor_email": r.actor_email,
+            "actor_type": r.actor_type, "module": r.module, "action": r.action, "entity_type": r.entity_type,
+            "entity_id": r.entity_id, "description": r.description, "ip_address": r.ip_address,
+        }
+        for r in rows
+    ]
+    # The list standard envelope (BUG-AS-55, X 04 §2.2); "logs" stays as an alias for existing clients.
+    return {"total": total, "items": items, "skip": skip, "limit": limit, "logs": items}

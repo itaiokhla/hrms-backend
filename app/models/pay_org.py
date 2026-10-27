@@ -10,6 +10,7 @@ from sqlalchemy import (
     CHAR,
     CheckConstraint,
     Column,
+    Date,
     ForeignKeyConstraint,
     Integer,
     String,
@@ -145,24 +146,147 @@ class Designation(TenantMixin, BaseModel):
 
 
 class WorkWeekPattern(TenantMixin, BaseModel):
-    """Weekly offs (3.4 §3): whole weekdays plus nth-weekday rules.
+    """Weekly offs (3.4 §3; LH 04-holiday/03 §3.1): a WEEKLY or CYCLE pattern.
 
-    `weekly_off_days` lists distinct weekday numbers (Monday = 0 ... Sunday = 6), at most six.
-    `nth_weekday_offs` adds days such as the 2nd and 4th Saturday: [{"weekday": 5, "nth": [2, 4]}],
-    nth 1-5 or -1 for the last one in the month. The database rejects any other shape.
+    The rule columns are a **mirror** of the version valid on the company-local today
+    (`work_week_pattern_versions` is the source of truth, LH V3-014); only legacy readers and lists read them.
+    WEEKLY: `weekly_off_days` (distinct weekday numbers, Monday = 0 ... Sunday = 6, at most six) and
+    `nth_weekday_offs` such as the 2nd and 4th Saturday [{"weekday": 5, "nth": [2, 4]}] (nth 1-5 or -1 = last).
+    CYCLE: `cycle_length_days` (2-56), `cycle_off_days` (cycle days 0..N-1) and `anchor_date` (cycle day 0).
+    `half_day_offs` and `rest_days` apply to both kinds. The database rejects any other shape.
+    `legal_entity_id` NULL = tenant-wide pattern; otherwise owned by (and usable in) that entity only.
     """
 
     __tablename__ = "work_week_patterns"
 
     code = Column(String(30), nullable=False)
     name = Column(String(100), nullable=False)
+    name_i18n = Column(JSONB, nullable=False, default=dict)
+    kind = Column(String(6), nullable=False, default="WEEKLY")
     weekly_off_days = Column(JSONB, nullable=False)
     nth_weekday_offs = Column(JSONB, nullable=False, default=list)
+    half_day_offs = Column(JSONB, nullable=False, default=list)
+    cycle_length_days = Column(Integer, nullable=True)
+    cycle_off_days = Column(JSONB, nullable=True)
+    anchor_date = Column(Date, nullable=True)
+    rest_days = Column(JSONB, nullable=True)
+    legal_entity_id = Column(Integer, nullable=True, index=True)
     status = Column(String(10), nullable=False, default="ACTIVE")
+    row_version = Column(Integer, nullable=False, default=1)
 
     __table_args__ = (
         *_code_name_status("work_week_patterns"),
-        CheckConstraint("work_week_rules_valid(weekly_off_days, nth_weekday_offs)", name="ck_work_week_patterns_rules"),
+        ForeignKeyConstraint(["company_id", "legal_entity_id"], ["legal_entities.company_id", "legal_entities.id"],
+                             name="fk_work_week_patterns_legal_entity", use_alter=True),
+        CheckConstraint("kind IN ('WEEKLY', 'CYCLE')", name="ck_work_week_patterns_kind"),
+        CheckConstraint("row_version >= 1", name="ck_work_week_patterns_row_version"),
+        CheckConstraint(
+            "work_week_rules_valid(kind, weekly_off_days, nth_weekday_offs, half_day_offs, cycle_length_days, "
+            "cycle_off_days, anchor_date, rest_days)", name="ck_work_week_patterns_rules"),
+    )
+
+
+class WorkWeekPatternVersion(TenantMixin, BaseModel):
+    """One effective-dated rule set of a pattern (LH 04-holiday/03 §5.1): the source of truth for day facts.
+
+    Versions of one pattern tile without overlap from version 1 (trigger); the last one is open-ended.
+    `rules` is the canonical engine JSON (`app.payroll.workweek.WorkWeekPattern.to_json`), `content_hash` its
+    sha256. A version that has started is never changed except its `effective_to` (set when a later one is posted).
+    """
+
+    __tablename__ = "work_week_pattern_versions"
+
+    pattern_id = Column(Integer, nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    rules = Column(JSONB, nullable=False)
+    effective_from = Column(Date, nullable=False)
+    effective_to = Column(Date, nullable=True)
+    reason = Column(String(500), nullable=True)
+    content_hash = Column(CHAR(64), nullable=False)
+    created_by_user_id = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "id", name="uq_work_week_pattern_versions_company_id_id"),
+        UniqueConstraint("company_id", "pattern_id", "version", name="uq_work_week_pattern_versions_version"),
+        ForeignKeyConstraint(["company_id", "pattern_id"], ["work_week_patterns.company_id", "work_week_patterns.id"],
+                             name="fk_work_week_pattern_versions_pattern", ondelete="CASCADE"),
+        CheckConstraint("version >= 1", name="ck_work_week_pattern_versions_version"),
+        CheckConstraint("effective_to IS NULL OR effective_to >= effective_from",
+                        name="ck_work_week_pattern_versions_dates"),
+        CheckConstraint("content_hash ~ '^[0-9a-f]{64}$'", name="ck_work_week_pattern_versions_hash"),
+        CheckConstraint("jsonb_typeof(rules) = 'object'", name="ck_work_week_pattern_versions_rules"),
+    )
+
+
+class BranchCalendarLink(TenantMixin, BaseModel):
+    """Effective-dated holiday calendar and work week of a branch (LH 04-holiday/01 §4.3; fixes BUG-14).
+
+    Rows of one branch never overlap (trigger) and tile from the first row on; the row valid on the branch-local
+    today is mirrored into `branches.holiday_calendar_id` / `work_week_pattern_id`.
+    """
+
+    __tablename__ = "branch_calendar_links"
+
+    branch_id = Column(Integer, nullable=False, index=True)
+    holiday_calendar_id = Column(Integer, nullable=True)
+    work_week_pattern_id = Column(Integer, nullable=True)
+    effective_from = Column(Date, nullable=False)
+    effective_to = Column(Date, nullable=True)
+    reason = Column(String(300), nullable=True)
+    created_by_user_id = Column(Integer, nullable=True)
+    row_version = Column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "id", name="uq_branch_calendar_links_company_id_id"),
+        ForeignKeyConstraint(["company_id", "branch_id"], ["branches.company_id", "branches.id"],
+                             name="fk_branch_calendar_links_branch"),
+        ForeignKeyConstraint(["company_id", "holiday_calendar_id"],
+                             ["holiday_calendars.company_id", "holiday_calendars.id"],
+                             name="fk_branch_calendar_links_calendar"),
+        ForeignKeyConstraint(["company_id", "work_week_pattern_id"],
+                             ["work_week_patterns.company_id", "work_week_patterns.id"],
+                             name="fk_branch_calendar_links_work_week"),
+        CheckConstraint("effective_to IS NULL OR effective_to >= effective_from", name="ck_branch_calendar_links_dates"),
+        CheckConstraint("row_version >= 1", name="ck_branch_calendar_links_row_version"),
+    )
+
+
+class HolidayCalendarAssignment(TenantMixin, BaseModel):
+    """Criteria row giving matching employees a calendar and/or a work week for a date range (04-holiday/01 §4.4).
+
+    `criteria` is `AssignmentCriteria` (+ `shift_ids`, team and joiner dimensions); lower `priority` wins. Rows are
+    written by the calendar-assignment service (calendar goal); the work-week resolver reads the pattern side.
+    """
+
+    __tablename__ = "holiday_calendar_assignments"
+
+    calendar_id = Column(Integer, nullable=True)
+    work_week_pattern_id = Column(Integer, nullable=True)
+    criteria = Column(JSONB, nullable=False, default=dict)
+    priority = Column(Integer, nullable=False)
+    effective_from = Column(Date, nullable=False)
+    effective_to = Column(Date, nullable=True)
+    legal_entity_id = Column(Integer, nullable=True)
+    reason = Column(String(500), nullable=True)
+    created_by_user_id = Column(Integer, nullable=True)
+    row_version = Column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "id", name="uq_holiday_calendar_assignments_company_id_id"),
+        ForeignKeyConstraint(["company_id", "calendar_id"], ["holiday_calendars.company_id", "holiday_calendars.id"],
+                             name="fk_holiday_calendar_assignments_calendar"),
+        ForeignKeyConstraint(["company_id", "work_week_pattern_id"],
+                             ["work_week_patterns.company_id", "work_week_patterns.id"],
+                             name="fk_holiday_calendar_assignments_work_week"),
+        ForeignKeyConstraint(["company_id", "legal_entity_id"], ["legal_entities.company_id", "legal_entities.id"],
+                             name="fk_holiday_calendar_assignments_legal_entity"),
+        CheckConstraint("num_nonnulls(calendar_id, work_week_pattern_id) >= 1",
+                        name="ck_holiday_calendar_assignments_target"),
+        CheckConstraint("priority BETWEEN 1 AND 999", name="ck_holiday_calendar_assignments_priority"),
+        CheckConstraint("effective_to IS NULL OR effective_to >= effective_from",
+                        name="ck_holiday_calendar_assignments_dates"),
+        CheckConstraint("jsonb_typeof(criteria) = 'object'", name="ck_holiday_calendar_assignments_criteria"),
+        CheckConstraint("row_version >= 1", name="ck_holiday_calendar_assignments_row_version"),
     )
 
 

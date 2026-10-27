@@ -63,17 +63,31 @@ class Department(TenantMixin, BaseModel):
 
 
 class Shift(TenantMixin, BaseModel):
+    """A catalogue shift (AS 11 §3.5; 03-shifts/01 §2.3). Times live in ``shift_versions`` (app/models/shifts.py);
+    ``start_time`` … ``half_split_time`` and ``is_flexible`` mirror the version valid on the owner's local today
+    (``current_version_id``) for legacy readers and are written only by ``shift_catalogue``. ``is_active`` mirrors
+    ``status``. Owner scope: ``legal_entity_id`` / ``branch_id`` NULL = tenant-wide."""
+
     __tablename__ = "shifts"
 
+    code = Column(String(20), nullable=False)
     name = Column(String(100), nullable=False)
+    kind = Column(String(10), nullable=False, default="FIXED")
+    color_token = Column(String(10), nullable=False, default="shift-1")
+    legal_entity_id = Column(Integer, nullable=True)
+    branch_id = Column(Integer, nullable=True)
+    status = Column(String(10), nullable=False, default="ACTIVE")
+    current_version_id = Column(Integer, nullable=True)
     start_time = Column(String(5), nullable=False)
     end_time = Column(String(5), nullable=False)
     # Decimal hours (8.5); gross of breaks unless unpaid_break_minutes says how much of it is unpaid.
     duration_hours = Column(Numeric(4, 2), nullable=True)
     unpaid_break_minutes = Column(SmallInteger, nullable=True)
+    half_split_time = Column(String(5), nullable=True)
     is_flexible = Column(Boolean, default=False, nullable=False)
     description = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
+    row_version = Column(Integer, nullable=False, default=1)
 
     employees = relationship(
         "Employee",
@@ -85,10 +99,23 @@ class Shift(TenantMixin, BaseModel):
     __table_args__ = (
         UniqueConstraint("company_id", "id", name="uq_shifts_company_id_id"),
         UniqueConstraint("company_id", "name", name="uq_shifts_company_name"),
+        UniqueConstraint("company_id", "code", name="uq_shifts_company_code"),
+        ForeignKeyConstraint(["company_id", "legal_entity_id"], ["legal_entities.company_id", "legal_entities.id"],
+                             name="fk_shifts_legal_entity"),
+        ForeignKeyConstraint(["company_id", "branch_id"], ["branches.company_id", "branches.id"],
+                             name="fk_shifts_branch"),
+        ForeignKeyConstraint(["company_id", "current_version_id"], ["shift_versions.company_id", "shift_versions.id"],
+                             name="fk_shifts_current_version", use_alter=True),
         CheckConstraint("duration_hours IS NULL OR (duration_hours > 0 AND duration_hours <= 24)",
                         name="ck_shifts_duration"),
         CheckConstraint("unpaid_break_minutes IS NULL OR unpaid_break_minutes BETWEEN 0 AND 1440",
                         name="ck_shifts_unpaid_break"),
+        CheckConstraint("code ~ '^[A-Z0-9][A-Z0-9_-]{0,19}$'", name="ck_shifts_code"),
+        CheckConstraint("kind IN ('FIXED', 'FLEXIBLE', 'OPEN', 'SPLIT')", name="ck_shifts_kind"),
+        CheckConstraint("color_token ~ '^shift-([1-9]|1[0-2])$'", name="ck_shifts_color_token"),
+        CheckConstraint("status IN ('ACTIVE', 'ARCHIVED')", name="ck_shifts_status"),
+        CheckConstraint("is_active = (status = 'ACTIVE')", name="ck_shifts_is_active"),
+        CheckConstraint("row_version >= 1", name="ck_shifts_row_version"),
     )
 
 
