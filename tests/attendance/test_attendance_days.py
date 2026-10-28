@@ -53,7 +53,9 @@ def recompute(admin, emp_id, start=DAY, end=DAY):
     return r.json()
 
 
-def day_rows(emp_id):
+def day_rows(emp_id, day=None):
+    if day is not None:  # policy activation recomputes the whole covered window (§8.1 POLICY_CHANGED)
+        return rows("SELECT * FROM attendance_days WHERE employee_id = :e AND shift_date = :d", e=emp_id, d=day)
     return rows("SELECT * FROM attendance_days WHERE employee_id = :e ORDER BY shift_date", e=emp_id)
 
 
@@ -121,20 +123,21 @@ def test_write_path_open_then_final_then_standard(tenant, fake_clock):
     assert again["unchanged"] == 1 and again["versions"] == 0 and len(change_log(emp_id)) == 1
 
     activate_rules(admin, {"threshold_mode": "ABSOLUTE", "full_day_min_minutes": "450",
-                           "half_day_min_minutes": "240"})
+                           "half_day_min_minutes": "240"})  # schedules POLICY_CHANGED (inline job)
     recompute(admin, emp_id)
-    [row] = day_rows(emp_id)
+    [row] = day_rows(emp_id, DAY)
     assert row["rules_mode"] == "STANDARD" and row["version"] == 2 and row["day_result"] == "PRESENT"
-    history = versions(emp_id)
+    history = [v for v in versions(emp_id) if v["day_id"] == row["id"]]
     assert [v["version"] for v in history] == [1, 2] and "rules_mode" in history[1]["outputs"]
-    assert [c["change"] for c in change_log(emp_id)] == ["CREATED", "UPDATED"]
-    assert change_log(emp_id)[-1]["record_id"] == row["id"]
+    tuesday = [c for c in change_log(emp_id) if c["record_id"] == row["id"]]
+    assert [c["change"] for c in tuesday] == ["CREATED", "UPDATED"]
+    assert history[1]["trigger"] == "POLICY_CHANGED"  # the activation's own recompute changed the day
 
     body = admin.get(f"/api/v1/attendance/days/{emp_id}/{DAY}").json()["day"]
     assert body["version"] == 2 and body["day_result"] == "PRESENT" and len(body["history"]) == 2
     explained = admin.get(f"/api/v1/attendance/days/{emp_id}/{DAY}", params={"explain": "true"}).json()
     assert explained["explain"]["phase"] == "AFTER_CLOSE" and explained["explain"]["rules_mode"] == "STANDARD"
-    assert len(versions(emp_id)) == 2  # explain never writes
+    assert len([v for v in versions(emp_id) if v["day_id"] == row["id"]]) == 2  # explain never writes
 
     # Payroll reads the evaluation (JC-AS-01, -13).
     from app.payroll.services import time_inputs as ti
@@ -177,3 +180,261 @@ def test_change_log_accepts_bigint_record_ids(tenant):
             "created_at, updated_at) VALUES (:c, :t, 5000000000, 'CREATED', :h, now(), now(), now())",
             c=tenant["cid"], t=record_type, h="0" * 64)
     assert len(rows("SELECT id FROM source_change_log WHERE record_id = 5000000000")) == 3
+
+
+# --------------------------------------------------------------------------- automatic triggers (IG-AS-71)
+
+
+def test_punch_evaluates_its_day_on_v2_tenants_only(tenant, fake_clock):
+    work_day(tenant, fake_clock)
+    assert day_rows(tenant["emp_id"]) == []  # v1: the punch writes no evaluation
+    enable_v2(tenant["cid"])
+    fake_clock.at_ist("2026-11-04", "09:05")
+    assert v2_punch(tenant["emp"], fake_clock).status_code == 200
+    [row] = day_rows(tenant["emp_id"])
+    assert row["shift_date"] == date(2026, 11, 4) and row["evaluation_state"] == "OPEN" and row["trigger"] == "PUNCH"
+    fake_clock.at_ist("2026-11-04", "17:30")
+    assert v2_punch(tenant["emp"], fake_clock, "OUT").status_code == 200
+    [row] = day_rows(tenant["emp_id"])
+    assert row["trigger"] == "SESSION_CLOSED" and row["net_seconds"] == (8 * 60 + 25) * 60
+
+
+def test_change_log_schedules_recompute_for_v2_tenants(tenant, fake_clock):
+    from app.models.jobs import Job
+    from app.payroll.services import time_inputs as ti
+    from app.services import attendance_days
+
+    cid, emp_id = tenant["cid"], tenant["emp_id"]
+    work_day(tenant, fake_clock)
+    with tenant_db(cid) as db:
+        ti.log_change(db, cid, record_type="on_duty", record_id=11, change="UPDATED", content={"v": 1},
+                      employee_id=emp_id, date_from=DAY)
+        assert db.query(Job).filter(Job.type == attendance_days.RECOMPUTE_JOB).count() == 0  # v1 tenant
+    enable_v2(cid)
+    fake_clock.at_ist("2026-11-06", "10:00")
+    with tenant_db(cid) as db:
+        ti.log_change(db, cid, record_type="on_duty", record_id=11, change="UPDATED", content={"v": 2},
+                      employee_id=emp_id, date_from=DAY)
+        ti.log_change(db, cid, record_type="lop_input", record_id=3, change="UPDATED", content={"v": 1},
+                      employee_id=emp_id, date_from=DAY)  # pay-only: no evaluation change
+        [job] = db.query(Job).filter(Job.type == attendance_days.RECOMPUTE_JOB).all()
+        assert job.payload["trigger"] == "ON_DUTY_DECIDED" and job.payload["date_from"] == DAY.isoformat()
+        result = attendance_days.recompute_scope(db, cid, job.payload)
+        assert result["written"] == 1
+        row = attendance_days.get_day(db, cid, emp_id, DAY)
+        assert row.trigger == "ON_DUTY_DECIDED" and row.evaluation_state == "FINAL"
+
+
+# --------------------------------------------------------------------------- cut-over (spine §15.1; exit criteria 1, 4)
+
+
+def test_cutover_prepare_reconcile_refusals_and_activation(tenant, fake_clock, app):
+    from tests.attendance.capture_v2_helpers import step_up
+
+    admin, cid, emp_id = tenant["admin"], tenant["cid"], tenant["emp_id"]
+    hr = employee_with_login(app, admin, "Ananya", roles=("hr_admin",))
+    work_day(tenant, fake_clock)
+    fake_clock.at_ist("2026-11-06", "10:00")
+    assert admin.get("/api/v1/attendance/setup/status").json()["state"] == "LEGACY"
+    early = admin.post("/api/v1/attendance/setup/reconcile", json={"start": "2026-11-02", "end": "2026-11-05"})
+    assert early.status_code == 409 and early.json()["code"] == "ATTENDANCE_V2_NOT_PREPARED"
+    prepared = admin.post("/api/v1/attendance/setup/prepare")
+    assert prepared.status_code == 200, prepared.text
+    assert prepared.json()["rules_policy_id"] and prepared.json()["scheduling_policy_id"]
+    assert admin.post("/api/v1/attendance/setup/prepare").json()["rules_policy_id"] is None  # idempotent
+    started = admin.post("/api/v1/attendance/setup/reconcile", json={"start": "2026-11-02", "end": "2026-11-05"})
+    assert started.status_code == 202, started.text
+    job_id = started.json()["job_id"]
+    # JOBS_MODE=inline (tests/conftest.py): the reconcile job ran when the request committed.
+    report = admin.get("/api/v1/attendance/setup/status").json()
+    assert report["state"] == "RECONCILING" and report["last_reconcile"]["differences"] == 0, report
+    assert report["last_reconcile"]["status"] == "SUCCEEDED"
+    shadow = day_rows(emp_id)
+    assert len(shadow) == 4 and {r["rules_mode"] for r in shadow} == {"LEGACY_V1"} and change_log(emp_id) == []
+
+    # An injected difference is reported by the comparison (exit criterion 4).
+    from app.services import attendance_cutover
+
+    sql("UPDATE attendance_days SET net_seconds = net_seconds + 60 WHERE employee_id = :e AND shift_date = :d",
+        e=emp_id, d=DAY)
+    with tenant_db(cid) as db:
+        found = attendance_cutover.compare(db, cid, [emp_id], date(2026, 11, 2), date(2026, 11, 5))
+    assert [(f["date"], f["field"]) for f in found] == [(DAY.isoformat(), "worked_seconds")]
+    sql("UPDATE jobs SET result = jsonb_set(result, '{differences}', '1') WHERE id = :j", j=job_id)
+    refused = hr.post("/api/v1/attendance/setup/cutover", json={"reconcile_job_id": job_id})
+    assert refused.status_code == 409 and refused.json()["code"] == "ATTENDANCE_V2_NOT_RECONCILED"
+    sql("UPDATE jobs SET result = jsonb_set(result, '{differences}', '0') WHERE id = :j", j=job_id)
+
+    maker = admin.post("/api/v1/attendance/setup/cutover", json={"reconcile_job_id": job_id})
+    assert maker.status_code == 409 and maker.json()["code"] == "SELF_DECISION_FORBIDDEN"
+    unverified = hr.post("/api/v1/attendance/setup/cutover", json={"reconcile_job_id": job_id})
+    assert unverified.status_code == 403 and unverified.json()["code"] == "STEP_UP_REQUIRED"
+    step_up(hr)
+    sql("UPDATE user_sessions SET step_up_at = :t WHERE step_up_at IS NOT NULL", t=fake_clock.now)  # fake clock
+    activated = hr.post("/api/v1/attendance/setup/cutover", json={"reconcile_job_id": job_id})
+    assert activated.status_code == 200, activated.text
+    assert activated.json()["state"] == "V2_ACTIVE"
+    audit = rows("SELECT action FROM audit_logs WHERE company_id = :c AND module = 'Attendance' "
+                 "AND action LIKE 'ATTENDANCE_V2_%' ORDER BY id", c=cid)
+    assert [a["action"] for a in audit] == ["ATTENDANCE_V2_RECONCILED", "ATTENDANCE_V2_ACTIVATED"]
+    again = hr.post("/api/v1/attendance/setup/cutover", json={"reconcile_job_id": job_id})
+    assert again.status_code == 409 and again.json()["code"] == "ATTENDANCE_V2_ACTIVE"
+    assert tenant["emp"].get("/api/v1/attendance/setup/status").status_code == 403
+    other = signup_company(app, "Foreign Cutover Co")
+    assert other.post("/api/v1/attendance/setup/cutover", json={"reconcile_job_id": job_id}).status_code == 404
+
+
+def test_exceptions_list_decided_days_in_scope(tenant, fake_clock):
+    admin, emp_id, cid = tenant["admin"], tenant["emp_id"], tenant["cid"]
+    enable_v2(cid)
+    work_day(tenant, fake_clock)  # Tue 3 Nov worked; Wed 4 and Thu 5 Nov not worked
+    fake_clock.at_ist("2026-11-06", "10:00")
+    recompute(admin, emp_id, DAY, date(2026, 11, 5))
+    body = admin.get("/api/v1/attendance/exceptions", params={"start": "2026-11-01", "end": "2026-11-05"}).json()
+    by_date = {item["shift_date"]: item for item in body["items"] if item["employee_id"] == emp_id}
+    assert "2026-11-04" in by_date and "UNMARKED_DAY" in by_date["2026-11-04"]["exception_codes"], body
+    only = admin.get("/api/v1/attendance/exceptions", params={"start": "2026-11-01", "end": "2026-11-05",
+                                                              "code": "UNMARKED_DAY"}).json()
+    assert only["total"] >= 1 and all("UNMARKED_DAY" in item["exception_codes"] for item in only["items"])
+    bad = admin.get("/api/v1/attendance/exceptions", params={"start": "2026-11-01", "end": "2026-11-05",
+                                                             "code": "NOPE"})
+    assert bad.status_code == 400 and bad.json()["code"] == "INVALID_EXCEPTION_CODE"
+    mine = tenant["emp"].get("/api/v1/attendance/exceptions", params={"start": "2026-11-01", "end": "2026-11-05"})
+    assert mine.status_code in (200, 403)
+    if mine.status_code == 200:
+        assert {item["employee_id"] for item in mine.json()["items"]} <= {emp_id}
+
+
+def test_loader_query_count_does_not_grow_with_head_count(tenant, app):
+    """Spine §5.11: one chunk reads with a fixed number of queries (IG-AS-72 records the measured bound)."""
+    from sqlalchemy import event
+
+    from app.services import attendance_days
+
+    admin, cid = tenant["admin"], tenant["cid"]
+    extra = [employee_with_login(app, admin, f"Load{n}").me()["employee"]["id"] for n in range(4)]
+    now = datetime(2026, 11, 20, 6, 0, tzinfo=timezone.utc)
+
+    def count(ids):
+        with tenant_db(cid) as db:
+            seen = []
+
+            def listener(*args, **kwargs):
+                seen.append(1)
+
+            engine = db.get_bind()
+            event.listen(engine, "before_cursor_execute", listener)
+            try:
+                inputs = attendance_days.load_inputs_many(db, cid, ids, date(2026, 11, 1), date(2026, 11, 7),
+                                                          now=now, v2=True)
+            finally:
+                event.remove(engine, "before_cursor_execute", listener)
+            assert len(inputs) == len(ids) * 7
+            return len(seen)
+
+    small, large = count([tenant["emp_id"]]), count([tenant["emp_id"], *extra])
+    print(f"loader statements: 1 employee {small}, 5 employees {large}")
+    assert large <= small + 2, (small, large)
+    # IG-AS-77: one LH day-facts pass, shared shifts, batched policies and settings (was 112 before batching).
+    assert large <= 60, (small, large)
+
+
+# --------------------------------------------------------------------------- locked periods, preview, attestation
+
+
+def test_configuration_triggers_leave_locked_periods_alone(tenant, fake_clock, monkeypatch):
+    """§8.5 / D-AS-44: POLICY_CHANGED / SETTING_CHANGED / SHIFT_VERSION skip INPUT_LOCKED and FINALIZED dates unless
+    apply_to_locked_periods; facts always recompute."""
+    from app.services import attendance_days
+
+    cid, emp_id = tenant["cid"], tenant["emp_id"]
+    enable_v2(cid)
+    work_day(tenant, fake_clock)
+    now = datetime(2026, 11, 6, 6, 0, tzinfo=timezone.utc)
+    with tenant_db(cid) as db:
+        assert set(attendance_days.period_states(db, cid, [emp_id], DAY, DAY, now=now).values()) == {"OPEN"}
+    monkeypatch.setattr(attendance_days, "period_states",
+                        lambda db, cid, ids, start, end, now=None: {(e, DAY): "INPUT_LOCKED" for e in ids})
+    with tenant_db(cid) as db:
+        skipped = attendance_days.evaluate_range(db, cid, [emp_id], DAY, DAY, trigger="POLICY_CHANGED", now=now)
+        assert skipped.skipped_locked == 1 and skipped.written == 0
+        forced = attendance_days.evaluate_range(db, cid, [emp_id], DAY, DAY, trigger="POLICY_CHANGED", now=now,
+                                                apply_to_locked_periods=True)
+        assert forced.written == 1 and forced.skipped_locked == 0
+    with tenant_db(cid) as db:
+        fact = attendance_days.evaluate_range(db, cid, [emp_id], DAY, DAY, trigger="LEAVE_CHANGED", now=now)
+        assert fact.written == 1 and fact.skipped_locked == 0
+
+
+def test_impact_preview_then_activation_recomputes(tenant, fake_clock):
+    admin, cid, emp_id = tenant["admin"], tenant["cid"], tenant["emp_id"]
+    enable_v2(cid)
+    work_day(tenant, fake_clock)  # 525 net minutes on Tue 3 Nov
+    fake_clock.at_ist("2026-11-06", "10:00")
+    recompute(admin, emp_id)
+    assert day_rows(emp_id, DAY)[0]["day_result"] == "PRESENT"
+    r = admin.post("/api/v1/attendance/policies", json={
+        "type": "ATTENDANCE_RULES_POLICY", "name": "Strict staff rules",
+        "fields": {"threshold_mode": "ABSOLUTE", "full_day_min_minutes": "600", "half_day_min_minutes": "240"}})
+    assert r.status_code == 201, r.text
+    policy_id = r.json()["id"]
+    preview = admin.post(f"/api/v1/attendance/policies/{policy_id}/versions/1/simulate",
+                         json={"effective_from": "2026-11-02",
+                               "assignments": [{"criteria": {"everyone": True}, "priority": 10}]})
+    assert preview.status_code == 200, preview.text
+    body = preview.json()
+    assert body["population"]["covered_now"] == 0 and body["population"]["covered_after"] >= 1
+    assert body["changes"]["day_result"].get("PRESENT -> HALF_DAY", 0) >= 1, body["changes"]
+    assert body["dates"]["OPEN"] >= 1 and emp_id in {item["employee_id"] for item in body["sample"]}
+    assert day_rows(emp_id, DAY)[0]["day_result"] == "PRESENT"  # the preview never writes
+    assert admin.put(f"/api/v1/attendance/policies/{policy_id}/assignments",
+                     json={"rules": [{"criteria": {"everyone": True}, "priority": 10}]}).status_code == 200
+    locked = admin.post(f"/api/v1/attendance/policies/{policy_id}/versions/1/activate",
+                        json={"effective_from": "2026-11-02", "apply_to_locked_periods": True})
+    assert locked.status_code == 400 and locked.json()["code"] == "REASON_REQUIRED"
+    activated = admin.post(f"/api/v1/attendance/policies/{policy_id}/versions/1/activate",
+                           json={"effective_from": "2026-11-02", "reason": "stricter thresholds"})
+    assert activated.status_code == 200, activated.text
+    assert activated.json()["recompute_job_id"]
+    [row] = day_rows(emp_id, DAY)  # JOBS_MODE=inline: the recompute ran when the activation committed
+    assert row["rules_mode"] == "STANDARD" and row["day_result"] == "HALF_DAY" and row["trigger"] == "POLICY_CHANGED"
+
+
+def test_punch_out_attestation_reaches_the_evaluation(tenant, fake_clock):
+    from app.services import attendance_days
+
+    cid, emp_id = tenant["cid"], tenant["emp_id"]
+    fake_clock.at_ist("2026-11-03", "09:20")
+    assert v2_punch(tenant["emp"], fake_clock).status_code == 200
+    fake_clock.at_ist("2026-11-03", "18:05")
+    assert v2_punch(tenant["emp"], fake_clock, "OUT", no_break_taken=True).status_code == 200
+    with tenant_db(cid) as db:
+        inputs = attendance_days.load_inputs_many(db, cid, [emp_id], DAY, DAY,
+                                                  now=datetime(2026, 11, 6, 6, tzinfo=timezone.utc), v2=True)
+        [session] = inputs[(emp_id, DAY)].sessions
+        assert session.no_break_attested is True
+
+
+def test_rosters_read_the_scheduling_policy_limits(tenant, fake_clock):
+    """IG-AS-79: SCHEDULING_POLICY min_rest_hours / max_hours_per_week set the roster limits; none = IG-AS-31."""
+    from app.services import roster_validation
+
+    admin, cid, emp_id = tenant["admin"], tenant["cid"], tenant["emp_id"]
+    fake_clock.at_ist("2026-11-06", "10:00")  # after the tenant's settings rows start (the fixture starts 19 Oct)
+    with tenant_db(cid) as db:
+        before = roster_validation.limits_for(db, cid, [emp_id], DAY).per_employee[emp_id]
+    assert (before.min_rest_hours.value, before.weekly_max_hours.value) == (11, 48)
+    enable_v2(cid)
+    r = admin.post("/api/v1/attendance/policies", json={"type": "SCHEDULING_POLICY", "name": "Plant schedules",
+                                                        "fields": {"min_rest_hours": 12, "max_hours_per_week": 40}})
+    assert r.status_code == 201, r.text
+    policy_id = r.json()["id"]
+    assert admin.put(f"/api/v1/attendance/policies/{policy_id}/assignments",
+                     json={"rules": [{"criteria": {"everyone": True}, "priority": 10}]}).status_code == 200
+    activated = admin.post(f"/api/v1/attendance/policies/{policy_id}/versions/1/activate",
+                           json={"effective_from": "2026-01-01", "reason": "plant limits"})
+    assert activated.status_code == 200, activated.text
+    with tenant_db(cid) as db:
+        after = roster_validation.limits_for(db, cid, [emp_id], DAY).per_employee[emp_id]
+    assert (after.min_rest_hours.value, after.weekly_max_hours.value) == (12, 40)
+    assert after.min_rest_hours.source_ref == "SCHEDULING_POLICY"

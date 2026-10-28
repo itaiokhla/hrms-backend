@@ -28,6 +28,8 @@ NO_PACK_DEFAULTS = {
     "privacy.regime_code": None,
     "privacy.tracking_outside_hours_prohibited": False,
     "rounding.allowed_modes": None,  # all modes
+    "breaks.rules": (),  # no statutory meal / rest breaks (04-attendance/03 step 5b)
+    "rest.min_between_shifts_hours": None,  # no statutory rest between shifts (step 17)
 }
 
 

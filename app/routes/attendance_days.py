@@ -50,6 +50,22 @@ def list_days(employee_id: int = Query(..., ge=1), start: date = Query(...), end
     return {"items": [attendance_days.as_json(rows[key]) for key in sorted(rows)]}
 
 
+@router.get("/attendance/exceptions")
+def list_exceptions(start: date = Query(...), end: date = Query(...), code: Optional[str] = Query(None, max_length=40),
+                    employee_id: Optional[int] = Query(None, ge=1), skip: int = Query(0, ge=0),
+                    limit: int = Query(50, ge=1, le=200), principal: Principal = Depends(require(READ)),
+                    db: Session = Depends(get_db)):
+    """Exceptions of decided days in the caller's ``attendance:read`` scope (04-attendance/03 §12)."""
+    attendance_access.require_v2(db, principal.company_id)
+    if employee_id is not None:
+        authz.ensure_employee_access(db, principal, READ, employee_id)
+    from app.models.attendance import AttendanceDay
+
+    scope = authz.employee_scope(db, principal, READ).clause(AttendanceDay.employee_id)
+    return attendance_days.exceptions(db, principal.company_id, scope, start, end, code=code,
+                                      employee_id=employee_id, skip=skip, limit=limit)
+
+
 @router.get("/attendance/days/{employee_id:int}/{shift_date}")
 def get_day(employee_id: int, shift_date: date, explain: bool = False,
             principal: Principal = Depends(require(READ)), db: Session = Depends(get_db)):

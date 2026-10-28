@@ -1132,6 +1132,171 @@ class AttendanceRulesPolicy(PolicyFields):
         return self
 
 
+ATTENDANCE_REQUEST_KINDS = ("MISSED_PUNCH", "ADD_SESSION", "CORRECTION", "VOID_SESSION", "MARK_EXCUSE",
+                            "STATUS_OVERRIDE")
+SELF_REQUEST_KINDS = ("MISSED_PUNCH", "ADD_SESSION", "CORRECTION", "VOID_SESSION", "MARK_EXCUSE")
+DAY_RESULT_VALUES = ("PRESENT", "HALF_DAY", "ABSENT", "MISSING_PUNCH", "UNMARKED", "PENDING", "OFF")
+WEEKDAY_CHOICES = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
+RequestKinds = Annotated[tuple[str, ...], ChoiceSetRule(choices=ATTENDANCE_REQUEST_KINDS)]
+SelfKinds = Annotated[tuple[str, ...], ChoiceSetRule(choices=SELF_REQUEST_KINDS)]
+DayResultSet = Annotated[tuple[str, ...], ChoiceSetRule(choices=DAY_RESULT_VALUES)]
+WeekdaySet = Annotated[tuple[str, ...], ChoiceSetRule(choices=WEEKDAY_CHOICES)]
+BackdateDays = Annotated[int, IntRule(minimum=0, maximum=90, unit="days")]
+CutoffHours = Annotated[int, IntRule(minimum=0, maximum=336, unit="hours")]
+
+
+class RequestLimit(_Strict):
+    kinds: RequestKinds
+    period: Literal["DAY", "WEEK", "CYCLE"] = "CYCLE"
+    max_count: Annotated[int, IntRule(minimum=1, maximum=100)] | None = None
+    max_minutes: Annotated[int, IntRule(minimum=1, maximum=2400, unit="minutes")] | None = None
+
+    @model_validator(mode="after")
+    def _bounded(self) -> "RequestLimit":
+        if not self.kinds:
+            raise ValueError("kinds: name at least one request kind")
+        if self.max_count is None and self.max_minutes is None:
+            raise ValueError("a limit needs max_count or max_minutes")
+        return self
+
+
+class RequestExcuse(_Strict):
+    max_minutes_per_request: Annotated[int, IntRule(minimum=1, maximum=480, unit="minutes")] | None = None
+
+
+class RequestOnDuty(_Strict):
+    enabled: bool = True
+    remote_work_enabled: bool = False
+    remote_work_counts_as_holiday_work: bool = False
+    backdate_days: BackdateDays = 7
+    future_days: Annotated[int, IntRule(minimum=0, maximum=365, unit="days")] = 60
+    max_days_per_cycle: Annotated[int, IntRule(minimum=1, maximum=31, unit="days")] | None = None
+    partial_day_allowed: bool = True
+    requires_punch: bool = False
+
+
+def _default_limits() -> list:
+    return [RequestLimit(kinds=("MISSED_PUNCH", "ADD_SESSION", "CORRECTION"), period="CYCLE", max_count=4),
+            RequestLimit(kinds=("MARK_EXCUSE",), period="CYCLE", max_count=2)]
+
+
+class AttendanceRequestPolicy(PolicyFields):
+    """Spine §6.2.3; AS 04-attendance/02 §4.4 (semantics 04-attendance/04). Consumed by attendance requests (AS-M4)."""
+
+    profile: Literal["LEGACY_V1", "STANDARD"] = _f("STANDARD", "LEGACY_V1 = no self-service requests (today).")
+    self_kinds: SelfKinds = _f(("MISSED_PUNCH", "ADD_SESSION", "CORRECTION", "MARK_EXCUSE"),
+                               "What employees may request for themselves (never a status override).")
+    limits: list[RequestLimit] = _f(help_="Request limits per day, week or attendance cycle.",
+                                          factory=_default_limits)
+    excuse: RequestExcuse = _f(help_="Late / early excuses.", factory=RequestExcuse)
+    blocked_day_results: DayResultSet = _f((), "Day results on which an excuse cannot be filed.")
+    backdate_days: BackdateDays = _f(7, "How far back a request may go.")
+    window_mode: Literal["ROLLING", "UNTIL_CUTOFF", "ROLLING_AND_CUTOFF"] = _f(
+        "ROLLING_AND_CUTOFF", "Requests close after the backdate days, the payroll cutoff, or both.")
+    future_days: Annotated[int, IntRule(minimum=0, maximum=31, unit="days")] = _f(0, "How far ahead a request may go.")
+    comment_required: bool = _f(False, "Every request needs a comment.")
+    attachment_required_kinds: RequestKinds = _f((), "Request kinds that need an attachment.")
+    on_duty: RequestOnDuty = _f(help_="On-duty and remote work.", factory=RequestOnDuty)
+
+    @model_validator(mode="after")
+    def _combinations(self) -> "AttendanceRequestPolicy":
+        if len(self.limits) > 10:
+            raise ValueError("limits: at most 10 limits")
+        return self
+
+
+class SwapRequestRules(_Strict):
+    enabled: bool = False
+    cutoff_hours: CutoffHours = 24
+    approval_required: bool = True
+    max_per_period: Annotated[int, IntRule(minimum=1, maximum=1000)] | None = None
+    limit_window: Literal["WEEK", "MONTH", "ATTENDANCE_CYCLE"] = "MONTH"
+    approver_may_extend: bool = False
+
+
+class GiveAwayRequestRules(SwapRequestRules):
+    pay_effect: Literal["PAID_OFF", "LEAVE_REQUIRED", "UNPAID_OFF"] | None = None  # None = per giver (JC-AS-49)
+
+
+class SchedulingRequests(_Strict):
+    swap: SwapRequestRules = Field(default_factory=SwapRequestRules)
+    drop: GiveAwayRequestRules = Field(default_factory=GiveAwayRequestRules)
+    release: GiveAwayRequestRules = Field(default_factory=lambda: GiveAwayRequestRules(cutoff_hours=48))
+    pickup_approval_required: bool = True
+    change_enabled: bool = True
+    change_cutoff_hours: CutoffHours = 48
+
+
+class CoverageRule(_Strict):
+    team_id: Annotated[int, IntRule(minimum=1)] | None = None
+    branch_id: Annotated[int, IntRule(minimum=1)] | None = None
+    site_id: Annotated[int, IntRule(minimum=1)] | None = None
+    shift_id: Annotated[int, IntRule(minimum=1)]
+    weekdays: WeekdaySet = ()
+    min_count: Annotated[int, IntRule(minimum=1, maximum=500)] = 1
+    required_tags: list[str] = Field(default_factory=list)
+
+
+class OpenShiftEligibility(_Strict):
+    same_team: bool = True
+    same_branch: bool = True
+    priority: Literal["NONE", "EXISTING_PART_TIME_FIRST"] = "NONE"
+    exclusive_window_hours: Annotated[int, IntRule(minimum=0, maximum=168, unit="hours")] = 0
+
+
+class Availability(_Strict):
+    enabled: bool = False
+    change_notice_days: Annotated[int, IntRule(minimum=0, maximum=60, unit="days")] = 7
+    approval_required: bool = True
+
+
+class WorkLocationPlan(_Strict):
+    mode: Literal["NONE", "PATTERN", "ROSTER"] = "NONE"
+    pattern: dict[Literal["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"],
+                  Literal["ON_SITE", "REMOTE", "EMPLOYEE_CHOICE"]] = Field(default_factory=dict)
+
+
+class SchedulingPolicy(PolicyFields):
+    """Spine §6.2.4; AS 04-attendance/02 §4.5 (semantics 03-shifts/02, /03). Consumed by rosters (AS-M5) and shift
+    requests (AS-M6); write gate ``shift:manage``."""
+
+    profile: Literal["LEGACY_V1", "STANDARD"] = _f("STANDARD", "LEGACY_V1 = placement shifts, no rosters (today).")
+    schedule_source: Literal["PLACEMENT", "ROSTER"] = _f("PLACEMENT", "Shifts come from placements or rosters.")
+    holiday_mode: Literal["HOLIDAY_OFF", "WORK_THROUGH", "HOLIDAY_SKELETON"] = _f(
+        "HOLIDAY_OFF", "Holidays are off, worked through, or covered by a skeleton crew.")
+    skeleton_coverage: dict[str, Annotated[int, IntRule(minimum=1, maximum=50)]] = _f(
+        help_="Skeleton crew per shift id on holidays.", factory=dict)
+    publish_notice_days: Annotated[int, IntRule(minimum=0, maximum=28, unit="days")] = _f(
+        7, "Rosters are published this many days ahead.")
+    rule_severity: dict[str, Literal["WARN", "REQUIRE_REASON", "BLOCK"]] = _f(
+        help_="Raise the severity of roster rules (never lower a pack's).", factory=dict)
+    min_rest_hours: Annotated[int, IntRule(minimum=1, maximum=48, unit="hours")] | None = _f(
+        None, "Least rest between shifts.")
+    max_consecutive_days: Annotated[int, IntRule(minimum=1, maximum=31, unit="days")] | None = _f(
+        None, "Most working days in a row.")
+    max_days_per_week: Annotated[int, IntRule(minimum=1, maximum=7, unit="days")] | None = _f(
+        None, "Most working days per week.")
+    max_hours_per_week: Annotated[int, IntRule(minimum=1, maximum=168, unit="hours")] | None = _f(
+        None, "Most hours per week.")
+    coverage_rules: list[CoverageRule] = _f(help_="Least staff per shift.", factory=list)
+    requests: SchedulingRequests = _f(help_="Swaps, drops, releases, pickups and changes.", factory=SchedulingRequests)
+    open_shift_eligibility: OpenShiftEligibility = _f(help_="Who may pick up open shifts.", factory=OpenShiftEligibility)
+    availability: Availability = _f(help_="Employee availability.", factory=Availability)
+    acknowledge_published_shifts: bool = _f(False, "Employees acknowledge published shifts.")
+    work_location_plan: WorkLocationPlan = _f(help_="Office, home or choice per day.", factory=WorkLocationPlan)
+    lints_enabled: bool = _f(True, "Show roster lints while planning.")
+
+    @model_validator(mode="after")
+    def _combinations(self) -> "SchedulingPolicy":
+        if self.holiday_mode == "HOLIDAY_SKELETON" and not self.skeleton_coverage:
+            raise ValueError("skeleton_coverage: a skeleton crew needs at least one shift count")
+        if len(self.coverage_rules) > 50:
+            raise ValueError("coverage_rules: at most 50 rules")
+        if self.work_location_plan.mode == "ROSTER" and self.schedule_source != "ROSTER":
+            raise ValueError("work_location_plan: a roster-based plan needs schedule_source ROSTER")
+        return self
+
+
 # --------------------------------------------------------------------------- the type catalogue
 
 
@@ -1194,6 +1359,12 @@ POLICY_TYPES: Final[Mapping[str, PolicyTypeDef]] = types.MappingProxyType({
                       module="attendance"),
         PolicyTypeDef("ATTENDANCE_RULES_POLICY", "Attendance rules", (), "DAY", AttendanceRulesPolicy,
                       "Attendance rules", "AS spine §6.2.2", write_permission="attendance:manage_policy",
+                      module="attendance"),
+        PolicyTypeDef("ATTENDANCE_REQUEST_POLICY", "Requests & approvals", (), "DAY", AttendanceRequestPolicy,
+                      "Requests & approvals", "AS spine §6.2.3", write_permission="attendance:manage_policy",
+                      module="attendance"),
+        PolicyTypeDef("SCHEDULING_POLICY", "Shifts & schedules", (), "DAY", SchedulingPolicy,
+                      "Shifts & schedules", "AS spine §6.2.4", write_permission="shift:manage",
                       module="attendance"),
     )
 })

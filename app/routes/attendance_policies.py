@@ -16,9 +16,10 @@ SP-AS-024; "no pack" until G-14) and warns that employees without a face consent
 """
 
 from datetime import date
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, Query, Request
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.core import authz, clock
@@ -29,6 +30,7 @@ from app.models.org import LegalEntity
 from app.models.payroll_config import Policy, PolicyVersion
 from app.payroll import policy_types as pt
 from app.payroll.routes.policies import ActivateIn, AssignmentsIn, PolicyIn, VersionIn, _dump
+from app.services import attendance_days
 from app.payroll.services import idempotency
 from app.payroll.services import policies as service
 from app.services import attendance_access, attendance_policies, attendance_setup, pack_resolver
@@ -37,6 +39,13 @@ router = APIRouter(prefix="/api/v1", tags=["Attendance policies"])
 MANAGE = "attendance:manage_policy"
 WRITERS = require(MANAGE)
 FACE_WARNING = "Employees without a face consent punch without face matching (no flag, no review)."
+
+
+class AttendanceActivateIn(ActivateIn):
+    """Payroll's activation body + ``apply_to_locked_periods`` (§8.5, D-AS-44): recompute INPUT_LOCKED / FINALIZED
+    dates too (needs a reason). Without it only dates in OPEN payroll periods are re-evaluated."""
+
+    apply_to_locked_periods: bool = False
 
 
 def _attendance_type(code: str) -> str:
@@ -133,9 +142,12 @@ def _activation_checks(db: Session, principal: Principal, fields: Dict[str, Any]
 
 
 @router.post("/attendance/policies/{policy_id:int}/versions/{version_no:int}/activate")
-def activate_version(policy_id: int, version_no: int, request: Request, data: Optional[ActivateIn] = Body(None),
+def activate_version(policy_id: int, version_no: int, request: Request,
+                     data: Optional[AttendanceActivateIn] = Body(None),
                      principal: Principal = Depends(WRITERS), db: Session = Depends(get_db)):
-    body = data or ActivateIn()
+    body = data or AttendanceActivateIn()
+    if body.apply_to_locked_periods and not (body.reason or "").strip():
+        raise bad_request("Give a reason to recompute days of locked payroll periods.", "REASON_REQUIRED")
     policy = _own_policy(db, principal, policy_id)
     row = service._version(db, principal.company_id, policy_id, version_no)
     # V-AS-02: a STANDARD version of every attendance type except capture needs attendance v2 (SP-AS-221).
@@ -149,9 +161,36 @@ def activate_version(policy_id: int, version_no: int, request: Request, data: Op
     def handler():
         result = service.activate_version(db, principal, policy_id, version_no, effective_from=body.effective_from,
                                           reason=body.reason)
-        return 200, result | {"warnings": warnings}
+        # AS-M3: re-evaluate the covered dates (v2 tenants; OPEN payroll periods unless apply_to_locked_periods).
+        job = attendance_days.schedule_config_recompute(
+            db, principal.company_id, trigger="POLICY_CHANGED", source=f"policy:{policy_id}:v{version_no}",
+            effective_from=start, apply_to_locked_periods=body.apply_to_locked_periods)
+        return 200, result | {"warnings": warnings, "recompute_job_id": getattr(job, "id", None)}
 
     return idempotency.execute(db, principal, request, handler, body=_dump(data))
+
+
+class SimulateIn(BaseModel):
+    """02 §5.4 request: the proposed activation date, assignment rules and locked-period choice."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    effective_from: Optional[date] = None
+    assignments: Optional[List[Dict[str, Any]]] = Field(None, max_length=50)
+    apply_to_locked_periods: bool = False
+
+
+@router.post("/attendance/policies/{policy_id:int}/versions/{version_no:int}/simulate")
+def simulate_version(policy_id: int, version_no: int, data: Optional[SimulateIn] = Body(None),
+                     principal: Principal = Depends(WRITERS), db: Session = Depends(get_db)):
+    """Impact preview (02 §5.4): permission-checked like activation, never writes (no idempotency needed)."""
+    from app.services import attendance_simulate
+
+    body = data or SimulateIn()
+    _own_policy(db, principal, policy_id)
+    return attendance_simulate.simulate(db, principal, policy_id, version_no, effective_from=body.effective_from,
+                                        assignments=body.assignments,
+                                        apply_to_locked_periods=body.apply_to_locked_periods)
 
 
 @router.get("/attendance/policies/{policy_id:int}/assignments")

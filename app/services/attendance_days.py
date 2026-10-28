@@ -20,6 +20,7 @@ prices time (payroll reads the rows through ``DAY_RESULT_TO_LEDGER``, JC-AS-01).
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
@@ -35,7 +36,7 @@ from app.models.attendance import Attendance, AttendanceDay, AttendanceDayVersio
 from app.models.employee import Employee
 from app.models.time_inputs import OnDutyRequest
 from app.payroll.services import time_inputs as ti
-from app.services import attendance_access, attendance_policies, attendance_service
+from app.services import attendance_access, attendance_service
 from app.services import day_evaluation as de
 from app.services import shift_engine as engine
 from app.services import shift_resolution
@@ -45,6 +46,7 @@ MAX_DAYS = 31
 MAX_RECOMPUTE_DAYS = 62
 WRITE_MODES = de.EVALUATION_WRITE_MODES
 RULES = "ATTENDANCE_RULES_POLICY"
+CAPTURE = "ATTENDANCE_CAPTURE_POLICY"
 # Triggers that carry a decision: on an OPEN day they still write a version row (decision lineage, AS-REL-02).
 DECISION_TRIGGERS = ("REQUEST_DECIDED", "ON_DUTY_DECIDED", "LEAVE_CHANGED")
 SETTING_KEYS = ("attendance.grace_minutes", "attendance.night_window", "attendance.day_close.buffer_minutes",
@@ -59,6 +61,7 @@ class WriteResult:
     unchanged: int = 0
     versions: int = 0
     changes_logged: int = 0
+    skipped_locked: int = 0  # configuration triggers leave INPUT_LOCKED / FINALIZED dates alone (§8.5)
 
     def as_dict(self) -> dict:
         return dict(self.__dict__)
@@ -89,29 +92,161 @@ def _night_window(value) -> Tuple[str, str]:
         return "22:00", "06:00"
 
 
-class _PerEmployee:
-    """Policy and setting resolution per (employee, date): resolved at the first and last date of the range, and
-    per date only for employees whose answer differs between the two (a mid-range change)."""
+AMBIGUOUS = "AMBIGUOUS"  # a runtime priority tie (SP-AS-085): the day is PENDING with NOT_EVALUATED
+RESOLVED_TYPES = ("ATTENDANCE_RULES_POLICY", "ATTENDANCE_REQUEST_POLICY", "SCHEDULING_POLICY",
+                  "ATTENDANCE_CAPTURE_POLICY", "ATTENDANCE_PAY_POLICY", "LATE_PENALTY_POLICY", "OVERTIME_POLICY")
 
-    def __init__(self, days: Sequence[date], resolve) -> None:
-        self.days = list(days)
-        self.resolve = resolve
-        self.cache: Dict[Tuple[int, date], object] = {}
 
-    def get(self, employee_id: int, day: date):
-        key = (employee_id, day)
-        if key in self.cache:
-            return self.cache[key]
+class _Resolver:
+    """Batch policy and setting resolution of one chunk (spine §5.11; IG-AS-72).
+
+    Policies: per type and date, the employees' placements (``policies.employee_attributes`` for all ids), the type's
+    assignment rules and every candidate policy's versions are loaded once and matched in memory. Settings: resolved
+    once per placement context (legal entity, branch, pay group) and date; employees holding their own
+    employee-level rows of the keys (one query finds them) are resolved individually. Both answer at the first and
+    last date of the range and per date only where the two differ, so the query count follows the number of policy
+    types and placement contexts of the chunk, never its head count."""
+
+    def __init__(self, db: Session, company_id: int, employee_ids: Sequence[int], days: Sequence[date],
+                 placement) -> None:
+        self.db, self.company_id, self.ids, self.days = db, company_id, list(employee_ids), list(days)
+        self.placement = placement  # (employee_id, day) -> (legal_entity_id, branch_id, pay_group_id)
+        self._attributes: Dict[date, dict] = {}
+        self._rules: Optional[Dict[str, list]] = None
+        self._versions: dict = {}
+        self._by_date: Dict[Tuple[str, date], dict] = {}
+        self._settings: Dict[tuple, dict] = {}
+        from app.models.payroll_config import SettingValue
+
+        # One read of the keys' rows: employee-level holders and whether any value changes inside the range.
+        rows = (db.query(SettingValue.scope_type, SettingValue.scope_id, SettingValue.effective_from,
+                         SettingValue.effective_to)
+                .filter(SettingValue.company_id == company_id, SettingValue.key.in_(SETTING_KEYS),
+                        SettingValue.status == "ACTIVE").all())
         first, last = self.days[0], self.days[-1]
-        for edge in (first, last):
-            if (employee_id, edge) not in self.cache:
-                self.cache[(employee_id, edge)] = self.resolve(employee_id, edge)
-        if self.cache[(employee_id, first)] == self.cache[(employee_id, last)]:
-            for d in self.days:
-                self.cache.setdefault((employee_id, d), self.cache[(employee_id, first)])
+        self._personal = {r.scope_id for r in rows if r.scope_type == "EMPLOYEE" and r.scope_id in set(self.ids)}
+        self._settings_stable = not any(
+            first < r.effective_from <= last or (r.effective_to is not None and first <= r.effective_to < last)
+            for r in rows)
+        # Placements: the edge dates differ only when an assignment starts or ends inside the range.
+        self._placements_stable = all(placement(e, first) == placement(e, last) for e in self.ids)
+
+    # -- policies
+    def _attrs(self, day: date) -> dict:
+        if day != self.days[0] and self._placements_stable:
+            day = self.days[0]
+        if day not in self._attributes:
+            self._attributes[day] = {a.employee_id: a for a in ti_policies().employee_attributes(
+                self.db, self.company_id, day, self.ids)}
+        return self._attributes[day]
+
+    def _for_date(self, type_code: str, day: date) -> dict:
+        key = (type_code, day)
+        if key in self._by_date:
+            return self._by_date[key]
+        policies = ti_policies()
+        if self._rules is None:
+            self._load_rules()
+        from app.payroll import policy_types as pt
+
+        found = {}
+        for employee_id in self.ids:
+            person = self._attrs(day).get(employee_id)
+            if person is None:
+                found[employee_id] = None
+                continue
+            result = pt.resolve_assignment(self._rules.get(type_code, []), person, on=day)
+            if result.status == "AMBIGUOUS":
+                found[employee_id] = AMBIGUOUS
+            elif result.status != "RESOLVED":
+                found[employee_id] = None
+            else:
+                versions = self._versions.get(int(result.rule.policy_id), [])
+                found[employee_id] = policies._active_on(versions, day)
+        self._by_date[key] = found
+        return found
+
+    def _load_rules(self) -> None:
+        """The ACTIVE assignment rules of every type the evaluation reads, and their policies' versions."""
+        from sqlalchemy import and_
+
+        from app.models.payroll_config import Policy, PolicyAssignment
+        from app.payroll import policy_types as pt
+
+        rows = (self.db.query(PolicyAssignment, Policy.type)
+                .join(Policy, and_(Policy.id == PolicyAssignment.policy_id,
+                                   Policy.company_id == PolicyAssignment.company_id))
+                .filter(PolicyAssignment.company_id == self.company_id, PolicyAssignment.status == "ACTIVE",
+                        Policy.type.in_(RESOLVED_TYPES), Policy.status == "ACTIVE")
+                .order_by(PolicyAssignment.id).all())
+        self._rules = {}
+        for r, type_code in rows:  # the same conversion as policies._type_rules
+            self._rules.setdefault(type_code, []).append(pt.AssignmentRule(
+                rule_id=r.id, policy_id=r.policy_id, priority=r.priority, criteria=r.criteria,
+                effective_from=r.effective_from, effective_to=r.effective_to))
+        ids = sorted({int(rule.policy_id) for rules in self._rules.values() for rule in rules})
+        self._versions = ti_policies()._versions(self.db, self.company_id, ids)
+
+    def version(self, type_code: str, employee_id: int, day: date):
+        """The ACTIVE ``PolicyVersion`` (or None, or ``AMBIGUOUS``) of the type for the employee on ``day``."""
+        first, last = self.days[0], self.days[-1]
+        a = self._for_date(type_code, first).get(employee_id)
+        b = self._for_date(type_code, last).get(employee_id)
+        if _same(a, b):
+            return a
+        return self._for_date(type_code, day).get(employee_id)
+
+    # -- settings
+    def _settings_at(self, employee_id: int, day: date) -> dict:
+        from app.payroll.services import settings as settings_service
+
+        if employee_id in self._personal:
+            key = ("employee", employee_id, day)
+            kwargs = {"employee_id": employee_id}
         else:
-            self.cache[key] = self.resolve(employee_id, day)
-        return self.cache[key]
+            le, branch, group = self.placement(employee_id, day)
+            key = ("context", le, branch, group, day)
+            kwargs = {"legal_entity_id": le, "branch_id": branch, "pay_group_id": group}
+        if key not in self._settings:
+            if "employee_id" in kwargs:
+                resolved = settings_service.resolve_many(self.db, self.company_id, SETTING_KEYS, on=day,
+                                                         strict=False, **kwargs)
+            else:
+                # The scope chain of a placement context, built from rows already in the session (no derived
+                # defaults among SETTING_KEYS, so no context facts are needed): two queries per context and date.
+                from app.models.company import Company
+                from app.models.org import LegalEntity
+                from app.payroll import settings_registry as reg
+
+                company = self.db.get(Company, self.company_id)
+                entity = self.db.get(LegalEntity, kwargs["legal_entity_id"]) if kwargs["legal_entity_id"] else None
+                ctx = settings_service.Context(
+                    company_id=self.company_id, on=day, legal_entity_id=kwargs["legal_entity_id"],
+                    branch_id=kwargs["branch_id"], pay_group_id=kwargs["pay_group_id"],
+                    country_code=getattr(entity, "country_code", None),
+                    partner_id=getattr(company, "partner_id", None))
+                canonical = [reg.canonical_key(k) for k in SETTING_KEYS]
+                found = settings_service.resolve_in_context(self.db, ctx, canonical, strict=False)
+                resolved = {name: found[key] for name, key in zip(SETTING_KEYS, canonical)}
+            self._settings[key] = {k: getattr(item, "value", None) for k, item in resolved.items()}
+        return self._settings[key]
+
+    def settings(self, employee_id: int, day: date) -> dict:
+        first, last = self.days[0], self.days[-1]
+        if self._settings_stable and self.placement(employee_id, first) == self.placement(employee_id, last):
+            return self._settings_at(employee_id, first)
+        a, b = self._settings_at(employee_id, first), self._settings_at(employee_id, last)
+        return a if a == b else self._settings_at(employee_id, day)
+
+
+def _same(a, b) -> bool:
+    if a is None or b is None or a == AMBIGUOUS or b == AMBIGUOUS:
+        return a == b
+    return a.id == b.id
+
+
+def _fields(version) -> dict:
+    return dict(version.fields or {}) if version is not None and version != AMBIGUOUS else {}
 
 
 def ti_policies():
@@ -120,19 +255,29 @@ def ti_policies():
     return policies
 
 
-def _attendance_rules(db: Session, company_id: int, employee_id: int, day: date, v2: bool):
-    """(rules_mode, RulesParams, {type: policy_version_id}): STANDARD only for v2 tenants with a STANDARD rules
-    version (V-AS-02); without a resolved rules version the day is evaluated as LEGACY_V1 (the zero-diff port)."""
-    found = attendance_policies.explain(db, company_id, RULES, employee_id, day)
-    if found.get("status") != "RESOLVED":
-        return de.LEGACY_V1, de.RulesParams(), {}
-    version = found["version"]
-    fields = dict(version.get("fields") or {})
-    ids = {RULES: int(version["id"])}
-    params = de.RulesParams.from_fields(fields)
-    if not v2 or (fields.get("profile") or "STANDARD") != "STANDARD":
-        return de.LEGACY_V1, params, ids
-    return de.STANDARD, params, ids
+MODE_TYPES = (RULES, "ATTENDANCE_REQUEST_POLICY", "SCHEDULING_POLICY")  # capture never switches a day (02 §4.1)
+
+
+def _rules_mode(versions: Mapping[str, object], v2: bool):
+    """(rules_mode, RulesParams, {type: policy_version_id}, tie) — spine §5.6: LEGACY_V1 when every resolved version
+    of the rules, request and scheduling types is LEGACY_V1 (or none resolves: the zero-diff port), else STANDARD,
+    and STANDARD only on v2 tenants (V-AS-02). A LEGACY_V1 rules version inside a STANDARD day contributes its fields
+    over the STANDARD defaults (mixed sets, AS-POL-03). A priority tie of any of the three is reported (SP-AS-085)."""
+    ids: Dict[str, int] = {}
+    profiles: List[str] = []
+    tie = False
+    for type_code in MODE_TYPES:
+        version = versions.get(type_code)
+        if version == AMBIGUOUS:
+            tie = True
+            continue
+        if version is None:
+            continue
+        ids[type_code] = int(version.id)
+        profiles.append(str((version.fields or {}).get("profile") or "STANDARD"))
+    params = de.RulesParams.from_fields(_fields(versions.get(RULES)))
+    standard = v2 and any(profile == "STANDARD" for profile in profiles)
+    return (de.STANDARD if standard else de.LEGACY_V1), params, ids, tie
 
 
 def _company_zone(db: Session, company_id: int) -> str:
@@ -142,28 +287,29 @@ def _company_zone(db: Session, company_id: int) -> str:
     return (company.timezone if company is not None else None) or "UTC"
 
 
-def _legacy_params(db: Session, company_id: int, employee_id: int, day: date) -> de.LegacyPayParams:
+def _legacy_from(pay: Mapping, late: Mapping) -> de.LegacyPayParams:
     """Payroll's own ``ATTENDANCE_PAY_POLICY`` / ``LATE_PENALTY_POLICY`` fields (read, never copied; §2.4)."""
-    pay = ti_policies().resolve_for_employee(db, company_id, "ATTENDANCE_PAY_POLICY", employee_id, day)
-    late = ti_policies().resolve_for_employee(db, company_id, "LATE_PENALTY_POLICY", employee_id, day)
-    pf = (pay.get("version") or {}).get("fields") or {} if pay.get("status") == "RESOLVED" else {}
-    lf = (late.get("version") or {}).get("fields") or {} if late.get("status") == "RESOLVED" else {}
     return de.LegacyPayParams(
-        derive_status_from_hours=bool(pf.get("derive_status_from_hours", False)),
-        full_day_min_hours=Decimal(str(pf.get("full_day_min_hours", "8.0"))),
-        half_day_min_hours=Decimal(str(pf.get("half_day_min_hours", "4.0"))),
-        early_exit_grace_minutes=int(lf.get("early_exit_grace_minutes", 15)))
+        derive_status_from_hours=bool(pay.get("derive_status_from_hours", False)),
+        full_day_min_hours=Decimal(str(pay.get("full_day_min_hours", "8.0"))),
+        half_day_min_hours=Decimal(str(pay.get("half_day_min_hours", "4.0"))),
+        early_exit_grace_minutes=int(late.get("early_exit_grace_minutes", 15)))
 
 
-def _overtime_view(db: Session, company_id: int, employee_id: int, day: date, values: Mapping) -> de.OvertimeView:
+def _legacy_params(db: Session, company_id: int, employee_id: int, day: date) -> de.LegacyPayParams:
+    """``_legacy_from`` for one employee and date (the cut-over comparison)."""
+    resolver = _Resolver(db, company_id, [employee_id], [day], lambda e, d: (None, None, None))
+    return _legacy_from(_fields(resolver.version("ATTENDANCE_PAY_POLICY", employee_id, day)),
+                        _fields(resolver.version("LATE_PENALTY_POLICY", employee_id, day)))
+
+
+def _overtime_view(overtime_fields: Mapping, values: Mapping) -> de.OvertimeView:
     if not values.get("payroll.overtime.enabled"):
         return de.OvertimeView()
     from app.payroll.time_pay_overtime import parse_overtime_policy
 
-    found = ti_policies().resolve_for_employee(db, company_id, "OVERTIME_POLICY", employee_id, day)
-    fields = (found.get("version") or {}).get("fields") or {} if found.get("status") == "RESOLVED" else {}
     try:
-        rules = parse_overtime_policy(fields)
+        rules = parse_overtime_policy(dict(overtime_fields))
         threshold = int(rules.daily_threshold * 60) if rules.daily_threshold is not None else None
         daily = rules.threshold_combination in ("DAILY", "DAILY_THEN_WEEKLY")
     except Exception:  # an invalid payroll policy is payroll's exception, never a reason to stop evaluating
@@ -173,12 +319,48 @@ def _overtime_view(db: Session, company_id: int, employee_id: int, day: date, va
                            weekly_off_pay=bool(values.get("payroll.weekly_off_pay.enabled")))
 
 
-def _settings(db: Session, company_id: int, employee_id: int, day: date) -> dict:
-    from app.payroll.services import settings as settings_service
+def _capture(capture_version) -> Tuple[bool, bool]:
+    """(capture_required, shift_required) of the capture policy; LEGACY_V1 or none = the current behaviour (punching
+    required, no shift required)."""
+    fields = _fields(capture_version)
+    if not fields or (fields.get("profile") or "STANDARD") == "LEGACY_V1":
+        return True, False
+    return bool(fields.get("capture_required", True)), bool(fields.get("shift_required", False))
 
-    resolved = settings_service.resolve_many(db, company_id, SETTING_KEYS, employee_id=employee_id, on=day,
-                                             strict=False)
-    return {key: getattr(item, "value", None) for key, item in resolved.items()}
+
+def _attested_sessions(db: Session, company_id: int, session_ids: Sequence[int]) -> set:
+    """Sessions whose punch-out attested "no break taken" (``attendance_events.details``, step 5 (d))."""
+    if not session_ids:
+        return set()
+    from app.models.attendance import AttendanceEvent
+
+    rows = (db.query(AttendanceEvent.attendance_id, AttendanceEvent.details)
+            .filter(AttendanceEvent.company_id == company_id, AttendanceEvent.attendance_id.in_(list(session_ids)),
+                    AttendanceEvent.event_type == "PUNCH_OUT", AttendanceEvent.details.like('%"no_break_taken"%'))
+            .all())
+    found = set()
+    for attendance_id, details in rows:
+        try:
+            if json.loads(details or "{}").get("no_break_taken") is True:
+                found.add(attendance_id)
+        except ValueError:
+            continue
+    return found
+
+
+def scheduling_fields(db: Session, company_id: int, employee_ids: Sequence[int], on: date) -> Dict[int, dict]:
+    """The resolved ``SCHEDULING_POLICY`` fields per employee on ``on`` ({} when none resolves), in one batch — the
+    roster validator's tenant limits (IG-AS-79)."""
+    ids = sorted(set(employee_ids))
+    if not ids:
+        return {}
+    resolver = _Resolver(db, company_id, ids, [on], lambda e, d: (None, None, None))
+    return {e: _fields(resolver.version("SCHEDULING_POLICY", e, on)) for e in ids}
+
+
+def _int_setting(values: Mapping, key: str, default: int) -> int:
+    value = values.get(key)
+    return int(value) if value is not None else default
 
 
 def load_inputs_many(db: Session, company_id: int, employee_ids: Sequence[int], start: date, end: date, *,
@@ -192,18 +374,29 @@ def load_inputs_many(db: Session, company_id: int, employee_ids: Sequence[int], 
     owned = "lh_graph_memo" not in db.info
     if owned:
         db.info["lh_graph_memo"] = {}
+    batch: dict = {}
     try:
-        facts = ti.day_facts_many(db, company_id, ids, start, end)
-        expectations = ti.expected_presence(db, company_id, ids, start, end)
+        facts = ti.day_facts_many(db, company_id, ids, start, end, batch_out=batch)
+        expectations = ti.expected_presence(db, company_id, ids, start, end, facts=facts)
     finally:
         if owned:
             db.info.pop("lh_graph_memo", None)
-    shifts = shift_resolution.shifts_for_many(db, company_id, ids, start, end)
+    shifts = batch.get("shifts")
+    if shifts is None:  # light day facts never resolve shifts
+        shifts = shift_resolution.shifts_for_many(db, company_id, ids, start, end)
+    # The day before the range too: its last OUT is the rest input of the first date (step 17).
     records = (db.query(Attendance)
                .filter(Attendance.company_id == company_id, Attendance.employee_id.in_(ids),
-                       Attendance.date >= start, Attendance.date <= end, Attendance.voided_at.is_(None))
+                       Attendance.date >= start - timedelta(days=1), Attendance.date <= end,
+                       Attendance.voided_at.is_(None))
                .order_by(Attendance.employee_id, Attendance.date, Attendance.check_in_time).all())
+    last_out: Dict[Tuple[int, date], datetime] = {}
+    for r in records:
+        if r.check_out_time is not None:
+            key = (r.employee_id, r.date)
+            last_out[key] = max(last_out.get(key, r.check_out_time), r.check_out_time)
     breaks = attendance_service.breaks_by_session(db, [r.id for r in records])
+    attested = _attested_sessions(db, company_id, [r.id for r in records])
     sessions: Dict[Tuple[int, date], List[de.SessionData]] = defaultdict(list)
     for r in records:
         sessions[(r.employee_id, r.date)].append(de.SessionData(
@@ -211,7 +404,8 @@ def load_inputs_many(db: Session, company_id: int, employee_ids: Sequence[int], 
             breaks=tuple(de.BreakData(b.id, b.kind, b.started_at, b.ended_at, bool(b.is_paid)) for b in breaks[r.id]),
             content_hash=attendance_service.content_hash(r, breaks[r.id]), capture_source=r.capture_source,
             work_mode=r.work_mode, legacy_status=r.status, late_minutes=r.late_minutes,
-            early_exit=bool(r.early_exit), early_exit_minutes=r.early_exit_minutes))
+            early_exit=bool(r.early_exit), early_exit_minutes=r.early_exit_minutes,
+            no_break_attested=r.id in attested))
     on_duty: Dict[Tuple[int, date], List[de.OnDutyData]] = defaultdict(list)
     for row in (db.query(OnDutyRequest)
                 .filter(OnDutyRequest.company_id == company_id, OnDutyRequest.employee_id.in_(ids),
@@ -219,18 +413,35 @@ def load_inputs_many(db: Session, company_id: int, employee_ids: Sequence[int], 
         on_duty[(row.employee_id, row.date)].append(de.OnDutyData(
             row.id, getattr(row, "kind", None) or "ON_DUTY", row.portion or "FULL", row_version=row.row_version or 1))
 
-    settings = _PerEmployee(days, lambda e, d: _settings(db, company_id, e, d))
-    rules = _PerEmployee(days, lambda e, d: _attendance_rules(db, company_id, e, d, v2))
-    legacy = _PerEmployee(days, lambda e, d: _legacy_params(db, company_id, e, d))
-    capture = _PerEmployee(days, lambda e, d: _capture(db, company_id, e, d))
+    fact_index = {(employee_id, f.date): f for employee_id, rows in facts.items() for f in rows}
+
+    def placement(employee_id: int, day: date):
+        fact = fact_index.get((employee_id, day))
+        assignment = getattr(fact, "assignment", None) if fact is not None else None
+        return (getattr(fact, "legal_entity_id", None), getattr(fact, "branch_id", None),
+                getattr(assignment, "pay_group_id", None))
+
+    resolver = _Resolver(db, company_id, ids, days, placement)
+    packs: Dict[Tuple[Optional[int], date], tuple] = {}
+
+    def pack(legal_entity_id: Optional[int], day: date) -> tuple:
+        """(statutory breaks, rest hours) of the legal entity's WORKING_TIME pack ("no pack": none)."""
+        key = (legal_entity_id, start)  # pack versions are dated per year; one read per entity and chunk
+        if key not in packs:
+            from app.services import pack_resolver
+
+            rules = pack_resolver.resolve(db, company_id, legal_entity_id, "breaks.rules", day).value or ()
+            rest = pack_resolver.resolve(db, company_id, legal_entity_id, "rest.min_between_shifts_hours", day).value
+            packs[key] = (tuple(de.StatutoryBreak(**dict(r)) for r in rules),
+                          Decimal(str(rest)) if rest is not None else None)
+        return packs[key]
 
     company_zone = _company_zone(db, company_id)
     result: Dict[Tuple[int, date], de.DayInputs] = {}
     for employee_id in ids:
         exp_by_day = {x.date: x for x in expectations.get(employee_id, [])}
-        fact_by_day = {f.date: f for f in facts.get(employee_id, [])}
         for day in days:
-            fact = fact_by_day.get(day)
+            fact = fact_index.get((employee_id, day))
             exp = exp_by_day.get(day)
             resolved = shifts.get((employee_id, day))
             zone = (resolved.work_timezone if resolved is not None else None) or (fact.timezone if fact else None) \
@@ -243,10 +454,14 @@ def load_inputs_many(db: Session, company_id: int, employee_ids: Sequence[int], 
                                          roster_entry_id=resolved.roster_entry_id),)
                 except engine.ShiftEngineError:
                     instances = ()
-            values = settings.get(employee_id, day)
-            mode, params, policy_ids = rules.get(employee_id, day)
+            values = resolver.settings(employee_id, day)
+            versions = {t: resolver.version(t, employee_id, day) for t in MODE_TYPES}
+            mode, params, policy_ids, tie = _rules_mode(versions, v2)
             window = _night_window(values.get("attendance.night_window"))
-            cap = capture.get(employee_id, day)
+            capture_required, shift_required = _capture(resolver.version(CAPTURE, employee_id, day))
+            overtime = (_fields(resolver.version("OVERTIME_POLICY", employee_id, day))
+                        if values.get("payroll.overtime.enabled") else {})
+            statutory, rest_hours = pack(fact.legal_entity_id if fact else None, day)
             result[(employee_id, day)] = de.DayInputs(
                 employee_id=employee_id, shift_date=day, work_timezone=zone, now=now,
                 expectation=de.ExpectationData(
@@ -262,26 +477,80 @@ def load_inputs_many(db: Session, company_id: int, employee_ids: Sequence[int], 
                 branch_id=fact.branch_id if fact else None,
                 sessions=tuple(sessions.get((employee_id, day), ())),
                 on_duty=tuple(on_duty.get((employee_id, day), ())),
-                rules_mode=mode, rules=params, legacy=legacy.get(employee_id, day),
+                rules_mode=mode, rules=params,
+                legacy=_legacy_from(_fields(resolver.version("ATTENDANCE_PAY_POLICY", employee_id, day)),
+                                    _fields(resolver.version("LATE_PENALTY_POLICY", employee_id, day))),
                 settings=de.EvalSettings(
-                    grace_minutes=int(values.get("attendance.grace_minutes") or 0)
-                    if values.get("attendance.grace_minutes") is not None else 15,
+                    grace_minutes=_int_setting(values, "attendance.grace_minutes", 15),
                     night_window_start=window[0], night_window_end=window[1],
-                    day_close_buffer_minutes=int(values.get("attendance.day_close.buffer_minutes") or 240)
-                    if values.get("attendance.day_close.buffer_minutes") is not None else 240,
+                    day_close_buffer_minutes=_int_setting(values, "attendance.day_close.buffer_minutes", 240),
                     capture_enabled=values.get("attendance.capture.enabled") is not False),
-                ot_view=_overtime_view(db, company_id, employee_id, day, values),
-                capture_required=cap[0], shift_required=cap[1],
-                policy_version_ids=policy_ids,
+                ot_view=_overtime_view(overtime, values),
+                capture_required=capture_required, shift_required=shift_required,
+                policy_version_ids=policy_ids, not_evaluated=tie,
+                statutory_breaks=statutory, rest_min_between_shifts_hours=rest_hours,
+                previous_last_out_at=last_out.get((employee_id, day - timedelta(days=1))),
             )
     return result
 
 
-def _capture(db: Session, company_id: int, employee_id: int, day: date) -> Tuple[bool, bool]:
-    from app.services import attendance_capture_policy
+# --------------------------------------------------------------------------- payroll period states (§8.5, §10)
 
-    policy = attendance_capture_policy.effective(db, company_id, employee_id, day)
-    return bool(policy.capture_required), bool(policy.shift_required)
+# Configuration triggers recompute dates whose payroll state is OPEN only, unless the change carries
+# ``apply_to_locked_periods`` with a reason (D-AS-44); facts (punches, decisions, leave, holidays, rosters) always
+# recompute their dates and reach locked periods through the stale / retro path.
+CONFIG_TRIGGERS = ("POLICY_CHANGED", "SETTING_CHANGED", "SHIFT_VERSION")
+
+
+def period_states(db: Session, company_id: int, employee_ids: Sequence[int], start: date, end: date, *,
+                  now: Optional[datetime] = None) -> Dict[Tuple[int, date], str]:
+    """``calendars.period_state_on`` for many employees and dates at once (same rule: the pay period of the primary
+    placement's pay group; CLOSED = FINALIZED, PROCESSING = INPUT_LOCKED, OPEN after the employee-local
+    ``input_cutoff_on`` = INPUT_LOCKED; no pay group or no stored period = OPEN)."""
+    from sqlalchemy import or_
+
+    from app.models.org import EmployeeAssignment
+    from app.models.pay_runs import PayPeriod
+    from app.payroll.services.calendars import PERIOD_STATE
+    from app.services import org_structure_service
+
+    ids = sorted(set(employee_ids))
+    days = [start + timedelta(days=n) for n in range((end - start).days + 1)]
+    states = {(e, d): "OPEN" for e in ids for d in days}
+    if not ids:
+        return states
+    placements = (db.query(EmployeeAssignment)
+                  .filter(EmployeeAssignment.company_id == company_id, EmployeeAssignment.employee_id.in_(ids),
+                          EmployeeAssignment.is_primary.is_(True), EmployeeAssignment.effective_from <= end,
+                          or_(EmployeeAssignment.effective_to.is_(None), EmployeeAssignment.effective_to >= start))
+                  .order_by(EmployeeAssignment.effective_from.desc()).all())
+    groups = sorted({p.pay_group_id for p in placements if p.pay_group_id})
+    if not groups:
+        return states
+    periods = (db.query(PayPeriod)
+               .filter(PayPeriod.company_id == company_id, PayPeriod.pay_group_id.in_(groups),
+                       PayPeriod.period_start <= end, PayPeriod.period_end >= start).all())
+    instant = now or clock.utcnow()
+    local_today: Dict[int, date] = {}
+    for employee in db.query(Employee).filter(Employee.company_id == company_id, Employee.id.in_(ids)):
+        local_today[employee.id] = org_structure_service.employee_local_date(db, employee, instant)
+    for employee_id in ids:
+        rows = [p for p in placements if p.employee_id == employee_id]
+        for day in days:
+            placement = next((p for p in rows if p.effective_from <= day
+                              and (p.effective_to is None or p.effective_to >= day)), None)
+            if placement is None or not placement.pay_group_id:
+                continue
+            period = next((p for p in periods if p.pay_group_id == placement.pay_group_id
+                           and p.period_start <= day <= p.period_end), None)
+            if period is None:
+                continue
+            if period.status in PERIOD_STATE:
+                states[(employee_id, day)] = PERIOD_STATE[period.status]
+            elif local_today.get(employee_id) and period.input_cutoff_on \
+                    and local_today[employee_id] > period.input_cutoff_on:
+                states[(employee_id, day)] = "INPUT_LOCKED"
+    return states
 
 
 # --------------------------------------------------------------------------- writing
@@ -301,7 +570,7 @@ def _apply(row: AttendanceDay, ev: de.DayEvaluation) -> None:
 
 def evaluate_range(db: Session, company_id: int, employee_ids: Sequence[int], start: date, end: date, *,
                    trigger: str, mode: str = "NORMAL", now: Optional[datetime] = None,
-                   actor_user_id: Optional[int] = None) -> WriteResult:
+                   actor_user_id: Optional[int] = None, apply_to_locked_periods: bool = False) -> WriteResult:
     """Evaluate and write every (employee, date) of the range (§8.3). The caller commits."""
     if trigger not in de.EVALUATION_TRIGGERS:
         raise bad_request(f"Unknown evaluation trigger {trigger!r}.", "INVALID_TRIGGER")
@@ -323,7 +592,13 @@ def evaluate_range(db: Session, company_id: int, employee_ids: Sequence[int], st
                 AttendanceDayVersion.day_id.in_([r.id for r in existing.values()] or [-1]))
         .group_by(AttendanceDayVersion.day_id).all())}
     result = WriteResult()
+    locked: set = set()
+    if trigger in CONFIG_TRIGGERS and not apply_to_locked_periods and mode == "NORMAL":
+        locked = {k for k, state in period_states(db, company_id, ids, start, end, now=now).items() if state != "OPEN"}
     for key in sorted(inputs):
+        if key in locked:
+            result.skipped_locked += 1
+            continue
         ev = de.evaluate_day(inputs[key])
         result.evaluated += 1
         row = existing.get(key)
@@ -401,13 +676,106 @@ def _log(db: Session, company_id: int, row: AttendanceDay, change: str, mode: st
 
 # --------------------------------------------------------------------------- triggers
 
+RECOMPUTE_JOB = "attendance.recompute_scope"
+# Change-log record types that change what a day evaluates to -> the evaluation trigger (04-attendance/03 §8.1).
+# ``attendance_day`` itself is absent (the write path's own log never schedules itself); pay-only records (LOP,
+# overtime, tasks, wage inputs) change no evaluation.
+CHANGE_TRIGGERS = {
+    "leave": "LEAVE_CHANGED", "on_duty": "ON_DUTY_DECIDED",
+    "holiday": "HOLIDAY_CHANGED", "optional_holiday": "HOLIDAY_CHANGED", "holiday_year": "HOLIDAY_CHANGED",
+    "working_day": "HOLIDAY_CHANGED", "work_week_version": "WORKWEEK_CHANGED", "calendar_link": "WORKWEEK_CHANGED",
+    "shift_version": "SHIFT_VERSION", "shift_rule": "SHIFT_VERSION", "roster_entry": "ROSTER_PUBLISHED",
+    "assignment": "PLACEMENT_CHANGED", "suspension": "PLACEMENT_CHANGED", "attendance": "SESSION_CLOSED",
+}
+# Facts naming one employee recompute their dates whatever their age (§8.5 "facts always recompute"); employee-less
+# configuration changes reach back at most this far (``attendance.recompute.max_back_days``).
+RECOMPUTE_MAX_BACK_DAYS = 62
+
+
+def _v2_cached(db: Session, company_id: int) -> bool:
+    cache = db.info.setdefault("attendance_v2_enabled", {})
+    if company_id not in cache:
+        cache[company_id] = attendance_access.v2_enabled(db, company_id)
+    return cache[company_id]
+
+
+def schedule_recompute(db: Session, company_id: int, change) -> Optional[object]:
+    """Called by ``time_inputs.log_change`` in the changing transaction: one ``attendance.recompute_scope`` job per
+    change of a v2 tenant (idempotent per record version), so leave, on-duty, holiday, work-week, shift, roster and
+    placement decisions re-evaluate the dates they touch (the LH topics of spine §9.1 have no emitter for leave in
+    this repository; the change log is the one signal every source writes, IG-AS-71)."""
+    trigger = CHANGE_TRIGGERS.get(change.record_type)
+    if trigger is None or not _v2_cached(db, company_id):
+        return None
+    from app.payroll.services import jobs
+
+    payload = {"trigger": trigger, "record_type": change.record_type, "record_id": int(change.record_id),
+               "employee_id": change.employee_id,
+               "date_from": change.date_from.isoformat() if change.date_from else None,
+               "date_to": change.date_to.isoformat() if change.date_to else None}
+    key = f"recompute:{change.record_type}:{change.record_id}:{change.version_hash[:16]}"
+    return jobs.enqueue(db, company_id=company_id, type=RECOMPUTE_JOB, payload=payload, idempotency_key=key,
+                        priority=120)
+
+
+def schedule_config_recompute(db: Session, company_id: int, *, trigger: str, source: str, effective_from: date,
+                              apply_to_locked_periods: bool = False) -> Optional[object]:
+    """A configuration change of a v2 tenant (policy activation, attendance setting): every employee's dates from
+    ``max(effective_from, today - 62)`` to today, OPEN payroll periods only unless ``apply_to_locked_periods``
+    (§8.5)."""
+    if trigger not in CONFIG_TRIGGERS or not _v2_cached(db, company_id):
+        return None
+    from app.payroll.services import jobs
+
+    payload = {"trigger": trigger, "record_type": "configuration", "record_id": 0, "employee_id": None,
+               "date_from": effective_from.isoformat(), "date_to": None,
+               "apply_to_locked_periods": bool(apply_to_locked_periods), "source": source[:80]}
+    stamp = clock.utcnow().strftime("%Y%m%dT%H%M%S%f")
+    return jobs.enqueue(db, company_id=company_id, type=RECOMPUTE_JOB, payload=payload,
+                        idempotency_key=f"recompute:config:{source[:60]}:{stamp}", priority=130)
+
+
+def recompute_scope(db: Session, company_id: int, payload: Mapping, *, now: Optional[datetime] = None) -> dict:
+    """The job body: re-evaluate the employees and dates a change names, up to employee-local today (future dates
+    are evaluated by their own punches and day close), in chunks of 500 employees × 31 days."""
+    if not attendance_access.v2_enabled(db, company_id):
+        return {"evaluated": 0, "skipped": "v1"}
+    trigger = payload.get("trigger") if payload.get("trigger") in de.EVALUATION_TRIGGERS else "MANUAL_RECOMPUTE"
+    today = clock.company_today(db, company_id)
+    employee_id = payload.get("employee_id")
+    floor = today - timedelta(days=RECOMPUTE_MAX_BACK_DAYS)
+    first = date.fromisoformat(payload["date_from"]) if payload.get("date_from") else floor
+    last = date.fromisoformat(payload["date_to"]) if payload.get("date_to") else today
+    if employee_id is None:
+        first = max(first, floor)
+    last = min(last, today)
+    if last < first:
+        return {"evaluated": 0}
+    if employee_id is not None:
+        employees = [int(employee_id)]
+    else:
+        employees = [e for (e,) in db.query(Employee.id).filter(Employee.company_id == company_id)
+                     .order_by(Employee.id).all()]
+    totals = WriteResult()
+    for index in range(0, len(employees), MAX_EMPLOYEES):
+        cursor = first
+        while cursor <= last:
+            stop = min(last, cursor + timedelta(days=MAX_DAYS - 1))
+            part = evaluate_range(db, company_id, employees[index:index + MAX_EMPLOYEES], cursor, stop,
+                                  trigger=trigger, now=now,
+                                  apply_to_locked_periods=bool(payload.get("apply_to_locked_periods")))
+            for name, value in part.as_dict().items():
+                setattr(totals, name, getattr(totals, name) + value)
+            cursor = stop + timedelta(days=1)
+    return totals.as_dict()
+
 
 def evaluate_dates(db: Session, company_id: int, employee_id: int, dates: Iterable[date], *, trigger: str,
                    actor_user_id: Optional[int] = None, now: Optional[datetime] = None) -> Optional[WriteResult]:
     """Fact triggers (punch, session closed, decisions) for one employee: v2 tenants only; v1 tenants keep the
     sessions as the payroll input and get no rows outside reconciliation."""
     picked = sorted(set(dates))
-    if not picked or not attendance_access.v2_enabled(db, company_id):
+    if not picked or not _v2_cached(db, company_id):
         return None
     return evaluate_range(db, company_id, [employee_id], picked[0], picked[-1], trigger=trigger, now=now,
                           actor_user_id=actor_user_id)
@@ -463,6 +831,40 @@ def days_for(db: Session, company_id: int, employee_ids: Sequence[int], start: d
                                            AttendanceDay.employee_id.in_(list(employee_ids) or [-1]),
                                            AttendanceDay.shift_date >= start, AttendanceDay.shift_date <= end).all())
     return {(r.employee_id, r.shift_date): r for r in rows}
+
+
+MAX_EXCEPTION_DAYS = 62
+
+
+def exceptions(db: Session, company_id: int, scope_clause, start: date, end: date, *,
+               code: Optional[str] = None, employee_id: Optional[int] = None, skip: int = 0,
+               limit: int = 50) -> dict:
+    """Decided days with exception codes (04-attendance/03 §12; ``GET /attendance/exceptions``): OPEN days are still
+    in progress and never listed. ``scope_clause`` is the caller's employee scope on ``AttendanceDay.employee_id``."""
+    if end < start:
+        raise bad_request("The end date is before the start date.", "INVALID_RANGE")
+    if (end - start).days + 1 > MAX_EXCEPTION_DAYS:
+        raise bad_request(f"Choose a range of at most {MAX_EXCEPTION_DAYS} days.", "RANGE_TOO_LONG")
+    if code is not None and code not in de.EXCEPTION_CODES:
+        raise bad_request(f"Unknown exception code {code!r}.", "INVALID_EXCEPTION_CODE")
+    query = (db.query(AttendanceDay, Employee)
+             .join(Employee, (Employee.company_id == AttendanceDay.company_id) & (Employee.id == AttendanceDay.employee_id))
+             .filter(AttendanceDay.company_id == company_id, AttendanceDay.shift_date >= start,
+                     AttendanceDay.shift_date <= end, AttendanceDay.evaluation_state != de.OPEN,
+                     func.cardinality(AttendanceDay.exception_codes) > 0, scope_clause))
+    if code is not None:
+        query = query.filter(AttendanceDay.exception_codes.any(code))
+    if employee_id is not None:
+        query = query.filter(AttendanceDay.employee_id == employee_id)
+    total = query.count()
+    rows = (query.order_by(AttendanceDay.shift_date.desc(), Employee.first_name, AttendanceDay.employee_id)
+            .offset(skip).limit(limit).all())
+    return {"total": total, "items": [
+        {"day_id": day.id, "employee_id": day.employee_id,
+         "employee_name": f"{emp.first_name} {emp.last_name or ''}".strip(), "shift_date": day.shift_date.isoformat(),
+         "day_result": day.day_result, "evaluation_state": day.evaluation_state,
+         "exception_codes": list(day.exception_codes), "late_minutes": day.late_minutes,
+         "early_minutes": day.early_minutes, "net_minutes": day.net_minutes} for day, emp in rows]}
 
 
 def as_json(row: AttendanceDay, *, versions: Sequence[AttendanceDayVersion] = ()) -> dict:

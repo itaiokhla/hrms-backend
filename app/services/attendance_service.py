@@ -492,9 +492,11 @@ def _punch_out(db, principal, company, employee, policy, meta: EventMeta, score,
     db.flush()
     punch_id = _write_punch(db, live, employee, capture, "OUT", now, meta, score)
     record_version(db, live, "UPDATED", principal.user_id)
+    details = location_service.event_details(location)
+    if meta.no_break_taken:  # step 5 (d): read by the evaluation when the rules ask for the attestation
+        details = {**(details or {}), "no_break_taken": True}
     event = _event(db, live, "PUNCH_OUT", now, source, principal.user_id, key=meta.idempotency_key, score=score,
-                   location_status=location.event_status, note=note, details=location_service.event_details(location),
-                   punch_id=punch_id)
+                   location_status=location.event_status, note=note, details=details, punch_id=punch_id)
     location_service.record_event_sample(db, live, event, location, policy, now, meta.client_sent_at)
     return live
 
@@ -550,6 +552,11 @@ def perform(db: Session, principal: Principal, action: str, image: Optional[byte
         record = _HANDLERS[action](db, principal, company, employee, policy, meta, score, now, live, capture=capture)
     AuditLogService.log(db, principal, "Attendance", _AUDIT[action], f"{employee.full_name} {_VERBS[action]}",
                         "attendance", record.id, ip)
+    # AS-M3 (04-attendance/03 §8.1): the punch transaction re-evaluates its shift date (v2 tenants only).
+    from app.services import attendance_days
+
+    attendance_days.evaluate_dates(db, company.id, employee.id, [record.date],
+                                   trigger="SESSION_CLOSED" if action == "PUNCH_OUT" else "PUNCH", now=now)
     # Backwards compatible: the record acted on at the top level (as before), plus the fresh view.
     return {**_acted_on(db, record.id, employee), **my_today(db, principal)}
 

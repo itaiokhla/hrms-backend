@@ -14,8 +14,8 @@ prices time: payroll turns a day into money through ``DAY_RESULT_TO_LEDGER`` (JC
 Conventions (AS 14 C-6): instants are aware UTC datetimes, durations are whole seconds, ``*_minutes =
 floor(seconds / 60)``, an unknown value is ``None`` (never 0), thresholds are ``Decimal`` and never rounded (A-04).
 
-Scope of this revision (IG-AS-63): steps 1–19 except 5b (statutory pack breaks: "no pack" until packs resolve, so
-``meal_violations`` / ``rest_violations`` stay 0) and the break attestation of step 5 (no attestation input yet).
+Scope (IG-AS-63, IG-AS-78): steps 1–19 including 5b (statutory pack breaks; the loader passes the resolved pack's
+``breaks.rules``, empty under "no pack") and the break attestation of step 5 (``SessionData.no_break_attested``).
 Step 16 applies the daily part of payroll's ``threshold_overtime`` arithmetic to one date (IG-AS-64).
 """
 
@@ -33,7 +33,7 @@ import pytz
 
 from app.services import shift_engine as engine
 
-EVALUATION_ENGINE_VERSION = "2026.10.1"
+EVALUATION_ENGINE_VERSION = "2026.10.2"  # 2026.10.2: zero-length LEGACY_V1 sessions (IG-AS-76)
 
 # Spine vocabularies (AS 11 §5).
 EVALUATION_STATES = ("OPEN", "PROVISIONAL", "FINAL")
@@ -221,6 +221,20 @@ class SessionData:
     late_minutes: Optional[int] = None
     early_exit: bool = False
     early_exit_minutes: Optional[int] = None
+    no_break_attested: bool = False  # punch-out attestation "no break taken" (break_attestation, step 5 (d))
+
+
+@dataclass(frozen=True)
+class StatutoryBreak:
+    """One ``breaks.rules[]`` entry of the resolved ``WORKING_TIME`` pack (step 5b, C-24)."""
+
+    kind: str  # MEAL | REST
+    after_minutes: int
+    break_minutes: int
+    nth: int = 1
+    must_start_by_minutes: Optional[int] = None
+    waivable_if_day_minutes_le: Optional[int] = None
+    count_basis: str = "PER_PERIOD"  # PER_PERIOD | MAJOR_FRACTION
 
 
 @dataclass(frozen=True)
@@ -289,6 +303,7 @@ class DayInputs:
     early_arrival_approved: bool = False  # WITH_APPROVAL: an approved overtime entry covers the early minutes
     previous_last_out_at: Optional[dt.datetime] = None
     rest_min_between_shifts_hours: Optional[Decimal] = None  # pack ``rest``; None = no pack
+    statutory_breaks: tuple[StatutoryBreak, ...] = ()  # pack ``breaks.rules``; () = no pack
     punch_ids: tuple[int, ...] = ()
 
 
@@ -603,6 +618,8 @@ class _Run:
         self.short_minutes: Optional[int] = None
         self.short_mark = False
         self.night_seconds = 0
+        self.meal_violations = 0
+        self.rest_violations = 0
         self.ot_eligible = 0
         self.ot_candidate = 0
         self.override_request_id: Optional[int] = None
@@ -733,6 +750,8 @@ class _Run:
             self.first_in = min(s.check_in_at for s in i.sessions)
 
         has_work = bool(self.work) or bool(self.open_after_close)
+        if not capture_off:
+            self._statutory_breaks()
 
         # Expected NONE (holiday, weekly off, leave, rostered OFF) or not employed.
         if not self.expected:
@@ -836,6 +855,52 @@ class _Run:
         self._ot(capture_off)
         self._rest()
 
+    def _statutory_breaks(self) -> None:
+        """Step 5b (C-24): required meal / rest breaks of the pack. A required break missing, starting after
+        ``first_in + must_start_by_minutes`` or shorter than ``break_minutes`` is one violation; a day of at most
+        ``waivable_if_day_minutes_le`` net minutes waives the rule. Premiums are payroll's (JC-AS-27, R)."""
+        rules = self.i.statutory_breaks
+        if not rules or self.net is None or self.first_in is None:
+            return
+        net_minutes = self.net // 60
+        ordered = sorted(self._breaks, key=lambda item: item[1][0])
+        by_kind = {"MEAL": [span for b, span in ordered if b.kind == "LUNCH"],
+                   "REST": [span for b, span in ordered if b.kind == "REST"]}
+        for rule in rules:
+            if rule.waivable_if_day_minutes_le is not None and net_minutes <= rule.waivable_if_day_minutes_le:
+                continue
+            taken = by_kind.get(rule.kind, [])
+            prefix = "MEAL" if rule.kind == "MEAL" else "REST"
+            issues = 0
+            if rule.count_basis == "MAJOR_FRACTION":
+                required = net_minutes // rule.after_minutes
+                if net_minutes % rule.after_minutes > rule.after_minutes / 2:
+                    required += 1
+                long_enough = [s for s in taken if (s[1] - s[0]).total_seconds() >= rule.break_minutes * 60]
+                missing = max(0, required - len(long_enough))
+                if missing:
+                    self.exceptions.add(f"{prefix}_BREAK_MISSED")
+                    issues += missing
+            else:
+                if net_minutes <= rule.after_minutes:
+                    continue
+                if len(taken) < rule.nth:
+                    self.exceptions.add(f"{prefix}_BREAK_MISSED")
+                    issues += 1
+                else:
+                    start, end = taken[rule.nth - 1]
+                    if (rule.must_start_by_minutes is not None
+                            and start > self.first_in + dt.timedelta(minutes=rule.must_start_by_minutes)):
+                        self.exceptions.add("MEAL_BREAK_LATE" if prefix == "MEAL" else "REST_BREAK_MISSED")
+                        issues += 1
+                    elif (end - start).total_seconds() < rule.break_minutes * 60:
+                        self.exceptions.add("MEAL_BREAK_SHORT" if prefix == "MEAL" else "REST_BREAK_MISSED")
+                        issues += 1
+            if prefix == "MEAL":
+                self.meal_violations += issues
+            else:
+                self.rest_violations += issues
+
     def _half_touched(self, half: str) -> bool:
         h = self.halves[half]
         if not h.spans:
@@ -892,9 +957,13 @@ class _Run:
                         self.auto_seconds += max(0, rule.minutes * 60 - _length(unpaid) - self.auto_seconds)
                 elif rule.auto_deduct_after_minutes is None:
                     self.exceptions.add("BREAK_MISSED")
+        attested = self.r.break_attestation and any(s.no_break_attested for s in self.i.sessions)
         for rule in rules:
             if rule.mode == engine.AUTO_DEDUCT and rule.auto_deduct_after_minutes is not None:
                 if gross_minutes >= rule.auto_deduct_after_minutes and not rule.paid:
+                    if attested:  # step 5 (d): "no break taken" -> no deduction, BREAK_MISSED instead
+                        self.exceptions.add("BREAK_MISSED")
+                        continue
                     self.auto_seconds += max(0, rule.minutes * 60 - _length(unpaid) - self.auto_seconds)
         self.unpaid = _union(unpaid)
         self.break_spans = _union(list(punched_union) + list(self.unpaid))
@@ -1152,8 +1221,9 @@ class _Run:
             if out is None and not closed_without_out:
                 out = i.now
             self.first_in = session.check_in_at
-            if out is not None and out > session.check_in_at:
-                self.work = [(session.check_in_at, out)]
+            if out is not None and out >= session.check_in_at:
+                # A zero-length session is 0 s worked, as attendance_hours.compute says (exact port; IG-AS-76).
+                self.work = [(session.check_in_at, out)] if out > session.check_in_at else []
                 unpaid = []
                 for b in session.breaks:
                     end = b.ended_at or out
@@ -1299,7 +1369,7 @@ class _Run:
             short_mark=self.short_mark, late_converted=self.late_converted, early_converted=self.early_converted,
             night_minutes=self.night_seconds // 60, ot_eligible_seconds=self.ot_eligible,
             ot_eligible_minutes=self.ot_eligible // 60, ot_candidate_minutes=self.ot_candidate,
-            meal_violations=0, rest_violations=0,
+            meal_violations=self.meal_violations, rest_violations=self.rest_violations,
             first_half_result=self.result_of[FIRST_HALF], second_half_result=self.result_of[SECOND_HALF],
             day_result=day_result, presence_basis=presence_basis, work_mode=work_mode,
             exception_codes=tuple(code for code in EXCEPTION_CODES if code in self.exceptions),
@@ -1338,8 +1408,8 @@ def inputs_hash(inputs: DayInputs) -> str:
         "shift_source": inputs.shift_source,
         "grace": [inputs.shift_grace_in_minutes, inputs.shift_grace_out_minutes],
         "scheduled_minutes": inputs.scheduled_minutes,
-        "sessions": sorted(({"id": s.id, "content_hash": s.content_hash or _sha(_session_plain(s))}
-                            for s in inputs.sessions), key=lambda x: x["id"]),
+        "sessions": sorted(({"id": s.id, "content_hash": s.content_hash or _sha(_session_plain(s)),
+                             "attested": s.no_break_attested} for s in inputs.sessions), key=lambda x: x["id"]),
         "punch_ids": sorted(inputs.punch_ids),
         "on_duty": sorted(({"id": d.id, "row_version": d.row_version, "kind": d.kind, "portion": d.portion}
                            for d in inputs.on_duty), key=lambda x: x["id"]),
@@ -1351,7 +1421,8 @@ def inputs_hash(inputs: DayInputs) -> str:
         "legacy": {f.name: getattr(inputs.legacy, f.name) for f in fields(LegacyPayParams)},
         "settings": {f.name: getattr(inputs.settings, f.name) for f in fields(EvalSettings)},
         "capture": {"required": inputs.capture_required, "shift_required": inputs.shift_required},
-        "pack": {"rest": inputs.rest_min_between_shifts_hours, "previous_last_out": inputs.previous_last_out_at},
+        "pack": {"rest": inputs.rest_min_between_shifts_hours, "previous_last_out": inputs.previous_last_out_at,
+                 "breaks": [_plain(dict(b.__dict__)) for b in inputs.statutory_breaks]},
         "payroll_ot_view": {f.name: getattr(inputs.ot_view, f.name) for f in fields(OvertimeView)},
         "watermarks": {"device_ids_behind": sorted(inputs.device_ids_behind),
                        "late_log_grace_elapsed": inputs.late_log_grace_elapsed},
@@ -1365,7 +1436,7 @@ def inputs_hash(inputs: DayInputs) -> str:
 
 
 def _session_plain(s: SessionData) -> dict:
-    return {"in": s.check_in_at, "out": s.check_out_at, "closed": s.closed_at,
+    return {"in": s.check_in_at, "out": s.check_out_at, "closed": s.closed_at, "attested": s.no_break_attested,
             "breaks": [(b.kind, b.started_at, b.ended_at, b.is_paid) for b in s.breaks],
             "source": s.capture_source, "mode": s.work_mode, "status": s.legacy_status}
 

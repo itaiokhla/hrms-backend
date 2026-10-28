@@ -447,6 +447,38 @@ def test_gv_lat_08_tie_goes_to_first_half():
 # --------------------------------------------------------------------------- states, LEGACY_V1, hashes, purity
 
 
+def test_gv_brk_03_statutory_meal_late_and_rests_counted():
+    """Step 5b with an illustrative US-CA pack (test values only): meal 1 must start within 300 min; rests by major
+    fraction of 240 min."""
+    t = lambda h, m: at(NY, 2026, 11, 11, h, m)
+    shift = V(start_time="10:00", end_time="18:30", break_rules=(B("LUNCH", "PUNCHED", 30, False),))
+    pack = (de.StatutoryBreak("MEAL", after_minutes=300, break_minutes=30, nth=1, must_start_by_minutes=300),
+            de.StatutoryBreak("REST", after_minutes=240, break_minutes=10, count_basis="MAJOR_FRACTION"))
+    sessions = [sess(1, t(10, 0), t(18, 30), brk(1, "REST", t(12, 0), t(12, 10), True),
+                     brk(2, "LUNCH", t(15, 10), t(15, 40)), brk(3, "REST", t(17, 0), t(17, 10), True))]
+    ev = day(shift, D(2026, 11, 11), sessions, zone=NY, rules=P_US, statutory_breaks=pack)
+    assert ev.net_minutes == 480 and ev.meal_violations == 1 and ev.rest_violations == 0
+    assert "MEAL_BREAK_LATE" in ev.exception_codes
+    on_time = [sess(1, t(10, 0), t(18, 30), brk(1, "REST", t(12, 0), t(12, 10), True),
+                    brk(2, "LUNCH", t(14, 30), t(15, 0)))]
+    ev2 = day(shift, D(2026, 11, 11), on_time, zone=NY, rules=P_US, statutory_breaks=pack)
+    assert ev2.meal_violations == 0 and ev2.rest_violations == 1 and "REST_BREAK_MISSED" in ev2.exception_codes
+    waived = (replace(pack[0], waivable_if_day_minutes_le=600), replace(pack[1], waivable_if_day_minutes_le=600))
+    ev3 = day(shift, D(2026, 11, 11), sessions, zone=NY, rules=P_US, statutory_breaks=waived)
+    assert ev3.meal_violations == 0 and ev3.rest_violations == 0
+    assert day(shift, D(2026, 11, 11), sessions, zone=NY, rules=P_US).meal_violations == 0  # no pack
+
+
+def test_break_attestation_keeps_the_time():
+    t = lambda h, m: at(IST, 2026, 11, 4, h, m)
+    attested = replace(sess(1, t(10, 5), t(19, 20)), no_break_attested=True)
+    rules = replace(P_FLEX, break_attestation=True)
+    ev = day(FLEX_BLR, D(2026, 11, 4), [attested], rules=rules)
+    assert ev.net_minutes == 555 and ev.auto_deducted_minutes == 0 and "BREAK_MISSED" in ev.exception_codes
+    plain = day(FLEX_BLR, D(2026, 11, 4), [attested], rules=P_FLEX)  # attestation off: the deduction applies
+    assert plain.net_minutes == 510
+
+
 def test_open_day_live_late_status_and_pending_halves():
     t = lambda h, m: at(IST, 2026, 11, 3, h, m)
     ev = day(GEN, D(2026, 11, 3), [sess(1, t(9, 20), None)], now=t(12, 0))
@@ -484,6 +516,13 @@ def test_legacy_v1_port_reads_payroll_thresholds():
     assert off.day_result == "PRESENT"  # derive off: the stored status decides
     none = day(GEN, D(2026, 11, 3), [], rules_mode="LEGACY_V1")
     assert none.day_result == "UNMARKED" and none.exception_codes == ("UNMARKED_DAY",)
+
+
+def test_legacy_v1_zero_length_session_is_zero_seconds():
+    """Found by the G-07 reconcile on the time stack: punch-out == punch-in is 0 s worked in today's code."""
+    t = lambda h, m: at(IST, 2026, 10, 23, h, m)
+    ev = day(GEN, D(2026, 10, 23), [sess(1, t(9, 0), t(9, 0))], rules_mode="LEGACY_V1")
+    assert ev.net_seconds == 0 and ev.gross_seconds == 0 and ev.day_result == "PRESENT"
 
 
 def test_inputs_hash_ignores_now_but_tracks_phase():

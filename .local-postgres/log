@@ -458,3 +458,161 @@
 2026-10-28 07:21:48.480 GMT [7884] LOG:  checkpoint complete: wrote 10 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.992 s, sync=0.001 s, total=1.002 s; sync files=0, longest=0.000 s, average=0.000 s; distance=27 kB, estimate=516 kB; lsn=0/5B29778, redo lsn=0/5B29740
 2026-10-28 07:26:47.539 GMT [7884] LOG:  checkpoint starting: time
 2026-10-28 07:26:49.398 GMT [7884] LOG:  checkpoint complete: wrote 18 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.852 s, sync=0.001 s, total=1.860 s; sync files=0, longest=0.000 s, average=0.000 s; distance=63 kB, estimate=471 kB; lsn=0/5B39448, redo lsn=0/5B39410
+2026-10-28 07:55:49.348 GMT [25464] LOG:  could not read from file "postmaster.pid": Invalid argument
+2026-10-28 07:55:49.429 GMT [13744] FATAL:  could not reattach to shared memory (key=0000000000000194, addr=0000015380000000): error code 1455
+2026-10-28 07:56:47.639 GMT [7884] LOG:  checkpoint starting: time
+2026-10-28 07:56:48.871 GMT [7884] LOG:  checkpoint complete: wrote 12 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.209 s, sync=0.001 s, total=1.234 s; sync files=0, longest=0.000 s, average=0.000 s; distance=44 kB, estimate=428 kB; lsn=0/5B44568, redo lsn=0/5B44530
+2026-10-28 07:56:50.417 GMT [14756] WARNING:  autovacuum worker took too long to start; canceled
+2026-10-28 08:01:24.694 GMT [17752] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-28 08:01:24.696 GMT [24344] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-28 08:01:24.696 GMT [19088] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-28 08:01:24.697 GMT [25544] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-28 08:01:24.708 GMT [2752] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-28 08:01:24.710 GMT [17480] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-28 08:01:24.710 GMT [18004] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-28 08:01:24.710 GMT [24568] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-28 08:01:24.710 GMT [18008] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-28 08:01:24.713 GMT [2060] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-28 08:01:39.460 GMT [7816] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-28 08:01:39.462 GMT [7816] LOG:  listening on IPv4 address "127.0.0.1", port 53093
+2026-10-28 08:01:39.520 GMT [20464] LOG:  database system was interrupted; last known up at 2026-10-28 07:56:48 GMT
+2026-10-28 08:01:39.525 GMT [20464] LOG:  database system was not properly shut down; automatic recovery in progress
+2026-10-28 08:01:39.545 GMT [20464] LOG:  redo starts at 0/5B44530
+2026-10-28 08:01:39.545 GMT [20464] LOG:  invalid record length at 0/5B44618: expected at least 24, got 0
+2026-10-28 08:01:39.545 GMT [20464] LOG:  redo done at 0/5B445E0 system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+2026-10-28 08:01:39.567 GMT [5536] LOG:  checkpoint starting: end-of-recovery immediate wait
+2026-10-28 08:01:39.591 GMT [5536] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.007 s, sync=0.001 s, total=0.025 s; sync files=0, longest=0.000 s, average=0.000 s; distance=0 kB, estimate=0 kB; lsn=0/5B44618, redo lsn=0/5B44618
+2026-10-28 08:01:39.627 GMT [7816] LOG:  database system is ready to accept connections
+2026-10-28 08:01:39.816 GMT [7816] LOG:  received SIGHUP, reloading configuration files
+2026-10-28 08:01:51.082 GMT [16792] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-28 08:03:04.849 GMT [18776] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-28 08:03:04.851 GMT [18776] LOG:  listening on IPv4 address "127.0.0.1", port 54058
+2026-10-28 08:03:04.910 GMT [14912] LOG:  database system was interrupted; last known up at 2026-10-28 08:01:39 GMT
+2026-10-28 08:03:04.914 GMT [14912] LOG:  database system was not properly shut down; automatic recovery in progress
+2026-10-28 08:03:04.928 GMT [14912] LOG:  redo starts at 0/5B44690
+2026-10-28 08:03:05.062 GMT [14912] LOG:  invalid record length at 0/5CA2838: expected at least 24, got 0
+2026-10-28 08:03:05.062 GMT [14912] LOG:  redo done at 0/5CA2800 system usage: CPU: user: 0.00 s, system: 0.04 s, elapsed: 0.13 s
+2026-10-28 08:03:05.080 GMT [3168] LOG:  checkpoint starting: end-of-recovery immediate wait
+2026-10-28 08:03:05.173 GMT [3168] LOG:  checkpoint complete: wrote 242 buffers (1.5%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.084 s, sync=0.001 s, total=0.094 s; sync files=0, longest=0.000 s, average=0.000 s; distance=1400 kB, estimate=1400 kB; lsn=0/5CA2838, redo lsn=0/5CA2838
+2026-10-28 08:03:05.252 GMT [18776] LOG:  database system is ready to accept connections
+2026-10-28 08:03:35.855 GMT [888] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-28 08:03:35.857 GMT [888] LOG:  listening on IPv4 address "127.0.0.1", port 58884
+2026-10-28 08:03:35.924 GMT [23892] LOG:  database system was interrupted; last known up at 2026-10-28 08:03:05 GMT
+2026-10-28 08:03:35.925 GMT [23892] LOG:  database system was not properly shut down; automatic recovery in progress
+2026-10-28 08:03:35.937 GMT [23892] LOG:  invalid record length at 0/5CA28B0: expected at least 24, got 0
+2026-10-28 08:03:35.937 GMT [23892] LOG:  redo is not required
+2026-10-28 08:03:35.958 GMT [21768] LOG:  checkpoint starting: end-of-recovery immediate wait
+2026-10-28 08:03:35.974 GMT [21768] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.008 s, sync=0.001 s, total=0.018 s; sync files=0, longest=0.000 s, average=0.000 s; distance=0 kB, estimate=0 kB; lsn=0/5CA28B0, redo lsn=0/5CA28B0
+2026-10-28 08:03:36.015 GMT [888] LOG:  database system is ready to accept connections
+2026-10-28 08:03:36.251 GMT [888] LOG:  received SIGHUP, reloading configuration files
+2026-10-28 08:03:53.309 GMT [22556] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-28 08:04:59.454 GMT [22940] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-28 08:04:59.454 GMT [22832] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-28 08:04:59.455 GMT [22940] LOG:  unexpected EOF on client connection with an open transaction
+2026-10-28 08:05:40.511 GMT [17328] LOG:  starting PostgreSQL 16.2 on x86_64-pc-mingw64, compiled by gcc.exe (x86_64-posix-seh-rev2, Built by MinGW-W64 project) 12.2.0, 64-bit
+2026-10-28 08:05:40.514 GMT [17328] LOG:  listening on IPv4 address "127.0.0.1", port 54276
+2026-10-28 08:05:40.748 GMT [12048] LOG:  database system was interrupted; last known up at 2026-10-28 08:03:35 GMT
+2026-10-28 08:05:40.756 GMT [12048] LOG:  database system was not properly shut down; automatic recovery in progress
+2026-10-28 08:05:40.829 GMT [12048] LOG:  redo starts at 0/5CA2928
+2026-10-28 08:05:40.866 GMT [12048] LOG:  invalid record length at 0/5D35888: expected at least 24, got 0
+2026-10-28 08:05:40.867 GMT [12048] LOG:  redo done at 0/5D35840 system usage: CPU: user: 0.00 s, system: 0.03 s, elapsed: 0.03 s
+2026-10-28 08:05:40.925 GMT [9332] LOG:  checkpoint starting: end-of-recovery immediate wait
+2026-10-28 08:05:41.007 GMT [9332] LOG:  checkpoint complete: wrote 84 buffers (0.5%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.038 s, sync=0.001 s, total=0.084 s; sync files=0, longest=0.000 s, average=0.000 s; distance=587 kB, estimate=587 kB; lsn=0/5D35888, redo lsn=0/5D35888
+2026-10-28 08:05:41.118 GMT [17328] LOG:  database system is ready to accept connections
+2026-10-28 08:05:41.694 GMT [17328] LOG:  received SIGHUP, reloading configuration files
+2026-10-28 08:06:27.805 GMT [12820] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-10-28 08:10:40.760 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 08:10:52.571 GMT [9332] LOG:  checkpoint complete: wrote 109 buffers (0.7%); 0 WAL file(s) added, 0 removed, 0 recycled; write=11.793 s, sync=0.001 s, total=11.814 s; sync files=0, longest=0.000 s, average=0.000 s; distance=714 kB, estimate=714 kB; lsn=0/5DE81F8, redo lsn=0/5DE81C0
+2026-10-28 08:15:40.597 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 08:15:42.223 GMT [9332] LOG:  checkpoint complete: wrote 16 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.618 s, sync=0.001 s, total=1.627 s; sync files=0, longest=0.000 s, average=0.000 s; distance=66 kB, estimate=649 kB; lsn=0/5DF8D20, redo lsn=0/5DF8CE8
+2026-10-28 08:20:40.255 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 08:20:41.257 GMT [9332] LOG:  checkpoint complete: wrote 10 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.988 s, sync=0.001 s, total=1.003 s; sync files=0, longest=0.000 s, average=0.000 s; distance=32 kB, estimate=587 kB; lsn=0/5E00FA8, redo lsn=0/5E00F70
+2026-10-28 08:25:40.281 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 08:25:41.604 GMT [9332] LOG:  checkpoint complete: wrote 13 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.311 s, sync=0.001 s, total=1.324 s; sync files=0, longest=0.000 s, average=0.000 s; distance=53 kB, estimate=534 kB; lsn=0/5E0E5F0, redo lsn=0/5E0E5B8
+2026-10-28 08:55:40.732 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 08:55:41.731 GMT [9332] LOG:  checkpoint complete: wrote 10 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.980 s, sync=0.001 s, total=1.001 s; sync files=0, longest=0.000 s, average=0.000 s; distance=32 kB, estimate=484 kB; lsn=0/5E16918, redo lsn=0/5E168E0
+2026-10-28 09:05:40.791 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 09:05:41.922 GMT [9332] LOG:  checkpoint complete: wrote 10 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.057 s, sync=0.001 s, total=1.144 s; sync files=0, longest=0.000 s, average=0.000 s; distance=31 kB, estimate=438 kB; lsn=0/5E1E6B0, redo lsn=0/5E1E678
+2026-10-28 09:10:40.946 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 09:10:41.995 GMT [9332] LOG:  checkpoint complete: wrote 10 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.011 s, sync=0.001 s, total=1.050 s; sync files=0, longest=0.000 s, average=0.000 s; distance=30 kB, estimate=398 kB; lsn=0/5E26068, redo lsn=0/5E26030
+2026-10-28 09:15:41.014 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 09:15:42.445 GMT [9332] LOG:  checkpoint complete: wrote 14 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.423 s, sync=0.001 s, total=1.432 s; sync files=0, longest=0.000 s, average=0.000 s; distance=53 kB, estimate=363 kB; lsn=0/5E33568, redo lsn=0/5E33530
+2026-10-28 09:20:41.453 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 09:20:44.781 GMT [9332] LOG:  checkpoint complete: wrote 31 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=3.317 s, sync=0.001 s, total=3.328 s; sync files=0, longest=0.000 s, average=0.000 s; distance=148 kB, estimate=342 kB; lsn=0/5E58678, redo lsn=0/5E58640
+2026-10-28 09:25:41.798 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 09:25:44.230 GMT [9332] LOG:  checkpoint complete: wrote 23 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=2.420 s, sync=0.001 s, total=2.432 s; sync files=0, longest=0.000 s, average=0.000 s; distance=60 kB, estimate=313 kB; lsn=0/5E678D0, redo lsn=0/5E67898
+2026-10-28 09:55:41.308 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 09:55:42.772 GMT [9332] LOG:  checkpoint complete: wrote 14 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.430 s, sync=0.001 s, total=1.467 s; sync files=0, longest=0.000 s, average=0.000 s; distance=37 kB, estimate=286 kB; lsn=0/5E70E08, redo lsn=0/5E70DD0
+2026-10-28 10:05:41.816 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 10:05:43.096 GMT [9332] LOG:  checkpoint complete: wrote 12 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.236 s, sync=0.001 s, total=1.281 s; sync files=0, longest=0.000 s, average=0.000 s; distance=36 kB, estimate=261 kB; lsn=0/5E79F28, redo lsn=0/5E79EF0
+2026-10-28 10:09:13.158 GMT [17328] LOG:  CreateProcess() call failed: A non-blocking socket operation could not be completed immediately.
+	 (error code 1455)
+2026-10-28 10:09:13.181 GMT [17328] LOG:  could not fork autovacuum worker process: A non-blocking socket operation could not be completed immediately.
+	
+2026-10-28 10:09:14.197 GMT [17328] LOG:  could not map backend parameter memory: error code 6
+2026-10-28 10:09:14.202 GMT [17328] LOG:  could not fork autovacuum worker process: A non-blocking socket operation could not be completed immediately.
+	
+TopMemoryContext: 97664 total in 5 blocks; 15616 free (30 chunks); 82048 used
+  TopTransactionContext: 8192 total in 1 blocks; 7752 free (0 chunks); 440 used
+  TableSpace cache: 8192 total in 1 blocks; 2128 free (0 chunks); 6064 used
+  Btree proof lookup cache: 8192 total in 1 blocks; 592 free (0 chunks); 7600 used
+  Type information cache: 24368 total in 2 blocks; 2648 free (0 chunks); 21720 used
+  Operator lookup cache: 24576 total in 2 blocks; 10792 free (3 chunks); 13784 used
+  RowDescriptionContext: 8192 total in 1 blocks; 6896 free (0 chunks); 1296 used
+  MessageContext: 32768 total in 3 blocks; 48 free (1 chunks); 32720 used
+  Operator class cache: 8192 total in 1 blocks; 592 free (0 chunks); 7600 used
+  smgr relation table: 32768 total in 3 blocks; 16880 free (8 chunks); 15888 used
+  PgStat Shared Ref Hash: 7216 total in 2 blocks; 688 free (0 chunks); 6528 used
+  PgStat Shared Ref: 8192 total in 4 blocks; 3200 free (4 chunks); 4992 used
+  PgStat Pending: 16384 total in 5 blocks; 15960 free (63 chunks); 424 used
+  TransactionAbortContext: 32768 total in 1 blocks; 32504 free (0 chunks); 264 used
+  Portal hash: 8192 total in 1 blocks; 592 free (0 chunks); 7600 used
+  TopPortalContext: 8192 total in 1 blocks; 7928 free (1 chunks); 264 used
+  Relcache by OID: 16384 total in 2 blocks; 3584 free (2 chunks); 12800 used
+  CacheMemoryContext: 1048576 total in 8 blocks; 453608 free (1 chunks); 594968 used
+    index info: 1024 total in 1 blocks; 0 free (0 chunks); 1024 used: scheduled_jobs_job_type_key
+    index info: 1024 total in 1 blocks; 0 free (0 chunks); 1024 used: scheduled_jobs_pkey
+    index info: 1024 total in 1 blocks; 0 free (0 chunks); 1024 used: pg_statistic_ext_relid_index
+    index info: 2048 total in 2 blocks; 528 free (0 chunks); 1520 used: ix_jobs_running_heartbeat
+    index info: 3072 total in 2 blocks; 720 free (1 chunks); 2352 used: ix_jobs_queue
+    index info: 3072 total in 2 blocks; 648 free (1 chunks); 2424 used: uq_jobs_idempotency
+    index info: 1024 total in 1 blocks; 0 free (0 chunks); 1024 used: ix_jobs_parent_job_id
+    index info: 1024 total in 1 blocks; 0 free (0 chunks); 1024 used: ix_jobs_company_id
+    index info: 2048 total in 2 blocks; 928 free (1 chunks); 1120 used: jobs_pkey
+    index info: 2048 total in 2 blocks; 912 free (0 chunks); 1136 used: pg_index_indrelid_index
+    index info: 3072 total in 2 blocks; 1056 free (1 chunks); 2016 used: pg_constraint_conrelid_contypid_conname_index
+                      2026-10-28 10:10:13.198 GMT [8228] WARNING:  autovacuum worker took too long to start; canceled
+2026-10-28 10:10:13.850 GMT [17452] WARNING:  autovacuum worker started without a worker entry
+2026-10-28 10:10:41.130 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 10:10:42.974 GMT [9332] LOG:  checkpoint complete: wrote 14 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.748 s, sync=0.001 s, total=1.850 s; sync files=0, longest=0.000 s, average=0.000 s; distance=29 kB, estimate=238 kB; lsn=0/5E815A8, redo lsn=0/5E81570
+2026-10-28 10:15:42.012 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 10:15:43.357 GMT [9332] LOG:  checkpoint complete: wrote 12 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.269 s, sync=0.001 s, total=1.349 s; sync files=0, longest=0.000 s, average=0.000 s; distance=36 kB, estimate=217 kB; lsn=0/5E8A6D8, redo lsn=0/5E8A6A0
+2026-10-28 10:20:42.369 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 10:20:43.461 GMT [9332] LOG:  checkpoint complete: wrote 10 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.041 s, sync=0.001 s, total=1.094 s; sync files=0, longest=0.000 s, average=0.000 s; distance=27 kB, estimate=198 kB; lsn=0/5E913B0, redo lsn=0/5E91378
+2026-10-28 10:25:42.476 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 10:25:43.713 GMT [9332] LOG:  checkpoint complete: wrote 12 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.212 s, sync=0.001 s, total=1.239 s; sync files=0, longest=0.000 s, average=0.000 s; distance=43 kB, estimate=183 kB; lsn=0/5E9BFE0, redo lsn=0/5E9BFA8
+2026-10-28 10:55:42.808 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 10:55:43.843 GMT [9332] LOG:  checkpoint complete: wrote 10 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.018 s, sync=0.001 s, total=1.036 s; sync files=0, longest=0.000 s, average=0.000 s; distance=31 kB, estimate=168 kB; lsn=0/5EA3C60, redo lsn=0/5EA3C28
+2026-10-28 11:10:42.971 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 11:10:45.435 GMT [9332] LOG:  checkpoint complete: wrote 23 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=2.442 s, sync=0.001 s, total=2.465 s; sync files=0, longest=0.000 s, average=0.000 s; distance=108 kB, estimate=162 kB; lsn=0/5EBEC80, redo lsn=0/5EBEC48
+2026-10-28 11:15:42.455 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 11:15:44.308 GMT [9332] LOG:  checkpoint complete: wrote 18 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.836 s, sync=0.001 s, total=1.854 s; sync files=0, longest=0.000 s, average=0.000 s; distance=51 kB, estimate=150 kB; lsn=0/5ECBA00, redo lsn=0/5ECB9C8
+2026-10-28 11:20:42.316 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 11:20:44.199 GMT [9332] LOG:  checkpoint complete: wrote 11 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.667 s, sync=0.001 s, total=1.882 s; sync files=0, longest=0.000 s, average=0.000 s; distance=34 kB, estimate=139 kB; lsn=0/5ED4470, redo lsn=0/5ED4438
+2026-10-28 11:25:42.308 GMT [9332] LOG:  checkpoint starting: time
+2026-10-28 11:25:43.650 GMT [9332] LOG:  checkpoint complete: wrote 12 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.292 s, sync=0.001 s, total=1.373 s; sync files=0, longest=0.000 s, average=0.000 s; distance=50 kB, estimate=130 kB; lsn=0/5EE0D60, redo lsn=0/5EE0D28

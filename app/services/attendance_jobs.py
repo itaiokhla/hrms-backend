@@ -45,6 +45,28 @@ def day_close(ctx) -> dict:
     return {"auto_closed": closed, "evaluation": attendance_days.day_close(ctx.db, ctx.company_id)}
 
 
+@jobs.register("attendance.recompute_scope")
+def recompute_scope(ctx) -> dict:
+    """Event-driven (``time_inputs.log_change`` of a v2 tenant): re-evaluate the dates a leave, on-duty, holiday,
+    work-week, shift, roster, placement or session change touches (04-attendance/03 §8.1; IG-AS-71)."""
+    from app.services import attendance_days
+
+    return attendance_days.recompute_scope(ctx.db, ctx.company_id, ctx.payload or {})
+
+
+@jobs.register("attendance.v2_reconcile", access=lambda db, principal, job: principal.has_company_scope(
+    "attendance:manage_policy"))
+def v2_reconcile(ctx) -> dict:
+    """The cut-over reconcile (spine §15.1): SHADOW evaluation of the window and the comparison report."""
+    from datetime import date
+
+    from app.services import attendance_cutover
+
+    payload = ctx.payload or {}
+    return attendance_cutover.reconcile(ctx.db, ctx.company_id, date.fromisoformat(payload["start"]),
+                                        date.fromisoformat(payload["end"]))
+
+
 @jobs.register("attendance.location_sweep")
 def location_sweep(ctx) -> dict:
     """HOURLY (scheduled row seeded by as_m2_sites_consents): the location part of the CLI ``attendance-sweep`` —

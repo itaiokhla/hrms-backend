@@ -55,6 +55,7 @@ def build_me(db: Session, principal: Principal) -> dict:
         },
         "is_company_admin": principal.is_company_admin,
         "teams": _team_facts(db, principal),
+        "attendance": _attendance_facts(db, principal),
         "registry_version": REGISTRY_VERSION,
         "brand_version": _brand_version(principal.company_id),
     }
@@ -67,6 +68,13 @@ def _brand_version(company_id: int):
         return brand_service.effective_for_company(company_id).version
     except Exception:  # branding must never block signing in
         return None
+
+
+def _attendance_facts(db: Session, principal: Principal) -> dict:
+    """``me.attendance`` (spine §15.7): ``v2`` drives the V2 rollout gate of the attendance pages."""
+    from app.services import attendance_access
+
+    return {"v2": attendance_access.v2_enabled(db, principal.company_id)}
 
 
 def _team_facts(db: Session, principal: Principal):

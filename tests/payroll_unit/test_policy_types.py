@@ -65,9 +65,11 @@ def test_every_policy_type_of_3_1_section_3_2():
         "ADVANCE_POLICY", "PAYSLIP_TEMPLATE", "APPROVAL_CHAIN",
         "ATTENDANCE_CAPTURE_POLICY",  # AS-M2 (JC-AS-22): attendance-owned, write gate attendance:manage_policy
         "ATTENDANCE_RULES_POLICY",  # AS-M3 (JC-AS-22): read by the day evaluation only
+        "ATTENDANCE_REQUEST_POLICY", "SCHEDULING_POLICY",  # AS-M3 types (AS-M4 / AS-M5 consumers)
     }
-    assert {c for c, d in POLICY_TYPES.items() if d.module != "payroll"} == {"ATTENDANCE_CAPTURE_POLICY",
-                                                                            "ATTENDANCE_RULES_POLICY"}
+    assert {c for c, d in POLICY_TYPES.items() if d.module != "payroll"} == {
+        "ATTENDANCE_CAPTURE_POLICY", "ATTENDANCE_RULES_POLICY", "ATTENDANCE_REQUEST_POLICY", "SCHEDULING_POLICY"}
+    assert POLICY_TYPES["SCHEDULING_POLICY"].write_permission == "shift:manage"
     assert POLICY_TYPES["ATTENDANCE_CAPTURE_POLICY"].write_permission == "attendance:manage_policy"
     assert POLICY_TYPES["ATTENDANCE_RULES_POLICY"].write_permission == "attendance:manage_policy"
 
@@ -91,6 +93,8 @@ def test_every_policy_type_of_3_1_section_3_2():
         ("APPROVAL_CHAIN", (), "PERIOD"),
         ("ATTENDANCE_CAPTURE_POLICY", (), "DAY"),
         ("ATTENDANCE_RULES_POLICY", (), "DAY"),
+        ("ATTENDANCE_REQUEST_POLICY", (), "DAY"),
+        ("SCHEDULING_POLICY", (), "DAY"),
     ],
 )
 def test_gate_switches_and_grain(code, gates, grain):

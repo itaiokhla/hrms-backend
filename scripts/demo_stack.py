@@ -60,6 +60,15 @@ def main() -> None:
 
     from pg_tzdata import ensure_timezone_data
 
+    pid_file = DATA_DIR / "postmaster.pid"
+    if pid_file.exists():
+        try:
+            import psutil
+            stale_pid = int(pid_file.read_text().splitlines()[0].strip())
+            if not psutil.pid_exists(stale_pid):
+                pid_file.unlink(missing_ok=True)
+        except Exception:
+            pass
     ensure_timezone_data()  # IANA zones for SQL AT TIME ZONE (pgserver ships without them)
     server = pgserver.get_server(str(DATA_DIR), cleanup_mode="stop")
     base = server.get_uri()

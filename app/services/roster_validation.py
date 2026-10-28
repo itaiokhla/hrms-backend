@@ -161,7 +161,12 @@ def _stricter(pack_value, pack_verified: bool, policy_value, policy_severity: st
 
 
 def limits_for(db: Session, company_id: int, employee_ids: Sequence[int], on: date) -> rules.LimitsData:
-    from app.services.shift_rosters import DEFAULT_SCHEDULING_POLICY as policy
+    from app.services import attendance_days
+    from app.services.shift_rosters import DEFAULT_SCHEDULING_POLICY as defaults
+
+    # AS-M3 (IG-AS-79): the employee's resolved SCHEDULING_POLICY sets the tenant limits; a field left empty keeps
+    # the protective default of IG-AS-31 (11 h rest, 48 h a week, BLOCK). A pack still only makes a limit stricter.
+    scheduling = attendance_days.scheduling_fields(db, company_id, employee_ids, on)
 
     countries: Dict[int, Optional[str]] = {}
     for employee_id, country in (db.query(EmployeeAssignment.employee_id, LegalEntity.country_code)
@@ -176,17 +181,24 @@ def limits_for(db: Session, company_id: int, employee_ids: Sequence[int], on: da
         countries[employee_id] = country
     per: Dict[int, rules.EmployeeLimits] = {}
     for employee_id in employee_ids:
+        fields = scheduling.get(employee_id) or {}
+        policy = dict(defaults)
+        source = "SCHEDULING_POLICY default"
+        if fields.get("min_rest_hours") is not None:
+            policy["min_rest_hours"] = Decimal(str(fields["min_rest_hours"]))
+            source = "SCHEDULING_POLICY"
+        if fields.get("max_hours_per_week") is not None:
+            policy["max_hours_per_week"] = Decimal(str(fields["max_hours_per_week"]))
+            source = "SCHEDULING_POLICY"
         pack = PACKS.get(countries.get(employee_id) or "", {})
         verified = bool(pack.get("verified"))
         days = pack.get("max_days_per_week")
         consecutive = pack.get("max_consecutive_days")
         per[employee_id] = rules.EmployeeLimits(
             min_rest_hours=_stricter(pack.get("min_rest_hours"), verified, policy["min_rest_hours"],
-                                     policy["min_rest_severity"], lower_is_stricter=False,
-                                     source="SCHEDULING_POLICY default"),
+                                     policy["min_rest_severity"], lower_is_stricter=False, source=source),
             weekly_max_hours=_stricter(pack.get("weekly_max_hours"), verified, policy["max_hours_per_week"],
-                                       policy["weekly_hours_severity"], lower_is_stricter=True,
-                                       source="SCHEDULING_POLICY default"),
+                                       policy["weekly_hours_severity"], lower_is_stricter=True, source=source),
             daily_max_hours=_stricter(pack.get("daily_max_hours"), verified, None, rules.WARN,
                                       lower_is_stricter=True, source=""),
             max_days_per_week=rules.Limit(days, rules.WARN, "WORKING_TIME pack", verified) if days else None,

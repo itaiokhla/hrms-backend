@@ -99,6 +99,10 @@ def log_change(
     )
     db.add(row)
     db.flush()
+    # AS-M3: attendance v2 tenants re-evaluate the days this change touches (job attendance.recompute_scope).
+    from app.services import attendance_days
+
+    attendance_days.schedule_recompute(db, company_id, row)
     return row
 
 
@@ -688,7 +692,7 @@ def _facts_for(db: Session, company_id: int, employee_id: int, start: date, end:
 
 
 def day_facts_many(db: Session, company_id: int, employee_ids: Sequence[int], start: date,
-                   end: date, *, light: bool = False) -> Dict[int, List[DayFacts]]:
+                   end: date, *, light: bool = False, batch_out: Optional[dict] = None) -> Dict[int, List[DayFacts]]:
     """The day facts of several employees (LH 05 §3.1): one implementation for every consumer; at most
     ``MAX_EMPLOYEE_DAYS`` employee-days per call (RANGE_TOO_LONG). ``light`` (dashboards, which read portions only)
     skips shift minutes and the calendar version: ``scheduled_minutes`` is then the 8 h default and
@@ -703,6 +707,8 @@ def day_facts_many(db: Session, company_id: int, employee_ids: Sequence[int], st
         db.info["lh_graph_memo"] = {}
     try:
         batch = _Batch(db, company_id, ids, start, end, light=light)
+        if batch_out is not None:  # the attendance batch loader reuses the resolved shifts (AS-M3, IG-AS-77)
+            batch_out["shifts"] = batch.shifts
         return {employee_id: _facts_for(db, company_id, employee_id, start, end, patterns, batch)
                 for employee_id in ids}
     finally:
@@ -747,10 +753,12 @@ class Expectation:
 
 
 def expected_presence(db: Session, company_id: int, employee_ids: Sequence[int], start: date,
-                      end: date, *, light: bool = False) -> Dict[int, List[Expectation]]:
+                      end: date, *, light: bool = False,
+                      facts: Optional[Dict[int, List[DayFacts]]] = None) -> Dict[int, List[Expectation]]:
     """What attendance should expect per employee and date (LH 05 §4.2): the working portion, minus suspensions and
     APPROVED leave; APPROVED on-duty satisfies its portion without a punch; pending leave only adds a reason."""
-    facts = day_facts_many(db, company_id, employee_ids, start, end, light=light)
+    # ``facts``: day facts the caller already holds for the same employees and range (AS-M3 batch loader).
+    facts = facts if facts is not None else day_facts_many(db, company_id, employee_ids, start, end, light=light)
     ids = list(facts)
     leave_rows = db.query(LeaveDay.employee_id, LeaveDay.date, LeaveDay.portion, LeaveDay.leave_id).join(
         Leave, (Leave.company_id == LeaveDay.company_id) & (Leave.id == LeaveDay.leave_id)).filter(

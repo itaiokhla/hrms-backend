@@ -48,6 +48,8 @@ class EventMeta(StrictModel):
     location_consent: bool = False
     exception_reason: Optional[str] = Field(None, min_length=5, max_length=500)
     confirm_close_lunch: bool = False
+    # Punch-out attestation "no break taken" (ATTENDANCE_RULES_POLICY.break_attestation, 04-attendance/03 step 5 (d)).
+    no_break_taken: bool = False
 
 
 class SampleSubmission(StrictModel):

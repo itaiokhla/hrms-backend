@@ -1,6 +1,7 @@
 from app.routes import (
     attendance,
     attendance_capture,
+    attendance_cutover,
     attendance_days,
     attendance_devices,
     attendance_policies,
@@ -64,6 +65,7 @@ ROUTERS = [
     attendance_privacy.router,
     attendance_policies.router,
     attendance_days.router,  # AS-M3 evaluations (V2-only)
+    attendance_cutover.router,  # AS-M3 cut-over (/attendance/setup/*)
     attendance.router,
     leaves.router,
     # Payroll v2 first: the legacy router's /payroll/{payroll_id} would shadow /payroll/runs etc.

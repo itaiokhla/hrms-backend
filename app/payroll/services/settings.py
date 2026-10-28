@@ -1189,7 +1189,22 @@ def save_values(db: Session, principal: Principal, changes: Sequence[SettingChan
     warnings = _cross_check(db, company, [p for p in plans if p.status != "UNCHANGED"])
     approval = _change_approval_enabled(db, company.id, today)
     results = [_write(db, principal, company, plan, approval) for plan in plans]
+    _attendance_recompute(db, company.id, plans)
     return {"changes": results, "warnings": [_issue_json(i) for i in warnings]}
+
+
+def _attendance_recompute(db: Session, company_id: int, plans: Sequence[_Planned]) -> None:
+    """AS-M3 (§8.1 SETTING_CHANGED): a changed attendance evaluation key re-evaluates OPEN payroll periods from its
+    effective date (v2 tenants; the cut-over flag itself is not an evaluation input)."""
+    changed = [p for p in plans if p.key.startswith("attendance.") and p.key != "attendance.v2.enabled"
+               and p.status != "UNCHANGED"]
+    if not changed:
+        return
+    from app.services import attendance_days
+
+    attendance_days.schedule_config_recompute(
+        db, company_id, trigger="SETTING_CHANGED", source="settings:" + ",".join(sorted({p.key for p in changed})),
+        effective_from=min(p.effective_from for p in changed))
 
 
 def write_tenant_value(db: Session, principal: Principal, key: str, value: Any, *, reason: str | None = None
