@@ -1084,6 +1084,22 @@ def _statutory_findings(ctx: _Ctx) -> List[Finding]:
     return findings
 
 
+def _leave_recalc_findings(ctx: _Ctx) -> List[Finding]:
+    """LEAVE_RECALC_PENDING (LH-REL-05, FM-09): a leave recount job (a big holiday amendment, a work-week change)
+    still covers the attendance window; the run waits for it instead of paying stale leave charges."""
+    from app.services import leave_jobs
+
+    start, end = ctx.period.attendance_start, ctx.period.attendance_end
+    if end < start:
+        start = end = ctx.period.period_end
+    pending = leave_jobs.pending_recalculations(ctx.db, ctx.run.company_id, start, end)
+    if not pending:
+        return []
+    return [Finding("LEAVE_RECALC_PENDING", "BLOCKING",
+                    f"{len(pending)} leave recount job(s) still running for this period; run the check again when "
+                    "they finish.", "leave_recalc", details={"jobs": pending})]
+
+
 def _pending_findings(ctx: _Ctx) -> List[Finding]:
     """PENDING_INPUTS: leave, overtime, tasks and wage inputs still awaiting a decision (3.4 §16, EC-CAL-13)."""
     db, cid = ctx.db, ctx.run.company_id
@@ -1255,7 +1271,8 @@ def precheck(db: Session, principal: Principal, run_id: int, *, expected_version
                [r for r in rows if r.status == "EXCLUDED"])
     findings: List[Finding] = []
     for check in (lambda c: _population_findings(c, ineligible), _settings_findings, _policy_findings,
-                  _legacy_finding, _statutory_findings, _pending_findings, _fx_findings, bank_account_findings):
+                  _legacy_finding, _statutory_findings, _pending_findings, _leave_recalc_findings, _fx_findings,
+                  bank_account_findings):
         findings.extend(check(ctx))
     stored = _store_findings(db, run, findings)
     run.population = _summary(rows)

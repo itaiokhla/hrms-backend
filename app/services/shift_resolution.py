@@ -3,7 +3,8 @@
 One helper for every reader (attendance, LH day facts, payroll standard hours, overtime day types, explain):
 
 0. E has no primary placement valid on D -> ``None`` (not employed);
-1. published roster entries (AS-M5; ``ROSTER_PROVIDER`` returns nothing until then);
+1. published, not withdrawn roster entries (AS-M5, ``shift_rosters.entries_many``): the first WORK entry in
+   ``entry_seq`` order (its stored ``shift_version_id``, or custom times as a FIXED block); an OFF entry = no shift;
 2. the ACTIVE ``shift_assignment_rules`` row valid on D whose criteria match E's placement **as of D**, highest
    priority (``policy_types.resolve_assignment``); a rule whose shift is owned by another branch / legal entity
    than E's placement on D is skipped (``OWNER_SCOPE_MISMATCH``); an ``AMBIGUOUS`` tie (refused at save) fails
@@ -18,7 +19,7 @@ range with a fixed number of queries and resolves in memory (spine §5.11).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -39,14 +40,11 @@ MAX_EMPLOYEE_DAYS = 200_000  # LH day_facts_many cap (RANGE_TOO_LONG)
 ONE = Decimal(1)
 
 
-class NullRosterProvider:
-    """Step 1 before AS-M5: no published roster entries exist."""
+def _roster_entries(db: Session, company_id: int, employee_ids: Sequence[int], start: date, end: date) -> dict:
+    """``{(employee_id, date): [RosterEntry rows, entry_seq order]}`` of published, not withdrawn entries."""
+    from app.services import shift_rosters
 
-    def day_entries(self, db: Session, company_id: int, employee_ids: Sequence[int], start: date, end: date) -> dict:
-        return {}
-
-
-ROSTER_PROVIDER = NullRosterProvider()
+    return shift_rosters.entries_many(db, company_id, employee_ids, start, end)
 
 
 @dataclass(frozen=True)
@@ -61,6 +59,8 @@ class ResolvedShift:
     work_timezone: str
     rule_id: Optional[int] = None
     assignment_id: Optional[int] = None
+    roster_entry_id: Optional[int] = None
+    entry_seq: Optional[int] = None
     # Legacy gross hours of the version (or of the shift without versions), for the zero-diff standard hours.
     duration_hours: Optional[Decimal] = None
     explain: Tuple[dict, ...] = field(default=(), compare=False)
@@ -141,6 +141,9 @@ class _Catalogue:
                     .order_by(ShiftVersion.shift_id, ShiftVersion.effective_from)):
             self.versions.setdefault(row.shift_id, []).append(row)
 
+    def version_by_id(self, version_id: int) -> Optional[ShiftVersion]:
+        return next((r for rows in self.versions.values() for r in rows if r.id == version_id), None)
+
     def on(self, shift_id: int, day: date) -> Tuple[Optional[ShiftVersion], Optional[engine.ShiftVersionData],
                                                     Optional[Decimal]]:
         shift = self.shifts.get(shift_id)
@@ -151,7 +154,13 @@ class _Catalogue:
             return None, legacy_data(shift), shift.duration_hours
         for row in rows:
             if row.effective_from <= day and (row.effective_to is None or day <= row.effective_to):
-                return row, version_data(row, shift.kind), row.duration_hours
+                data = version_data(row, shift.kind)
+                if row.id == shift.current_version_id and not row.segments and not row.break_rules:
+                    # Today's legacy-shaped version reads the shift's mirror columns, which legacy writers (and
+                    # direct SQL) still change in place: payroll sees exactly what it saw before AS-M1.
+                    data = replace(data, unpaid_break_minutes=shift.unpaid_break_minutes)
+                    return row, data, shift.duration_hours
+                return row, data, row.duration_hours
         return None, None, None  # dated before version 1 (never for migrated shifts, which start 2000-01-01)
 
 
@@ -193,15 +202,40 @@ def owner_scope_contains(shift: Shift, assignment: EmployeeAssignment) -> bool:
 
 
 def _assignment_rules(rows: Sequence[ShiftAssignmentRule]) -> List[Tuple[ShiftAssignmentRule, pt.AssignmentRule]]:
+    from app.services.shift_criteria import parse_shift_criteria
+
     built = []
     for row in rows:
         try:
             built.append((row, pt.AssignmentRule(rule_id=row.id, policy_id=row.shift_id, priority=row.priority,
-                                                 criteria=row.criteria, effective_from=row.effective_from,
+                                                 criteria=parse_shift_criteria(row.criteria),
+                                                 effective_from=row.effective_from,
                                                  effective_to=row.effective_to, status=row.status)))
         except pt.PolicyValidationError:
             continue  # a stored criteria object the current schema rejects never matches
     return built
+
+
+def _team_memberships(db: Session, company_id: int, employee_ids: Sequence[int], start: date, end: date,
+                      rules) -> Dict[int, list]:
+    """Membership rows overlapping the range, loaded only when a rule names a team dimension (X-M1, D-X-09)."""
+    if not any(getattr(rule.criteria, "has_team_dimensions", False) for _, rule in rules):
+        return {}
+    from app.models.teams import TeamMembership
+
+    rows = db.query(TeamMembership).filter(
+        TeamMembership.company_id == company_id, TeamMembership.employee_id.in_(list(employee_ids)),
+        TeamMembership.effective_from <= end,
+        or_(TeamMembership.effective_to.is_(None), TeamMembership.effective_to >= start)).all()
+    result: Dict[int, list] = {}
+    for row in rows:
+        result.setdefault(row.employee_id, []).append(row)
+    return result
+
+
+def _teams_on(rows: Sequence, day: date) -> Dict[int, str]:
+    return {r.team_id: r.member_role for r in rows
+            if r.effective_from <= day and (r.effective_to is None or r.effective_to >= day)}
 
 
 # ------------------------------------------------------------------------------------------------ resolving
@@ -225,7 +259,10 @@ def shifts_for_many(db: Session, company_id: int, employee_ids: Sequence[int], s
     skip = set(skip_rule_ids)
     rule_rows = [r for r in _rules(db, company_id, start, end) if r.id not in skip] + list(extra_rules)
     rules = _assignment_rules(rule_rows)
-    shift_ids = {r.shift_id for r in rule_rows} | {a.shift_id for rows in placements.values() for a, _ in rows}
+    memberships = _team_memberships(db, company_id, ids, start, end, rules)
+    roster = _roster_entries(db, company_id, ids, start, end)
+    shift_ids = ({r.shift_id for r in rule_rows} | {a.shift_id for rows in placements.values() for a, _ in rows}
+                 | {e.shift_id for entries in roster.values() for e in entries})
     catalogue = _Catalogue(db, company_id, shift_ids)
     zones = _Zones(db, company_id, placements)
     for employee_id in ids:
@@ -237,17 +274,56 @@ def shifts_for_many(db: Session, company_id: int, employee_ids: Sequence[int], s
             assignment, employment_type = current
             zone = zones.of(assignment)
             explain: List[dict] = []
-            resolved = _resolve_day(day, assignment, employment_type, zone, rules, catalogue, explain, with_explain)
+            entries = roster.get((employee_id, day))
+            if entries:
+                resolved = _from_roster(day, entries, zone, catalogue, assignment, explain, with_explain)
+                if with_explain:
+                    explain.append({"step": "RULE", "won": False, "reason": "ROSTER_WINS"})
+                    explain.append({"step": "PLACEMENT", "shift_id": assignment.shift_id, "won": False,
+                                    "reason": "ROSTER_WINS"})
+            else:
+                resolved = _resolve_day(day, assignment, employment_type, zone, rules, catalogue, explain,
+                                        with_explain, _teams_on(memberships.get(employee_id, ()), day))
             if resolved is not None and with_explain:
                 resolved = ResolvedShift(**{**resolved.__dict__, "explain": tuple(explain)})
             result[(employee_id, day)] = resolved
     return result
 
 
-def _resolve_day(day, assignment, employment_type, zone, rules, catalogue: _Catalogue, explain: list,
+def _from_roster(day, entries, zone, catalogue: _Catalogue, assignment, explain: list,
                  with_explain: bool) -> Optional[ResolvedShift]:
+    """Step 1: the first WORK entry; an OFF entry (always alone on its date) gives no shift."""
+    work = [e for e in entries if e.kind == "WORK"]
+    if with_explain:
+        explain.append({"step": "ROSTER", "roster_entry_id": (work or entries)[0].id, "won": True,
+                        "reason": None if work else "ROSTER_OFF"})
+    if not work:
+        return None
+    entry = work[0]
+    if entry.shift_id is None:  # custom times: an open block without a shift (D-AS-13)
+        data = engine.ShiftVersionData(kind="FIXED", start_time=entry.custom_start_time, end_time=entry.custom_end_time,
+                                       segments=entry.custom_segments or ())
+        return ResolvedShift(day, "ROSTER", 0, None, data, zone, assignment_id=assignment.id,
+                             roster_entry_id=entry.id, entry_seq=entry.entry_seq)
+    row = catalogue.version_by_id(entry.shift_version_id) if entry.shift_version_id else None
+    if row is not None:
+        data, duration, version_id = version_data(row, catalogue.shifts[entry.shift_id].kind), row.duration_hours, row.id
+    else:
+        found, data, duration = catalogue.on(entry.shift_id, day)
+        version_id = found.id if found is not None else None
+    if data is None:
+        return None
+    if entry.custom_start_time:  # a one-date override of the shift's times
+        data = replace(data, start_time=entry.custom_start_time, end_time=entry.custom_end_time)
+    return ResolvedShift(day, "ROSTER", entry.shift_id, version_id, data, zone, assignment_id=assignment.id,
+                         duration_hours=duration, roster_entry_id=entry.id, entry_seq=entry.entry_seq)
+
+
+def _resolve_day(day, assignment, employment_type, zone, rules, catalogue: _Catalogue, explain: list,
+                 with_explain: bool, teams: Optional[Dict[int, str]] = None) -> Optional[ResolvedShift]:
     attributes = _attributes(assignment, employment_type)
-    live = [(row, rule) for row, rule in rules if rule.active_on(day) and rule.criteria.matches(attributes)]
+    live = [(row, rule) for row, rule in rules if rule.active_on(day) and rule.criteria.matches(attributes)
+            and (not hasattr(rule.criteria, "team_match") or rule.criteria.team_match(teams))]
     # Highest priority first; a rule outside the shift's owner scope is skipped and the next one considered.
     live.sort(key=lambda pair: (-pair[1].priority, pair[0].id))
     chosen = None
@@ -297,6 +373,8 @@ def shift_for(db: Session, company_id: int, employee_id: int, day: date) -> Opti
 def explain(db: Session, company_id: int, employee_id: int, start: date, end: date) -> List[dict]:
     """Per date: the winning step, the version and every candidate with why it lost (§11.4)."""
     resolved = shifts_for_many(db, company_id, [employee_id], start, end, with_explain=True)
+    ids = {r.shift_id for r in resolved.values() if r is not None}
+    codes = dict(db.query(Shift.id, Shift.code).filter(Shift.company_id == company_id, Shift.id.in_(ids)).all())         if ids else {}
     out = []
     for day in _dates(start, end):
         item = resolved[(employee_id, day)]
@@ -306,6 +384,8 @@ def explain(db: Session, company_id: int, employee_id: int, start: date, end: da
             continue
         out.append({"date": day.isoformat(), "source": item.source, "shift_id": item.shift_id,
                     "shift_version_id": item.shift_version_id, "rule_id": item.rule_id,
+                    "shift_code": codes.get(item.shift_id), "kind": item.version.kind,
+                    "anchor_timezone": item.version.anchor_timezone,
                     "work_timezone": item.work_timezone, "start_time": item.version.start_time,
                     "end_time": item.version.end_time, "candidates": list(item.explain)})
     return out
@@ -328,7 +408,8 @@ def scheduled_hours(resolved: Optional[ResolvedShift]) -> Optional[Decimal]:
     if resolved is None:
         return None
     version = resolved.version
-    if _legacy_shaped(version):
+    custom_block = resolved.source == "ROSTER" and not resolved.shift_id
+    if _legacy_shaped(version) and not custom_block:
         if resolved.duration_hours is None:
             return None
         hours = Decimal(resolved.duration_hours) - Decimal(version.unpaid_break_minutes or 0) / Decimal(60)

@@ -6,6 +6,7 @@ and source_change_log (append-only version hashes of every source record a pay r
 """
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
@@ -35,6 +36,10 @@ CHANGE_RECORD_TYPES = (
     "overtime", "task", "wage_input", "assignment",
     # LH-M1 (migration lh_m1_work_weeks_links): work-week pattern versions and effective-dated calendar links.
     "work_week_version", "calendar_link",
+    # AS-M1 (as_m1_shift_versions) and LH-M1 calendar structure (lh_m1_calendar_structure).
+    "shift_version", "shift_rule", "holiday_year", "working_day",
+    # AS-M3 (as_m3_days_policies, JC-AS-11b): evaluations, attendance requests, roster entries.
+    "attendance_day", "attendance_request", "roster_entry",
 )
 CHANGE_KINDS = ("CREATED", "UPDATED", "VOIDED", "DELETED")
 ACTIVE_LEAVE_DAY = "voided_at IS NULL"
@@ -231,7 +236,7 @@ class SourceChangeLog(TenantMixin, BaseModel):
     __tablename__ = "source_change_log"
 
     record_type = Column(String(20), nullable=False)
-    record_id = Column(Integer, nullable=False)
+    record_id = Column(BigInteger, nullable=False)  # BIGINT since as_m3_days_policies (attendance_days, A-07)
     employee_id = Column(Integer, nullable=True)
     date_from = Column(Date, nullable=True)
     date_to = Column(Date, nullable=True)

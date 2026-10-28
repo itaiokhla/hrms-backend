@@ -5,16 +5,19 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, File, Form, Query, Request, UploadFile
 from pydantic import Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core import authz
 from app.core.errors import AppError, bad_request, forbidden, not_found
 from app.core.permission_registry import PERMISSIONS_BY_CODE, TARGETED_SCOPES
 from app.core.principal import Principal, get_principal_any_subscription, require, require_any
+from app.core.security import utcnow
 from app.database.db import get_db
 from app.models.org import Branch, LegalEntity, RoleAssignmentTarget
 from app.models.pay_org import PayGroup
 from app.models.rbac import Role, RolePermission, UserRoleAssignment
+from app.models.teams import Team
 from app.models.user import User
 from app.payroll.api_types import DecimalStr
 from app.payroll.services import idempotency
@@ -252,6 +255,9 @@ class PlacementChange(StrictModel):
     work_week_pattern_id: Optional[int] = None
     shift_id: Optional[int] = None
     fte: Optional[DecimalStr] = None
+    # Employee-level holiday calendar (LH 04-holiday/01 §4.2; employee:update) and work time zone (IANA).
+    holiday_calendar_id: Optional[int] = None
+    work_timezone: Optional[str] = Field(None, max_length=64)
 
 
 class TerminationWrite(StrictModel):
@@ -297,6 +303,8 @@ class TargetWrite(StrictModel):
     legal_entity_ids: List[int] = Field(default_factory=list, max_length=200)
     branch_ids: List[int] = Field(default_factory=list, max_length=500)
     pay_group_ids: List[int] = Field(default_factory=list, max_length=500)
+    # X-M1: ASSIGNED_TEAMS targets (ACTIVE teams of this tenant; X 01 §4.2, §6.9).
+    assigned_team_ids: List[int] = Field(default_factory=list, max_length=500)
 
 
 class TargetsWrite(StrictModel):
@@ -313,10 +321,17 @@ def _targeted_grants(db: Session, role_id: int) -> Dict[str, List[str]]:
     return result
 
 
+def _open_assignments(db: Session, company_id: int, user_id: int) -> List[UserRoleAssignment]:
+    """Active and future assignments, earliest first (ended windows are history, X 01 §6.7)."""
+    now = utcnow()
+    return db.query(UserRoleAssignment).filter(
+        UserRoleAssignment.company_id == company_id, UserRoleAssignment.user_id == user_id,
+        or_(UserRoleAssignment.effective_until.is_(None), UserRoleAssignment.effective_until > now),
+    ).order_by(UserRoleAssignment.effective_from).all()
+
+
 def _targets_view(db: Session, principal: Principal, user_id: int) -> List[dict]:
-    assignments = db.query(UserRoleAssignment).filter(
-        UserRoleAssignment.company_id == principal.company_id, UserRoleAssignment.user_id == user_id
-    ).all()
+    assignments = _open_assignments(db, principal.company_id, user_id)
     roles = {r.id: r for r in db.query(Role).filter(Role.company_id == principal.company_id)}
     result = []
     for assignment in assignments:
@@ -332,6 +347,8 @@ def _targets_view(db: Session, principal: Principal, user_id: int) -> List[dict]
             "legal_entity_ids": sorted(t.target_id for t in targets if t.scope == "LEGAL_ENTITY"),
             "branch_ids": sorted(t.target_id for t in targets if t.scope == "BRANCH"),
             "pay_group_ids": sorted(t.target_id for t in targets if t.scope == "PAY_GROUP"),
+            "assigned_team_ids": sorted(t.target_id for t in targets if t.scope == "ASSIGNED_TEAMS"),
+            "assignment_id": assignment.id,
         })
     return result
 
@@ -355,19 +372,23 @@ def set_targets(user_id: int, data: TargetsWrite, principal: Principal = Depends
         "LEGAL_ENTITY": {i for (i,) in db.query(LegalEntity.id).filter(LegalEntity.company_id == principal.company_id)},
         "BRANCH": {i for (i,) in db.query(Branch.id).filter(Branch.company_id == principal.company_id)},
         "PAY_GROUP": {i for (i,) in db.query(PayGroup.id).filter(PayGroup.company_id == principal.company_id)},
+        "ASSIGNED_TEAMS": {i for (i,) in db.query(Team.id).filter(Team.company_id == principal.company_id,
+                                                                   Team.status == "ACTIVE")},
     }
     for item in data.assignments:
-        assignment = db.query(UserRoleAssignment).filter(
-            UserRoleAssignment.company_id == principal.company_id, UserRoleAssignment.user_id == user.id,
-            UserRoleAssignment.role_id == item.role_id,
-        ).first()
+        assignment = next((a for a in _open_assignments(db, principal.company_id, user.id)
+                           if a.role_id == item.role_id), None)
         if assignment is None:
             raise not_found("Role assignment")
         grants = _targeted_grants(db, item.role_id)
         wanted = {"LEGAL_ENTITY": set(item.legal_entity_ids), "BRANCH": set(item.branch_ids),
-                  "PAY_GROUP": set(item.pay_group_ids)}
-        if any(not ids <= known[scope] for scope, ids in wanted.items()):
-            raise not_found("Legal entity, branch or pay group")
+                  "PAY_GROUP": set(item.pay_group_ids), "ASSIGNED_TEAMS": set(item.assigned_team_ids)}
+        existing_teams = {t for (t,) in db.query(RoleAssignmentTarget.target_id).filter(
+            RoleAssignmentTarget.user_role_assignment_id == assignment.id,
+            RoleAssignmentTarget.scope == "ASSIGNED_TEAMS")}
+        if any(not ids <= known[scope] | (existing_teams if scope == "ASSIGNED_TEAMS" else set())
+               for scope, ids in wanted.items()):
+            raise not_found("Legal entity, branch, pay group or team")
         existing: Dict[str, set] = {}
         for target in db.query(RoleAssignmentTarget).filter(RoleAssignmentTarget.user_role_assignment_id == assignment.id):
             existing.setdefault(target.scope, set()).add(target.target_id)
@@ -392,7 +413,8 @@ def set_targets(user_id: int, data: TargetsWrite, principal: Principal = Depends
         AuditLogService.log(
             db, principal, "Users", "SCOPE_TARGETS",
             f"{user.email}: role #{item.role_id} covers entities {sorted(wanted['LEGAL_ENTITY'])}, branches "
-            f"{sorted(wanted['BRANCH'])} and pay groups {sorted(wanted['PAY_GROUP'])}", "user", user.id,
+            f"{sorted(wanted['BRANCH'])}, pay groups {sorted(wanted['PAY_GROUP'])} and teams "
+            f"{sorted(wanted['ASSIGNED_TEAMS'])}", "user", user.id,
             details={"role_id": item.role_id,
                      "before": {scope: sorted(existing.get(scope, set())) for scope in wanted},
                      "after": {scope: sorted(ids) for scope, ids in wanted.items()}},

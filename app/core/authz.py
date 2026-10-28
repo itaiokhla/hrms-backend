@@ -12,14 +12,21 @@ exports all see exactly the same authorised set. Default is deny.
 Targeted scopes (LEGAL_ENTITY, BRANCH, PAY_GROUP) match the employee's primary placement in
 employee_assignments: today's by default, or any placement overlapping a period for payroll
 objects, so history follows the record's date (02 §15.2, EC-ORG-14).
+
+Team scopes (X 01 §4; X-M1) match ``team_memberships`` on employee-local dates: TEAM / TEAM_TREE reach the members
+of teams the principal leads (LEAD / DEPUTY_LEAD), with TEAM_TREE also their sub-teams by the parent valid on the date;
+ASSIGNED_TEAMS reaches the members of the target teams of the role assignment. "Today" is the principal's local today;
+with a period, a member counts only when the member row, the lead row and the period share a date (the per-date
+predicate of X-ROLE-41; a one-day period is the detail-read rule). Members after their employment ended never count
+(TM-8), and TEAM / TEAM_TREE never reach the lead's own management chain (upward exclusion, X-ROLE-43).
 """
 
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Iterable, List, Optional, Tuple
 
-from sqlalchemy import ColumnElement, Select, and_, false, literal, or_, select, true, union
-from sqlalchemy.orm import Session
+from sqlalchemy import ColumnElement, Select, and_, false, func, literal, or_, select, true, union
+from sqlalchemy.orm import Session, aliased
 
 from app.core import hierarchy
 from app.core.errors import forbidden, not_found
@@ -28,6 +35,7 @@ from app.core.principal import Principal
 from app.models.employee import Department, Employee
 from app.models.org import EmployeeAssignment
 from app.models.rbac import ScopeAssignment
+from app.models.teams import LEAD_ROLES, TeamMembership, TeamParentHistory
 
 # Inclusive date window [start, end] of a payroll object (pay period, effective date).
 Period = Tuple[date, date]
@@ -117,7 +125,91 @@ def relationship_selects(principal: Principal, permission: str, *, period: Optio
                 ScopeAssignment.company_id == cid, ScopeAssignment.user_id == principal.user_id
             )
         )
+    if me is not None and (Scope.TEAM.value in scopes or Scope.TEAM_TREE.value in scopes):
+        start, end = period if period is not None else (principal_today(principal),) * 2
+        selects.append(team_lead_select(cid, me, start, end, tree=Scope.TEAM_TREE.value in scopes))
     return selects
+
+
+def principal_today(principal: Principal) -> date:
+    """The principal's local today (set at login for team-scope holders), else the clock's UTC date."""
+    today = principal.extra.get("local_today") if principal.extra else None
+    if today is None:
+        from app.core import clock
+
+        today = clock.utcnow().date()
+    return today
+
+
+_FAR = date(9999, 12, 31)
+
+
+def _window(start: date, end: date, *rows) -> ColumnElement:
+    """Every dated row of ``rows`` and [start, end] share at least one date (empty, cancelled rows never match)."""
+    first = func.greatest(literal(start), *[r.effective_from for r in rows])
+    last = func.least(literal(end), *[func.coalesce(r.effective_to, _FAR) for r in rows])
+    return first <= last
+
+
+def _employed(member, start: date) -> ColumnElement:
+    """Membership rows of people whose employment ended before ``start`` never count (TM-2, TM-8)."""
+    return member.employee_id.in_(select(Employee.id).where(
+        Employee.company_id == member.company_id,
+        or_(Employee.termination_date.is_(None), Employee.termination_date >= start)))
+
+
+def ancestors_select(company_id: int, employee_id: int) -> Select:
+    """The reporting-line ancestors of ``employee_id`` (line manager upwards, depth <= 64)."""
+    start = select(Employee.manager_id.label("id"), literal(1).label("depth")).where(
+        Employee.company_id == company_id, Employee.id == employee_id)
+    chain = start.cte(recursive=True)
+    parent = aliased(Employee)
+    chain = chain.union_all(select(parent.manager_id, chain.c.depth + 1).where(
+        parent.company_id == company_id, parent.id == chain.c.id, chain.c.depth < hierarchy.MAX_DEPTH))
+    return select(chain.c.id).where(chain.c.id.is_not(None))
+
+
+def lead_teams_select(company_id: int, lead_employee_id: int, start: date, end: date, *, tree: bool) -> Select:
+    """Teams ``lead_employee_id`` leads in [start, end], with TEAM_TREE also their sub-teams by the parent link valid
+    in the window (team_parent_history; box P-10, X-ROLE-42)."""
+    lead = aliased(TeamMembership)
+    led = (lead.company_id == company_id, lead.employee_id == lead_employee_id, lead.member_role.in_(LEAD_ROLES),
+           _window(start, end, lead))
+    if not tree:
+        return select(lead.team_id).where(*led)
+    teams = select(lead.team_id.label("id"), literal(0).label("depth")).where(*led).cte(
+        "lead_team_tree", recursive=True)
+    link = aliased(TeamParentHistory)
+    teams = teams.union(select(link.team_id, teams.c.depth + 1).where(
+        link.company_id == company_id, link.parent_team_id == teams.c.id, teams.c.depth < hierarchy.MAX_DEPTH,
+        _window(start, end, link)))
+    return select(teams.c.id)
+
+
+def team_lead_select(company_id: int, lead_employee_id: int, start: date, end: date, *, tree: bool) -> Select:
+    """Members of the teams ``lead_employee_id`` leads (TEAM), plus their sub-teams (TEAM_TREE), in [start, end].
+
+    A member counts only when the member row shares a date with a lead row of the principal (and the window), so a
+    lead who starts mid-month reaches nobody before that date (X-ROLE-41)."""
+    member = aliased(TeamMembership)
+    lead = aliased(TeamMembership)
+    return select(member.employee_id).where(
+        member.company_id == company_id,
+        member.team_id.in_(lead_teams_select(company_id, lead_employee_id, start, end, tree=tree)),
+        _window(start, end, member), _employed(member, start),
+        member.employee_id.not_in(ancestors_select(company_id, lead_employee_id)),
+        select(lead.id).where(
+            lead.company_id == company_id, lead.employee_id == lead_employee_id, lead.member_role.in_(LEAD_ROLES),
+            _window(start, end, lead, member)).exists(),
+    )
+
+
+def assigned_teams_select(company_id: int, team_ids: Iterable[int], start: date, end: date) -> Select:
+    """Members of the named teams in [start, end] (ASSIGNED_TEAMS; sub-teams only when named)."""
+    member = aliased(TeamMembership)
+    return select(member.employee_id).where(
+        member.company_id == company_id, member.team_id.in_(sorted(team_ids)),
+        _window(start, end, member), _employed(member, start))
 
 
 def targeted_selects(principal: Principal, permission: str, *, period: Optional[Period] = None) -> List[Select]:
@@ -130,6 +222,10 @@ def targeted_selects(principal: Principal, permission: str, *, period: Optional[
             continue
         targets = principal.scope_targets(permission, scope.value)
         if not targets:
+            continue
+        if scope == Scope.ASSIGNED_TEAMS:  # team_memberships, not employee_assignments (X 01 §4.2)
+            start, end = period if period is not None else (principal_today(principal),) * 2
+            selects.append(assigned_teams_select(cid, targets, start, end))
             continue
         column = TARGET_ASSIGNMENT_COLUMNS[scope]
         if period is None:

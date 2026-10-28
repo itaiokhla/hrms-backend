@@ -31,7 +31,7 @@ ASSIGNMENT_REASONS = (
     "HIRE", "TRANSFER", "PROMOTION", "DEMOTION", "REORG", "SECONDMENT_START", "SECONDMENT_END",
     "CONCURRENT_START", "CONCURRENT_END", "TERMINATION", "REHIRE", "CORRECTION", "MIGRATION",
 )
-TARGET_SCOPES = ("LEGAL_ENTITY", "BRANCH", "PAY_GROUP")
+TARGET_SCOPES = ("LEGAL_ENTITY", "BRANCH", "PAY_GROUP", "ASSIGNED_TEAMS")
 
 
 class LegalEntity(TenantMixin, BaseModel):
@@ -140,6 +140,9 @@ class EmployeeAssignment(TenantMixin, BaseModel):
     cost_center_id = Column(Integer, nullable=True)
     work_week_pattern_id = Column(Integer, nullable=True)
     shift_id = Column(Integer, nullable=True)
+    # Employee-level holiday calendar (override, LH 04-holiday/01 §4.2) and work time zone (IANA, LH-M1 WI-1.3).
+    holiday_calendar_id = Column(Integer, nullable=True)
+    work_timezone = Column(String(64), nullable=True)
     # Full-time equivalent, 0 < fte <= 1 (part-time 0.5 halves standard hours, 3.4 §3).
     fte = Column(Numeric(5, 4), nullable=False, default=Decimal("1"))
 
@@ -187,6 +190,10 @@ class EmployeeAssignment(TenantMixin, BaseModel):
         ),
         ForeignKeyConstraint(
             ["company_id", "shift_id"], ["shifts.company_id", "shifts.id"], name="fk_employee_assignments_shift",
+        ),
+        ForeignKeyConstraint(
+            ["company_id", "holiday_calendar_id"], ["holiday_calendars.company_id", "holiday_calendars.id"],
+            name="fk_employee_assignments_holiday_calendar",
         ),
         CheckConstraint(f"reason IN {ASSIGNMENT_REASONS}", name="ck_employee_assignments_reason"),
         CheckConstraint("effective_to IS NULL OR effective_to >= effective_from", name="ck_employee_assignments_window"),

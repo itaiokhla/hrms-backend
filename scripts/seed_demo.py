@@ -68,6 +68,7 @@ SELF_SERVICE = [
     ("overtime:request", "SELF"), ("task:read", "SELF"),
     # LH-M1 / AS-M1 self-service (registry 2026.10.5-2026.10.6)
     ("holiday:choose_optional", "SELF"), ("shift:read", "SELF"), ("roster:read", "SELF"), ("roster:request", "SELF"),
+    ("team:read", "SELF"),
 ]
 
 NIMBUS = {

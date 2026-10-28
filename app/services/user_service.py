@@ -238,6 +238,27 @@ def set_roles(db: Session, principal: Principal, user_id: int, role_ids: List[in
         location_service.stop_for_employee(db, principal.company_id, _employee_id_of(db, user), "PERMISSION_REVOKED")
 
 
+def set_role_windows(db: Session, principal: Principal, user_id: int, items) -> List[dict]:
+    """The windowed role form (X 01 §6.7, P-3): windows on local dates with per-assignment targets."""
+    user = _get(db, principal, user_id)
+    windows = rbac_service.set_user_role_windows(db, principal, user, items)
+    db.flush()
+    if "attendance:mark" not in load_grants(db, user.id)[0]:
+        location_service.stop_for_employee(db, principal.company_id, _employee_id_of(db, user), "PERMISSION_REVOKED")
+    return windows
+
+
+def role_windows(db: Session, principal: Principal, user_id: int) -> List[dict]:
+    from app.models.rbac import UserRoleAssignment
+
+    user = _get(db, principal, user_id)
+    zone = rbac_service._user_zone(db, user)
+    rows = db.query(UserRoleAssignment).filter(UserRoleAssignment.company_id == principal.company_id,
+                                               UserRoleAssignment.user_id == user.id) \
+        .order_by(UserRoleAssignment.effective_from).all()
+    return [rbac_service.serialize_assignment(db, a, zone) for a in rows]
+
+
 def set_assigned_employees(db: Session, principal: Principal, user_id: int, employee_ids: List[int]) -> None:
     """Replace the user's ASSIGNED_GROUP list, which every assigned-group grant of all their roles shares.
 

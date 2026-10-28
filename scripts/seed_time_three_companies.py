@@ -40,7 +40,7 @@ from seed_payroll_three_companies import Api, SeedError, http_client_factory, it
 ROOT = Path(__file__).resolve().parents[1]
 CREDENTIALS_JSON = ROOT / ".local-secrets" / "time-credentials.json"  # git-ignored (hrms-backend/.gitignore)
 DATASET_VERSION = "time-2026.10.27"
-GOALS = ("G-01", "G-02", "G-03", "G-04")  # a goal seeds its own objects and every earlier goal's
+GOALS = ("G-01", "G-02", "G-03", "G-04", "G-05", "G-14")  # a goal seeds its own objects and every earlier goal's
 TODAY = date(2026, 10, 26)
 HIRED = date(2025, 1, 6)
 TAG = "time stack"
@@ -55,6 +55,18 @@ WORK_CALENDAR_ADMIN_KEY = "work_calendar_admin"
 WORK_CALENDAR_ADMIN = ("Work calendar administrator",
                        "Holiday calendars, work weeks and their effective-dated links for the whole company.",
                        [("holiday:read", "COMPANY"), ("holiday:manage", "COMPANY"), ("holiday:publish", "COMPANY")])
+
+# G-14 custom roles (03-shifts/02 §2.4 example: Kiran drafts, Asha publishes) until X-M2 role templates exist.
+ROSTER_ROLES = {
+    "roster_planner": ("Roster planner", "Drafts roster periods and rotation assignments; cannot publish.",
+                       [("roster:read", "COMPANY"), ("roster:plan", "COMPANY"), ("shift:read", "COMPANY"),
+                        ("shift:assign", "COMPANY"), ("org:read", "COMPANY")]),  # org:read: branch pickers
+    "roster_publisher": ("Roster publisher", "Publishes roster periods prepared by the planners.",
+                         [("roster:read", "COMPANY"), ("roster:publish", "COMPANY"), ("shift:read", "COMPANY")]),
+}
+# G-14 rotation (03-shifts/02 §14.1): PUNE-6ON2OFF from SIX_ON_TWO_OFF_SLOW, M→A, A→B, N→C, anchor Mon 2026-11-02.
+ROTATION_ANCHOR = "2026-11-02"
+CREW_OFFSETS = {"A": 0, "B": 6, "C": 12, "D": 18}
 
 # Work weeks: code, name, weekly offs (0 = Monday), nth-weekday offs.
 MON_FRI = ("MON_FRI", "Monday to Friday", [5, 6], [])
@@ -148,6 +160,8 @@ COMPANIES: Dict[str, dict] = {
             ("Diwali (optional)", "2026-11-09", None, True), ("Christmas", "2026-12-25", None, False),
             ("Republic Day", "2027-01-26", None, False),
         ],
+        # Goal 4 (BUG-22): statutory holidays are PUBLIC; the rest stay COMPANY.
+        "public_holidays": ["Republic Day", "Gandhi Jayanti", "Independence Day"],
         # employee key, type, start, end, start portion, end portion, outcome (approve | reject | cancel | pending)
         "leaves": [
             ("priya", "casual", "2026-11-16", "2026-11-17", "FULL", "FULL", "approve"),
@@ -162,6 +176,33 @@ COMPANIES: Dict[str, dict] = {
         # G-02: overtime entries for the pilot list (filed by the manager): employee key, manager key, minutes.
         # G-03: Arjun also administers the work calendar (work weeks, links) company-wide (LH DECISIONS IG-LH-02).
         "work_calendar_admins": ["arjun"],
+        # G-05 teams of spine §0.3 (PAYMENTS is created in the Chrome check): code, name, type, home branch,
+        # from, [(person, member role, routing lead, primary team)].
+        "teams": [
+            ("PLATFORM", "Platform", "PROJECT", "br21", "2026-10-01",
+             [("arjun", "LEAD", True, False), ("rohan", "MEMBER", False, False)]),
+            ("US-PROCESS", "US process", "FUNCTIONAL", "br21", "2026-10-01",
+             [("deepa", "LEAD", True, False), ("sameer", "MEMBER", False, True), ("pooja", "MEMBER", False, True)]),
+            ("CREW-A", "Crew A", "CREW", "br22", "2026-10-01",
+             [("vikram", "LEAD", True, False), ("imran", "MEMBER", False, True)]),
+            ("CREW-B", "Crew B", "CREW", "br22", "2026-10-01",
+             [("vikram", "LEAD", True, False), ("ravi", "MEMBER", False, True)]),
+            ("CREW-C", "Crew C", "CREW", "br22", "2026-10-01",
+             [("neha", "LEAD", True, False), ("sunita", "MEMBER", False, True)]),
+            ("CREW-D", "Crew D", "CREW", "br22", "2026-10-01", [("neha", "LEAD", True, False)]),
+            ("SITE-HJW", "Hinjewadi site", "SITE", "br22", "2026-10-01",
+             [("prakash", "LEAD", True, False), ("ramesh", "MEMBER", False, True)]),
+            ("WARD-3", "Ward 3", "FUNCTIONAL", "br24", "2026-10-01",
+             [("leena", "LEAD", True, False), ("anjali", "MEMBER", False, True)]),
+        ],
+        "roster_roles": {"kiran": "roster_planner", "asha": "roster_publisher"},
+        "rosters": {
+            "rotation": {"code": "PUNE-6ON2OFF", "name": "Pune 6 on 2 off", "template": "SIX_ON_TWO_OFF_SLOW",
+                         "branch": "br22", "map": {"M": "A", "A": "B", "N": "C"},
+                         "crews": {"A": ["imran"], "B": ["ravi"], "C": ["sunita"]}},
+            "periods": [("RP-PUNE-PROD-2026-11", "Pune production November 2026", "br22", "2026-11-01", "2026-11-30",
+                         7)],
+        },
         "overtime": [("priya", "arjun", 90), ("rohan", "arjun", 60), ("meghna", "arjun", 120),
                      ("deepa", "arjun", 45), ("ravi", "vikram", 180), ("sunita", "vikram", 75)],
         "attendance_by": "kavya",
@@ -204,6 +245,9 @@ COMPANIES: Dict[str, dict] = {
         ],
         "holidays": [("UAE National Day", "2025-12-02", None, False), ("Eid al-Fitr", "2026-03-20", None, False),
                      ("UAE National Day", "2026-12-02", None, False)],
+        "public_holidays": ["UAE National Day", "Eid al-Fitr"],
+        # Goal 4 (09-ui-ux/02 §16 persona): Layla works the Gulf week, Sunday to Thursday (Friday-Saturday off).
+        "work_week_overrides": [("layla", "UAE_SUN_THU", "UAE Sunday to Thursday", "SUN_THU")],
         "leaves": [("layla", "casual", "2026-11-10", "2026-11-10", "FULL", "FULL", "approve"),
                    ("maria", "sick", "2026-11-11", "2026-11-11", "FULL", "FULL", "pending")],
         "attendance_by": "mariam",
@@ -212,6 +256,11 @@ COMPANIES: Dict[str, dict] = {
     },
     "gamma": {
         "name": "Gamma Retail", "timezone": "America/New_York", "domain": "gamma-time.example",
+        "teams": [("STORE-NYC", "Manhattan store", "SITE", "br411", "2026-10-01",
+                   [("emily", "LEAD", True, False), ("jordan", "MEMBER", False, True)])],
+        "roster_roles": {"emily": "roster_publisher"},
+        "rosters": {"periods": [("RP-NYC-STORE-2026-W45", "Manhattan store week 45", "br411", "2026-11-02",
+                                 "2026-11-08", 14)]},
         "founder": ("Grace", "Miller"), "currency": "USD",
         "entities": [{"code": "LE41", "legal_name": "Gamma Retail Inc", "country_code": "US", "base_currency": "USD",
                       "timezone": "America/New_York", "confirm_country": True}],
@@ -233,6 +282,7 @@ COMPANIES: Dict[str, dict] = {
         "holidays": [("Thanksgiving", "2025-11-27", None, False), ("Christmas", "2025-12-25", None, False),
                      ("Independence Day (observed)", "2026-07-03", None, False),
                      ("Thanksgiving", "2026-11-26", None, False), ("Christmas", "2026-12-25", None, False)],
+        "public_holidays": ["Thanksgiving", "Christmas", "Independence Day (observed)"],
         "leaves": [("jordan", "casual", "2026-11-27", "2026-11-27", "FULL", "FULL", "approve"),
                    ("carlos", "casual", "2026-12-01", "2026-12-01", "FULL", "FULL", "pending")],
         "attendance_by": "founder",
@@ -526,6 +576,19 @@ class CompanySeed:
             else:
                 self.ctx.existing()
             self.ids["roles"][WORK_CALENDAR_ADMIN_KEY] = row["id"]
+        if GOALS.index(self.ctx.store["goal"]) >= GOALS.index("G-14") and self.spec.get("roster_roles"):
+            for key, (name, description, grants) in ROSTER_ROLES.items():
+                row = next((r for r in roles if r.get("name") == name), None)
+                wanted = [{"permission": code, "scope": scope} for code, scope in grants]
+                if row is None:
+                    row = self.admin.post("roles", {"name": name, "description": description, "grants": wanted})
+                    self.ctx.created(f"role {name}")
+                elif {(g["permission"], g["scope"]) for g in row.get("grants") or []} != set(grants):
+                    row = self.admin.patch(f"roles/{row['id']}", {"grants": wanted})  # converge an older seed's grants
+                    self.ctx.created(f"role {name} grants")
+                else:
+                    self.ctx.existing()
+                self.ids["roles"][key] = row["id"]
 
     def _find(self, path: str, address: str, **params) -> Optional[dict]:
         found = items_of(self.admin.get(path, q=address, limit=50, **params))
@@ -558,6 +621,9 @@ class CompanySeed:
         role_ids = sorted(self.ids["roles"][k] for k in keys)
         if pkey in self.spec.get("work_calendar_admins", ()) and WORK_CALENDAR_ADMIN_KEY in self.ids["roles"]:
             role_ids = sorted(role_ids + [self.ids["roles"][WORK_CALENDAR_ADMIN_KEY]])
+        extra = self.spec.get("roster_roles", {}).get(pkey)
+        if extra and extra in self.ids["roles"]:
+            role_ids = sorted(role_ids + [self.ids["roles"][extra]])
             keys = sorted(keys + [WORK_CALENDAR_ADMIN_KEY])
         user = self._find("users", address)
         account = self.accounts.get(pkey)
@@ -708,7 +774,124 @@ class CompanySeed:
         self.optional("attendance history", self.ensure_attendance)
         if GOALS.index(self.ctx.store["goal"]) >= GOALS.index("G-02"):
             self.optional("overtime entries", self.ensure_overtime)
+        if GOALS.index(self.ctx.store["goal"]) >= GOALS.index("G-05"):
+            self.ensure_teams()
+        if GOALS.index(self.ctx.store["goal"]) >= GOALS.index("G-14"):
+            self.ensure_rosters()
+        if GOALS.index(self.ctx.store["goal"]) >= GOALS.index("G-03"):
+            self.ensure_day_marks()
         self.state["ids"] = self.ids
+
+    def ensure_day_marks(self) -> None:
+        """LH-M1 Goal 4: statutory holidays typed PUBLIC (future rows; a past row keeps its type, HOLIDAY_IN_PAST)
+        and per-employee work-week overrides (criteria assignment) for the employee holiday calendar personas."""
+        public = set(self.spec.get("public_holidays", ()))
+        for h in items_of(self.admin.get("holidays")):
+            if h["name"] not in public or h.get("holiday_type") != "COMPANY" or h.get("is_optional"):
+                self.ctx.existing()
+                continue
+            try:
+                self.admin.put(f"holidays/{h['id']}", {
+                    "name": h["name"], "date": str(h["date"])[:10], "location": h.get("location"),
+                    "is_optional": False, "description": h.get("description"), "holiday_type": "PUBLIC"})
+                self.ctx.created(f"public holiday {h['name']} {str(h['date'])[:10]}")
+            except SeedError as error:
+                if error.status != 409:  # HOLIDAY_IN_PAST: payroll may already have used it
+                    raise
+                self.ctx.existing()
+        overrides = self.spec.get("work_week_overrides", ())
+        if not overrides:
+            return
+        weeks = {w["code"]: w for w in items_of(self.admin.get("work-weeks"))}
+        current = items_of(self.admin.get("holiday-calendar-assignments"))
+        for pkey, code, name, template in overrides:
+            week = weeks.get(code)
+            if week is None:
+                week = self.admin.post("work-weeks", {"code": code, "name": name, "template_code": template,
+                                                      "reason": "Goal 4 persona"}, key=f"time-seed-ww-{code}")
+                self.ctx.created(f"work week {code}")
+            employee_id = self.ids["people"][pkey]["employee_id"]
+            if any(a.get("work_week_pattern_id") == week["id"]
+                   and employee_id in ((a.get("criteria") or {}).get("employee_ids") or ()) for a in current):
+                self.ctx.existing()
+                continue
+            self.admin.post("holiday-calendar-assignments", {
+                "work_week_pattern_id": week["id"], "criteria": {"employee_ids": [employee_id]}, "priority": 50,
+                "reason": f"{name} for {pkey}"}, key=f"time-seed-wwa-{code}-{pkey}")
+            self.ctx.created(f"work week {code} for {pkey}")
+
+    def ensure_teams(self) -> None:
+        """G-05 (X-M1): the teams of spine §0.3 with dated memberships. PAYMENTS is not seeded: Kavya creates it in the
+        Chrome check (13 §4.4 a). Existing teams and memberships are kept (rerun-safe)."""
+        teams = self.spec.get("teams", ())
+        if not teams:
+            return
+        existing = {t["code"]: t for t in items_of(self.admin.get("teams", limit=200))}
+        for code, name, team_type, branch_key, start, rows in teams:
+            team = existing.get(code)
+            if team is None:
+                team = self.admin.post("teams", {"code": code, "name": name, "team_type": team_type,
+                                                 "branch_id": self.ids["branches"][branch_key],
+                                                 "effective_from": start}, key=f"time-seed-team-{code}")
+                self.ctx.created(f"team {code}")
+            else:
+                self.ctx.existing()
+            members = {m["employee_id"] for m in items_of(self.admin.get(f"teams/{team['id']}/members", state="ALL",
+                                                                         limit=500))}
+            for pkey, member_role, routing, primary in rows:
+                employee_id = self.ids["people"][pkey]["employee_id"]
+                if employee_id in members:
+                    self.ctx.existing()
+                    continue
+                self.admin.post(f"teams/{team['id']}/members", {
+                    "employee_id": employee_id, "member_role": member_role, "is_routing_lead": routing,
+                    "is_primary_team": primary, "effective_from": start, "reason": "Seed G-05"},
+                    key=f"time-seed-member-{code}-{pkey}")
+                self.ctx.created(f"{code} {member_role.lower()} {pkey}")
+
+    def ensure_rosters(self) -> None:
+        """G-14: rotation PUNE-6ON2OFF with crew assignments (Alpha) and the roster periods of §14.1 / §14.5."""
+        spec = self.spec.get("rosters")
+        if not spec:
+            return
+        if spec.get("rotation"):
+            rotation = spec["rotation"]
+            patterns = {p["code"]: p for p in self.admin.get("rotations")}
+            pattern = patterns.get(rotation["code"])
+            if pattern is None:
+                token_map = {token: {"shift_id": self.ids["shifts"][code]} for token, code in rotation["map"].items()}
+                pattern = self.admin.post("rotations", {"code": rotation["code"], "name": rotation["name"],
+                                                        "template_key": rotation["template"],
+                                                        "branch_id": self.ids["branches"][rotation["branch"]],
+                                                        "version": {"token_map": token_map}},
+                                          key=f"time-seed-rotation-{rotation['code']}")
+                self.admin.post(f"rotations/{pattern['id']}/versions/1/activate", key=f"time-seed-rot-act-{pattern['id']}")
+                pattern = {p["code"]: p for p in self.admin.get("rotations")}[rotation["code"]]
+                self.ctx.created(f"rotation {rotation['code']}")
+            else:
+                self.ctx.existing()
+            version_id = pattern["current_version_id"]
+            for crew, people in rotation["crews"].items():
+                ids = [self.ids["people"][p]["employee_id"] for p in people]
+                try:
+                    self.admin.post("rotations/assignments", {
+                        "pattern_version_id": version_id, "employee_ids": ids, "crew_code": crew,
+                        "offset_days": CREW_OFFSETS[crew], "anchor_date": ROTATION_ANCHOR,
+                        "effective_from": ROTATION_ANCHOR}, key=f"time-seed-rot-assign-{crew}")
+                    self.ctx.created(f"rotation crew {crew}")
+                except SeedError as error:
+                    if error.status != 409:  # ROTATION_OVERLAP on a rerun
+                        raise
+                    self.ctx.existing()
+        existing = {p["code"] for p in items_of(self.admin.get("rosters", limit=200))}
+        for code, name, branch, start, end, notice in spec["periods"]:
+            if code in existing:
+                self.ctx.existing()
+                continue
+            self.admin.post("rosters", {"code": code, "name": name, "branch_id": self.ids["branches"][branch],
+                                        "start_date": start, "end_date": end, "publish_notice_days": notice},
+                            key=f"time-seed-period-{code}")
+            self.ctx.created(f"roster period {code}")
 
 
 def run_seed(make_client: Callable[[], Any], *, store: dict, password: Optional[str] = None,

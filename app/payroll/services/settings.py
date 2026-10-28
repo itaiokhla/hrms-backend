@@ -953,6 +953,9 @@ def _plan(db: Session, principal: Principal, company: Company, change: SettingCh
     except SettingValidationError as error:
         raise bad_request(error.message, error.code) from None
     defn = reg.REGISTRY[key]
+    if defn.ui.get("system_written"):  # e.g. attendance.v2.enabled: only the cut-over writes it (spine §15.1)
+        raise AppError(409, {"message": f"{defn.label} is set by the system and cannot be changed here."},
+                       "SETTING_SYSTEM_WRITTEN")
     target = scope_target(db, principal, WRITE, change.scope_type, change.scope_id, on=today)
     if defn.module != reg.PAYROLL_MODULE and not principal.has(COMPANY_SETTINGS):
         raise forbidden(f"Changing {defn.label} also needs the company settings permission.")

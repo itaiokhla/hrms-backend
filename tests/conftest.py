@@ -42,6 +42,10 @@ def _start_postgres() -> str:
         return admin_url
     import pgserver
 
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from pg_tzdata import ensure_timezone_data
+
+    ensure_timezone_data()  # pgserver ships without IANA zones; SQL AT TIME ZONE needs them (AS-M1 triggers)
     data_dir = os.path.join(tempfile.gettempdir(), "hrms_pg_tests")
     _server = pgserver.get_server(data_dir, cleanup_mode="stop")
     return _server.get_uri()

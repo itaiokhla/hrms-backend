@@ -159,6 +159,13 @@ def test_invalid_version_bodies_are_422_with_issues(admin):
     assert r.json()["issues"]
 
 
+def _violation(exc) -> str:
+    """The message plus the constraint name a trigger raised (psycopg2 keeps the name in ``diag``, not the text)."""
+    orig = getattr(exc, "orig", None)
+    name = getattr(getattr(orig, "diag", None), "constraint_name", None) or ""
+    return f"{exc} {name}"
+
+
 def test_guard_and_tiling_triggers(admin):
     """The triggers are the backstop of the service (A-24; AS 11 §4.4)."""
     shift = _shift(admin)
@@ -166,7 +173,7 @@ def test_guard_and_tiling_triggers(admin):
     with pytest.raises(Exception) as error:
         with system_engine.begin() as conn:
             conn.execute(text("UPDATE shift_versions SET start_time = '07:00' WHERE id = :id"), {"id": v1["id"]})
-    assert "shift_versions_in_force" in str(error.value)
+    assert "shift_versions_in_force" in _violation(error.value)
     with pytest.raises(Exception) as error:
         with system_engine.begin() as conn:  # an end with nothing after it leaves the shift without a version
             conn.execute(text("UPDATE shift_versions SET effective_to = effective_from + 3 WHERE id = :id"),
@@ -175,7 +182,7 @@ def test_guard_and_tiling_triggers(admin):
                               "start_time, end_time, crosses_midnight, content_hash) SELECT company_id, shift_id, 9, "
                               "effective_from + 10, start_time, end_time, false, content_hash FROM shift_versions "
                               "WHERE id = :id"), {"id": v1["id"]})
-    assert "shift_versions_gap" in str(error.value)
+    assert "shift_versions_gap" in _violation(error.value)
 
 
 def test_legacy_put_posts_a_version_from_the_owner_tomorrow(admin):

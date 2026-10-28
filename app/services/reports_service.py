@@ -82,7 +82,7 @@ def attendance_report(db: Session, principal: Principal, start: date, end: date,
                 "check_in_time": record.check_in_time.isoformat() if record.check_in_time else None,
                 "check_out_time": record.check_out_time.isoformat() if record.check_out_time else None,
                 "status": record.status,
-                "face_match_score": record.face_match_score,
+                "face_match_score": None,  # E3 evidence: revealed one punch at a time only (07 §8)
                 "gross_seconds": hours.gross_seconds,
                 "lunch_seconds": hours.lunch_seconds,
                 "excluded_seconds": hours.excluded_seconds,

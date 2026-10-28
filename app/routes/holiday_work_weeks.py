@@ -3,7 +3,7 @@
 Reads need ``holiday:read`` (or ``holiday:manage``, ``org:read``); writes need ``holiday:manage`` in the scope of the
 pattern (§5.6), backdated versions also ``holiday:publish``. Literal paths (``/templates``, ``/preview``) are
 declared before ``/{pattern_id:int}`` (MR-6). State-changing requests accept ``Idempotency-Key``; edits take
-``If-Match`` (``row_version``). The effective-dated branch link lives here too (``/api/v1/branches/{id}/calendar-link``).
+``If-Match`` (``row_version``). The effective-dated branch link lives in ``holiday_calendars`` (``/api/v1/branches/{id}/calendar-link``).
 """
 
 from datetime import date
@@ -14,15 +14,13 @@ from pydantic import Field
 from sqlalchemy.orm import Session
 
 from app.core import concurrency
-from app.core.principal import Principal, get_principal, require, require_any
+from app.core.principal import Principal, require, require_any
 from app.database.db import get_db
 from app.payroll.services import idempotency
 from app.schemas.auth import StrictModel
-from app.services import holiday_assignments
 from app.services import holiday_work_weeks as service
 
 router = APIRouter(prefix="/api/v1/work-weeks", tags=["Work weeks"])
-branches_router = APIRouter(prefix="/api/v1/branches", tags=["Work weeks"])
 
 READ = require_any(*service.READ_CODES)
 WRITE = require("holiday:manage")
@@ -80,14 +78,6 @@ class CrewIn(StrictModel):
     name: str = Field(..., min_length=1, max_length=100)
     offset_days: int = Field(..., ge=1, le=55)
     acknowledge_warnings: bool = False
-
-
-class BranchLinkIn(StrictModel):
-    holiday_calendar_id: Optional[int] = None
-    work_week_pattern_id: Optional[int] = None
-    effective_from: Optional[date] = None
-    reason: Optional[str] = Field(None, max_length=300)
-    row_version: Optional[int] = Field(None, ge=1)
 
 
 def _dump(data: StrictModel) -> dict:
@@ -173,31 +163,3 @@ def duplicate_as_crew(pattern_id: int, data: CrewIn, request: Request, principal
     return idempotency.execute(
         db, principal, request,
         lambda: (201, service.duplicate_as_crew(db, principal, pattern_id, data.model_dump())), body=_dump(data))
-
-
-# ---------------------------------------------------------------------------------------------- branch links
-@branches_router.get("/{branch_id:int}/calendar-links")
-def list_branch_links(branch_id: int, principal: Principal = Depends(get_principal), db: Session = Depends(get_db)):
-    from app.core.errors import not_found
-    from app.models.org import Branch
-    from app.models.pay_org import BranchCalendarLink
-
-    branch = db.query(Branch).filter(Branch.company_id == principal.company_id, Branch.id == branch_id).first()
-    if branch is None or not (service.can_read(principal)):
-        raise not_found("Branch")
-    rows = (db.query(BranchCalendarLink).filter(BranchCalendarLink.company_id == principal.company_id,
-                                                BranchCalendarLink.branch_id == branch.id)
-            .order_by(BranchCalendarLink.effective_from).all())
-    return {"items": [holiday_assignments.serialize_link(r) for r in rows]}
-
-
-@branches_router.put("/{branch_id:int}/calendar-link")
-def set_branch_link(branch_id: int, data: BranchLinkIn, request: Request, principal: Principal = Depends(WRITE),
-                    db: Session = Depends(get_db)):
-    expected = concurrency.if_match(request, data.row_version)
-    values = data.model_dump(exclude_unset=True, exclude={"row_version"})
-    return idempotency.execute(
-        db, principal, request,
-        lambda: (200, holiday_assignments.set_branch_link(db, principal, branch_id, values,
-                                                          expected_row_version=expected)),
-        body=_dump(data))

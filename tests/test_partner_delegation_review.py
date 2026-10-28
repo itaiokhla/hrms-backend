@@ -78,6 +78,20 @@ OPEN_TO_ANY_SIGNED_IN_PRINCIPAL = {
     "/api/v1/payroll/catalogues/capabilities", "/api/v1/payroll/catalogues/countries",
     "/api/v1/payroll/catalogues/currencies", "/api/v1/payroll/downloads/mine", "/api/v1/payroll/exports",
     "/api/v1/payroll/uploads/limits", "/api/v1/public/brand", "/api/v1/shifts",
+    # LH-M1 work-calendar reads: gated by holiday:read (the delegated code; self-service company-wide like
+    # /api/v1/holidays above), 04-holiday/03 §5.9, 04-holiday/01 §8.5. Reference data, no personal data.
+    "/api/v1/work-weeks", "/api/v1/work-weeks/templates", "/api/v1/work-weeks/{pattern_id:int}",
+    "/api/v1/work-weeks/{pattern_id:int}/history", "/api/v1/work-weeks/{pattern_id:int}/versions",
+    "/api/v1/branches/{branch_id:int}/calendar-links",
+    "/api/v1/holiday-calendars", "/api/v1/holiday-calendars/{calendar_id:int}",
+    "/api/v1/holiday-calendars/{calendar_id:int}/lineage", "/api/v1/holiday-calendars/{calendar_id:int}/holidays",
+    "/api/v1/holiday-calendars/{calendar_id:int}/exclusions", "/api/v1/holiday-calendars/{calendar_id:int}/assignments",
+    "/api/v1/holiday-calendar-assignments",
+    # LH-M1 Goal 3: rules, years and history of a calendar (holiday:read; 11 §6.10).
+    "/api/v1/holiday-calendars/rules/{rule_id:int}", "/api/v1/holiday-calendars/{calendar_id:int}/rules",
+    "/api/v1/holiday-calendars/{calendar_id:int}/years/{year:int}",
+    "/api/v1/holiday-calendars/{calendar_id:int}/years/{year:int}/diff",
+    "/api/v1/holiday-calendars/{calendar_id:int}/history",
 }
 
 

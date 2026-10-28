@@ -438,9 +438,11 @@ def test_holidays_keep_todays_api_and_gain_a_type_and_calendar(app):
         row = conn.execute(text("SELECT holiday_type, location FROM holidays WHERE company_id = :c"), {"c": a}).one()
         assert tuple(row) == ("COMPANY", None)
         calendar = _insert(conn, "holiday_calendars", a, "COMPANY-2099")
+        # 2099 is a published year (legacy saves publish it, LH 11 §11.6): app-role writes need an amendment (0044).
+        conn.execute(text("SET LOCAL app.holiday_amendment = 'on'"))
         conn.execute(text("UPDATE holidays SET calendar_id = :cal, holiday_type = 'PUBLIC' WHERE company_id = :c"),
                      {"cal": calendar, "c": a})
-    _fails("UPDATE holidays SET holiday_type = 'BANK' WHERE company_id = :c", {"c": a}, company_id=a, match="ck_holidays_type")
+    _fails("UPDATE holidays SET holiday_type = 'BANK' WHERE company_id = :c", {"c": a}, match="ck_holidays_type")
     assert [h["name"] for h in acme.get("/api/v1/holidays?year=2099").json()] == ["Founders Day"]
 
 

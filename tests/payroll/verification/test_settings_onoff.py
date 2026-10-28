@@ -28,8 +28,11 @@ Pairwise interactions: attendance x leave (3.1 §6.1) and holiday premium x week
 (3.1 §6.2). ``BLOCKED_FEATURES`` lists what cannot be verified through a run, with the precise reason.
 """
 
-from datetime import datetime, time, timedelta
+from contextlib import contextmanager
+from datetime import datetime, time, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
+
+import pytest
 
 from tests.payroll.verification.conftest import (
     DAY_RATE,
@@ -86,11 +89,32 @@ def past_weekend(w):
     return days
 
 
-def future_weekdays(w, count=3):
+def leave_weekdays(w, count=3):
+    """Working days of the period for leave: the future ones while enough remain, otherwise the period's last
+    ``count`` weekdays (booked ahead by ``apply_leave``). Never the first weekday, which holds a past absence."""
     today = today_of(w["admin"])
-    days = [d for d in days_between(today + timedelta(days=1), w["end"]) if d.weekday() < 5]
-    assert len(days) >= count, f"leave must start today or later: {count} future working days needed, found {days}"
-    return days
+    future = [d for d in days_between(today + timedelta(days=1), w["end"]) if d.weekday() < 5]
+    if len(future) >= count:
+        return future
+    weekdays = [d for d in days_between(w["start"], w["end"]) if d.weekday() < 5]
+    assert len(weekdays) > count, f"the period needs more than {count} weekdays, found {weekdays}"
+    return weekdays[-count:]
+
+
+@contextmanager
+def booked_before(w, start):
+    """A leave that starts in the past is booked as it would have been: with the app clock (``clock.utcnow``, not
+    session or token time) on the day before it. Late in a month the period has too few future working days for
+    the cycle, and leave can never start in the past (LH BUG-07)."""
+    if start >= today_of(w["admin"]):
+        yield
+        return
+    from app.core import clock
+
+    instant = datetime.combine(start - timedelta(days=1), time(6, 0), tzinfo=timezone.utc)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(clock, "utcnow", lambda: instant)
+        yield
 
 
 def weekday_count(w):
@@ -289,10 +313,11 @@ def test_sandwich_rule_cycle(settings_world):
 # Leave pay (3.1 §5.3) x attendance (3.1 §6.1)
 # ---------------------------------------------------------------------------
 def apply_leave(w, person, leave_type, start, end=None):
-    client = employee_login(w, person)
-    leave = ok(client.post("/api/v1/leaves/apply", json={"leave_type": leave_type, "start_date": start.isoformat(),
-                                                         "end_date": (end or start).isoformat()}))
-    approved = ok(w["manager"].post(f"/api/v1/leaves/{leave['id']}/approve", json={}))
+    client = employee_login(w, person)  # signed in on the real clock
+    with booked_before(w, start):
+        leave = ok(client.post("/api/v1/leaves/apply", json={"leave_type": leave_type, "start_date": start.isoformat(),
+                                                             "end_date": (end or start).isoformat()}))
+        approved = ok(w["manager"].post(f"/api/v1/leaves/{leave['id']}/approve", json={}))
     assert approved["status"] == "approved", approved
     return leave["id"]
 
@@ -300,7 +325,7 @@ def apply_leave(w, person, leave_type, start, end=None):
 def test_leave_pay_cycle_with_the_attendance_pairs(settings_world):
     w = settings_world["alpha"]
     month = monthly_basic(w["period"])
-    fw = future_weekdays(w, 3)
+    fw = leave_weekdays(w, 3)
     key, attendance_key = "payroll.leave.enabled", "payroll.attendance.enabled"
     # (1) starter: leave ON with the leave-type policy (unpaid -> UNPAID, casual -> FULL).
     found = resolve(w["admin"], key, employee_id=w["emp"]["Ann"], on=w["end"])
@@ -1120,16 +1145,18 @@ def test_holiday_pay_for_hourly_workers_cycle(settings_world):
     switch(w, key, False)
     recalculated(w, run_id)
     assert amount(w, run_id, "Hal", "HOURLY_PAY") == D(20) * 8 * (wk - 1)
-    # Another policy: only PUBLIC holidays count as paid holidays. This COMPANY holiday is then not a holiday at
-    # all for pay: it is a scheduled working day, presumed present by the attendance policy -> 22 x 8 h worked.
+    # Another policy: only PUBLIC holidays count as paid holidays. This COMPANY holiday still closes the office
+    # (day facts decide working, LH 05 §5.11, BUG-11 / IG-LH-20): an unpaid HOLIDAY day, never presumed present
+    # and not paid by the hourly holiday rule (GV-09) -> 20.00 x 8 x (W - 1).
     activate_policy(w["admin"], "HOLIDAY_PAY_POLICY", {"non_salaried_holiday_pay": "STANDARD_HOURS",
                                                         "paid_holiday_types": ["PUBLIC"]})
     switch(w, key, True)
     recalculated(w, run_id)
-    assert amount(w, run_id, "Hal", "HOURLY_PAY") == D(20) * 8 * wk
+    assert amount(w, run_id, "Hal", "HOURLY_PAY") == D(20) * 8 * (wk - 1), describe(w, run_id, "Hal")
     _, detail = lines_of(w, run_id, "Hal")
     day = {d["date"]: d for d in detail["ledger"]["days"]}[holiday_day.isoformat()]
-    assert day["scheduled_working_day"] is True and day["paid_holiday"] is False, day
+    assert day["scheduled_working_day"] is False and day["holiday_pay_eligible"] is False, day
+    assert {s["rule"] for s in day["slots"]} == {"4"} and {s["paid"] for s in day["slots"]} == {"0"}, day
     activate_policy(w["admin"], "HOLIDAY_PAY_POLICY", {"non_salaried_holiday_pay": "STANDARD_HOURS"})
     switch(w, key, False, "PAY_GROUP", w["groups"]["PG-B"])
     recalculated(w, run_id)

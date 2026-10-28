@@ -964,6 +964,174 @@ class ApprovalChain(PolicyFields):
         return [] if self.steps else [ActivationProblem("steps", "Add at least one approval step.")]
 
 
+# --------------------------------------------------------------------------- AS spine §6.2.1 attendance capture
+# Registered here by JC-AS-22 (attendance owns the semantics: docs/attendance-shift/04-attendance/02 and spine §6.2.1);
+# write gate attendance:manage_policy (``write_permission``), never in payroll snapshots.
+
+CAPTURE_SOURCE_CHOICES = ("WEB", "MOBILE", "KIOSK", "DEVICE", "IMPORT", "SUPERVISOR")
+KIOSK_METHOD_CHOICES = ("FACE", "PIN", "QR", "CARD")
+CaptureSources = Annotated[tuple[str, ...], ChoiceSetRule(choices=CAPTURE_SOURCE_CHOICES, min_items=1)]
+KioskMethods = Annotated[tuple[str, ...], ChoiceSetRule(choices=KIOSK_METHOD_CHOICES, min_items=1)]
+LocationMode = Literal["OFF", "OPTIONAL", "REQUIRED"]
+GeofenceMode = Literal["OFF", "FLAG", "REQUIRE_REASON", "BLOCK"]
+Text100 = Annotated[str, TextRule(max_length=100)]
+
+
+class CaptureGps(_Strict):
+    preferred_accuracy_m: Annotated[int, IntRule(minimum=5, maximum=1000, unit="m")] = 50
+    acceptable_accuracy_m: Annotated[int, IntRule(minimum=10, maximum=5000, unit="m")] = 100
+    timeout_seconds: Annotated[int, IntRule(minimum=5, maximum=60, unit="seconds")] = 20
+    max_attempts: Annotated[int, IntRule(minimum=1, maximum=5)] = 3
+    max_fix_age_seconds: Annotated[int, IntRule(minimum=30, maximum=600, unit="seconds")] = 120
+
+    @model_validator(mode="after")
+    def _order(self) -> "CaptureGps":
+        if self.acceptable_accuracy_m < self.preferred_accuracy_m:
+            raise ValueError("the acceptable accuracy cannot be finer than the preferred accuracy")
+        return self
+
+
+class CaptureTracking(_Strict):
+    enabled: bool = False
+    interval_minutes: Annotated[int, IntRule(minimum=5, maximum=480, unit="minutes")] = 120
+    grace_minutes: Annotated[int, IntRule(minimum=1, maximum=60, unit="minutes")] = 15
+    pause_on_break: bool = True
+    movement_threshold_m: Annotated[int, IntRule(minimum=50, maximum=50000, unit="m")] = 1000
+
+
+class SupervisorMuster(_Strict):
+    enabled: bool = False
+    photo_required: bool = False
+    geofence_mode: GeofenceMode = "OFF"
+    offline_allowed: bool = False
+
+
+class AttendanceCapturePolicy(PolicyFields):
+    """Spine §6.2.1. ``profile`` is set by ``attendance.v2_prepare`` (LEGACY_V1) or the editor (STANDARD), never typed."""
+
+    profile: Literal["LEGACY_V1", "STANDARD"] = _f("STANDARD", "LEGACY_V1 follows the legacy attendance settings.")
+    allowed_sources: CaptureSources = _f(("WEB", "MOBILE"), "Where people may punch from.")
+    shift_required: bool = _f(False, "Punches need a scheduled shift.")
+    capture_required: bool = _f(True, "False: the covered people need not punch (presence is presumed).")
+    face_on_punch: bool = _f(False, "Face match at check in and out (no liveness check).")
+    face_on_break: bool = _f(False, "Face match at break start and end (no liveness check).")
+    punch_photo: bool = _f(False, "A photo is taken with each punch.")
+    kiosk_methods: KioskMethods = _f(("PIN",), "How people identify at a kiosk.")
+    dpia_reference: Text100 | None = _f(None, "Privacy impact assessment reference, required with any face option.")
+    location_mode: LocationMode = _f("OFF", "Location at check in and out.")
+    location_on_breaks: LocationMode = _f("OFF", "Location at break start and end.")
+    location_failure_action: Literal["ALLOW_WITH_REASON", "BLOCK"] = _f(
+        "ALLOW_WITH_REASON", "Without a usable location: continue with a reason, or refuse.")
+    reject_low_accuracy: bool = _f(False, "Refuse readings coarser than the acceptable accuracy.")
+    gps: CaptureGps = _f(help_="Browser location settings.", factory=CaptureGps)
+    geofence_mode: GeofenceMode = _f("OFF", "What happens outside the allowed sites.")
+    allowed_site_ids: IdList | None = _f(None, "Allowed sites; empty = the active sites of the person's branch.")
+    ip_mode: Literal["OFF", "FLAG", "BLOCK"] = _f("OFF", "Office network check.")
+    qr_mode: Literal["OFF", "REQUIRED"] = _f("OFF", "A site QR poster must be scanned.")
+    tracking: CaptureTracking = _f(help_="Location during a live session only.", factory=CaptureTracking)
+    multiple_sessions_allowed: bool = _f(True, "Several sessions per shift date.")
+    allow_multiple_breaks: bool = _f(True, "More than one break per session.")
+    break_open_at_punch_out: Literal["CONFIRM_AUTO_CLOSE", "BLOCK"] = _f(
+        "CONFIRM_AUTO_CLOSE", "Check out with an open break: confirm and close it, or refuse.")
+    min_session_minutes: Annotated[int, IntRule(minimum=1, maximum=60, unit="minutes")] = _f(
+        1, "Minimum time between check in and check out.")
+    auto_close_mode: Literal["MAX_DURATION", "SHIFT_END_PLUS"] = _f("SHIFT_END_PLUS", "How a forgotten check out closes.")
+    max_session_hours: Annotated[int, IntRule(minimum=4, maximum=24, unit="hours")] = _f(16, "Longest session.")
+    auto_close_after_minutes: Annotated[int, IntRule(minimum=30, maximum=720, unit="minutes")] = _f(
+        240, "Close this long after the shift end (SHIFT_END_PLUS).")
+    infer_breaks_from_punches: bool = _f(False, "Device punches between IN and OUT are breaks.")
+    max_break_gap_minutes: Annotated[int, IntRule(minimum=5, maximum=240, unit="minutes")] = _f(
+        90, "Longest gap read as a break.")
+    offline_punches: Literal["OFF", "ALLOW"] = _f("OFF", "Queue punches while offline (AS-M12).")
+    offline_max_age_hours: Annotated[int, IntRule(minimum=1, maximum=168, unit="hours")] = _f(
+        24, "Oldest offline punch accepted.")
+    supervisor_muster: SupervisorMuster = _f(help_="Crew punches by a supervisor.", factory=SupervisorMuster)
+
+    @model_validator(mode="after")
+    def _combinations(self) -> "AttendanceCapturePolicy":
+        face = self.face_on_punch or self.face_on_break or "FACE" in self.kiosk_methods
+        if face and self.profile == "STANDARD" and not self.dpia_reference:
+            raise ValueError("dpia_reference: enter the privacy impact assessment reference to use face matching")
+        # EC AS-GEO-05 (V-AS-13): a blocking geofence needs a location fix at every punch.
+        if self.geofence_mode in ("REQUIRE_REASON", "BLOCK") and self.location_mode != "REQUIRED":
+            raise ValueError("location_mode: a geofence that blocks needs location required")
+        return self
+
+
+DayMinutesValue = Annotated[Decimal, DecimalRule(minimum=_D0, maximum=Decimal(1440), max_places=2, unit="minutes")]
+HalfDayLimitMinutes = Annotated[int, IntRule(minimum=1, maximum=720, unit="minutes")]
+WholePercent = Annotated[int, IntRule(minimum=0, maximum=100, unit="%")]
+WaiverMode = Literal["NONE", "NET_GE_EXPECTED", "GROSS_GE_EXPECTED"]
+ROUNDING_INCREMENTS = (1, 5, 6, 10, 15)
+
+
+class AttendanceRounding(_Strict):
+    mode: Literal["NONE", "NEAREST", "UP", "DOWN"] = "NONE"
+    increment_minutes: Annotated[int, IntRule(minimum=1, maximum=15, unit="minutes")] = 1
+
+    @model_validator(mode="after")
+    def _increment(self) -> "AttendanceRounding":
+        if self.increment_minutes not in ROUNDING_INCREMENTS:
+            raise ValueError(f"increment_minutes must be one of {', '.join(map(str, ROUNDING_INCREMENTS))}")
+        return self
+
+
+class AttendanceRulesPolicy(PolicyFields):
+    """Spine §6.2.2; AS 04-attendance/02 §4.3. Read by the day evaluation for STANDARD days only (payroll reads the
+    evaluations, never this policy: ``SKIPPED_POLICY_TYPES``, JC-AS-18). ``break_defaults`` arrive with the policy
+    editor (FU-AS-25)."""
+
+    profile: Literal["LEGACY_V1", "STANDARD"] = _f("STANDARD", "LEGACY_V1 follows payroll's attendance pay policy.")
+    day_basis: Literal["PRESENCE", "HOURS"] = _f("HOURS", "A half is present by any work, or by worked hours.")
+    hours_basis: Literal["NET", "GROSS"] = _f("NET", "Hours compared without or with unpaid breaks.")
+    threshold_mode: Literal["ABSOLUTE", "PERCENT_OF_EXPECTED"] = _f(
+        "PERCENT_OF_EXPECTED", "Fixed minutes, or a share of the expected minutes.")
+    full_day_min_minutes: DayMinutesValue = _f(Decimal(480), "Minutes for a full day (ABSOLUTE).")
+    half_day_min_minutes: DayMinutesValue = _f(Decimal(240), "Minutes for a half day (ABSOLUTE).")
+    full_day_min_percent: WholePercent = _f(90, "Share of the expected minutes for a full day.")
+    half_day_min_percent: WholePercent = _f(50, "Share of the expected minutes for a half day.")
+    work_time_basis: Literal["SUM_OF_SESSIONS", "FIRST_IN_LAST_OUT"] = _f(
+        "SUM_OF_SESSIONS", "Gaps between sessions count as work only with first in / last out.")
+    absent_marking: Literal["AUTO_ABSENT", "LEAVE_UNMARKED"] = _f(
+        "AUTO_ABSENT", "An unworked expected half is absent, or left unmarked for leave.")
+    non_working_day_min_minutes: DayMinutesValue | None = _f(
+        None, "Least work that makes a holiday or weekly off a worked day; empty = the half-day minimum.")
+    grace_in_minutes: GraceMinutes | None = _f(None, "Grace after the start; empty = the grace-time setting.")
+    grace_out_minutes: GraceMinutes = _f(0, "Grace before the end.")
+    flexible_late_basis: Literal["NONE", "CORE_START"] = _f("NONE", "Flexible shifts are late only against core time.")
+    late_half_day_after_minutes: HalfDayLimitMinutes | None = _f(
+        None, "Later than this, the first half is lost instead of a late mark.")
+    early_half_day_before_minutes: HalfDayLimitMinutes | None = _f(
+        None, "Earlier than this, the last half is lost instead of an early mark.")
+    late_waiver: WaiverMode = _f("NONE", "Excuse a late mark when the day's hours are complete.")
+    early_waiver: WaiverMode = _f("NONE", "Excuse an early mark when the day's hours are complete.")
+    short_hours_enabled: bool = _f(False, "Mark days shorter than expected.")
+    short_tolerance_minutes: GraceMinutes = _f(0, "Short minutes tolerated before a short mark.")
+    break_attestation: bool = _f(False, "Ask at check out whether the break was taken.")
+    rounding: AttendanceRounding = _f(help_="Rounding of worked time (never breaks, never marks).",
+                                      factory=AttendanceRounding)
+    open_day_start_time: LocalTime = _f("04:00", "Start of the attendance day when there is no shift.")
+    ot_early_arrival: Literal["NEVER", "WITH_APPROVAL", "ALWAYS"] = _f(
+        "NEVER", "Whether time before the shift counts toward overtime.")
+    ot_post_shift_buffer_minutes: Annotated[int, IntRule(minimum=0, maximum=120, unit="minutes")] = _f(
+        0, "Time after the shift up to this is not overtime.")
+    ot_requires_pre_approval: bool = _f(False, "Overtime without approval raises an exception.")
+    time_bank_enabled: bool = _f(False, "Not available yet (JC-AS-47).")
+
+    @model_validator(mode="after")
+    def _combinations(self) -> "AttendanceRulesPolicy":
+        if self.half_day_min_minutes > self.full_day_min_minutes:
+            raise ValueError("half_day_min_minutes: the half-day minimum cannot exceed the full-day minimum")
+        if self.half_day_min_percent > self.full_day_min_percent:
+            raise ValueError("half_day_min_percent: the half-day share cannot exceed the full-day share")
+        if (self.late_half_day_after_minutes is not None and self.grace_in_minutes is not None
+                and self.late_half_day_after_minutes <= self.grace_in_minutes):
+            raise ValueError("late_half_day_after_minutes: must be greater than the grace in")
+        if self.time_bank_enabled:
+            raise ValueError("time_bank_enabled: Time bank is not available yet")
+        return self
+
+
 # --------------------------------------------------------------------------- the type catalogue
 
 
@@ -979,6 +1147,13 @@ class PolicyTypeDef:
     section: str
     spec: str
     assignable: bool = True
+    # JC-AS-22: the write gate of a non-payroll type (None = payroll:configuration:write) and its owning module
+    # (``/api/v1/payroll/policies`` lists payroll types only; ``/api/v1/attendance/policies`` the attendance ones).
+    write_permission: str | None = None
+    module: str = "payroll"
+    # LH-SEC-02 (07 §5.2 "activate plan version"): the tenant setting that, when on, makes activating a version of
+    # this type need a fresh step-up (None = never).
+    activation_step_up_setting: str | None = None
 
 
 POLICY_TYPES: Final[Mapping[str, PolicyTypeDef]] = types.MappingProxyType({
@@ -987,11 +1162,13 @@ POLICY_TYPES: Final[Mapping[str, PolicyTypeDef]] = types.MappingProxyType({
                       AttendancePayPolicy, "Attendance & LOP", "3.1 §5.2"),
         PolicyTypeDef("LEAVE_PAY_POLICY", "Leave pay policy",
                       ("payroll.leave.enabled", "payroll.leave.encashment.enabled"), "PERIOD",
-                      LeavePayPolicy, "Leave pay", "3.1 §5.3"),
+                      LeavePayPolicy, "Leave pay", "3.1 §5.3",
+                      activation_step_up_setting="leave.plan_activation.requires_step_up"),
         PolicyTypeDef("HOLIDAY_PAY_POLICY", "Holiday pay policy",
                       ("payroll.holiday_pay.non_salaried.enabled", "payroll.holiday_work_premium.enabled",
                        "payroll.weekly_off_pay.enabled"), "DAY",
-                      HolidayPayPolicy, "Holidays & weekly offs", "3.1 §5.4"),
+                      HolidayPayPolicy, "Holidays & weekly offs", "3.1 §5.4",
+                      activation_step_up_setting="leave.plan_activation.requires_step_up"),
         PolicyTypeDef("OVERTIME_POLICY", "Overtime policy", ("payroll.overtime.enabled",), "DAY",
                       OvertimePolicy, "Overtime", "3.1 §5.5"),
         PolicyTypeDef("TASK_PAY_POLICY", "Task pay policy", ("payroll.task_pay.enabled",), "DAY",
@@ -1012,6 +1189,12 @@ POLICY_TYPES: Final[Mapping[str, PolicyTypeDef]] = types.MappingProxyType({
                       PayslipTemplate, "Payslips & documents", "3.1 §5.15"),
         PolicyTypeDef("APPROVAL_CHAIN", "Approval chain", (), "PERIOD",
                       ApprovalChain, "Approvals & controls", "3.1 §5.14", assignable=False),
+        PolicyTypeDef("ATTENDANCE_CAPTURE_POLICY", "Capture policy", (), "DAY", AttendanceCapturePolicy,
+                      "Capture methods & devices", "AS spine §6.2.1", write_permission="attendance:manage_policy",
+                      module="attendance"),
+        PolicyTypeDef("ATTENDANCE_RULES_POLICY", "Attendance rules", (), "DAY", AttendanceRulesPolicy,
+                      "Attendance rules", "AS spine §6.2.2", write_permission="attendance:manage_policy",
+                      module="attendance"),
     )
 })
 

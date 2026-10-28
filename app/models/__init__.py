@@ -1,4 +1,4 @@
-from .base import Base, BaseModel, TenantMixin
+from .base import Base, BaseModel, BigIdModel, TenantMixin
 from .company import Company, Partner, PlatformAdmin, PlatformSession
 from .user import PasswordResetOTP, User, UserInvitation, UserSession
 from .rbac import Role, RolePermission, ScopeAssignment, UserRoleAssignment
@@ -11,10 +11,18 @@ from .employee import (
     SecondaryReportingLine,
     Shift,
 )
-from .attendance import Attendance, AttendanceBreak, AttendanceEvent, LocationSample
+from .attendance import (
+    Attendance,
+    AttendanceBreak,
+    AttendanceDevice,
+    AttendanceEvent,
+    AttendancePunch,
+    AttendanceReviewItem,
+    LocationSample,
+)
 from .leave import ApprovalChainStep, Leave, LeaveApproval, LeaveType
 from .payroll import Payroll, SalaryStructure
-from .holiday import Holiday
+from .holiday import CalendarWorkingDay, Holiday, HolidayCalendarYear, HolidayImport, HolidayRule
 from .asset import Asset, AssetAssignment
 from .notification import Notification
 from .audit_log import AuditLog
@@ -58,8 +66,8 @@ from . import (  # noqa: E402,F401
     work_items,
 )
 # Attendance-shift and cross-module models (AS 14 IG-AS-03), after the payroll block.
-from app.models import scheduler, shifts, views  # noqa: E402,F401
+from app.models import rosters, scheduler, shifts, teams, views  # noqa: E402,F401
 
 TENANT_TABLES = sorted(
-    m.__tablename__ for m in BaseModel.__subclasses__() if issubclass(m, TenantMixin)
+    m.__tablename__ for base in (BaseModel, BigIdModel) for m in base.__subclasses__() if issubclass(m, TenantMixin)
 )

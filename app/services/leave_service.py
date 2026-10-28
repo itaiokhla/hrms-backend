@@ -450,6 +450,19 @@ def _load_leave(db: Session, principal: Principal, leave_id: int, lock: bool = F
     return leave
 
 
+def _require_override_step_up(db: Session, principal: Principal) -> None:
+    """LH-SEC-02 (07 §5.2): with ``leave.override.requires_step_up`` on, an override decision needs a fresh step-up
+    of the session (403 STEP_UP_REQUIRED); the assigned approver and delegates never need it."""
+    from app.payroll.services import settings as settings_engine
+
+    enabled = settings_engine.resolve(db, principal.company_id, "leave.override.requires_step_up",
+                                      on=today_for(db.get(Company, principal.company_id))).value
+    if enabled is True:
+        from app.payroll.services.step_up import ensure_step_up
+
+        ensure_step_up(db, principal)
+
+
 def decide(db: Session, principal: Principal, leave_id: int, approve: bool, remarks: Optional[str]) -> Leave:
     leave = _load_leave(db, principal, leave_id, lock=True)
     requester = db.get(Employee, leave.employee_id)
@@ -464,6 +477,8 @@ def decide(db: Session, principal: Principal, leave_id: int, approve: bool, rema
             raise bad_request(f"This request is already {leave.status}.")
         raise forbidden("This request is not awaiting your approval.")
 
+    if acted_as == "override":
+        _require_override_step_up(db, principal)
     if _cancellation_pending(leave):
         return _decide_cancellation(db, principal, leave, requester, approve, remarks)
     step = _current_step(leave)

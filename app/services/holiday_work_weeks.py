@@ -62,14 +62,9 @@ def backdate_days(db: Session, company_id: int) -> int:
 
     if "holiday.backdate_days" not in settings_registry.REGISTRY:
         return BACKDATE_DAYS_DEFAULT
-    try:
-        from app.payroll.services import settings as settings_service
+    from app.services.holiday_years import holiday_setting
 
-        value = settings_service.resolve(db, company_id, "holiday.backdate_days",
-                                         on=clock.company_today(db, company_id)).value
-        return int(value)
-    except Exception:  # noqa: BLE001 - a missing or invalid value falls back to the documented default
-        return BACKDATE_DAYS_DEFAULT
+    return int(holiday_setting(db, company_id, "holiday.backdate_days", BACKDATE_DAYS_DEFAULT))  # fails closed
 
 
 def _engine_error(exc: workweek.WorkWeekError) -> AppError:

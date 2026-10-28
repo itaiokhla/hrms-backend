@@ -165,8 +165,12 @@ def test_unpaid_holiday_types_are_working_days() -> None:
     """HOLIDAY_PAY_POLICY.paid_holiday_types: an optional holiday not availed is an ordinary working day."""
     ledger = one(ON, holiday=holiday(HolidayType.OPTIONAL_NOT_AVAILED), attendance=present())
     assert kinds(ledger.days[0]) == (C.PRESENT, C.PRESENT) and ledger.days[0].scheduled_working_day
+    # BUG-11 / LH 05 GV-09: a holiday type removed from paid_holiday_types stays a non-working HOLIDAY slot, unpaid,
+    # never presumed present or absent (day facts decide working, payroll decides pay).
     company_unpaid = LedgerConfig(paid_holiday_types=frozenset({HolidayType.PUBLIC}))
-    assert one(company_unpaid, holiday=holiday(HolidayType.COMPANY)).days[0].am.classification is C.PRESUMED_PRESENT
+    day = one(company_unpaid, holiday=holiday(HolidayType.COMPANY)).days[0]
+    assert kinds(day) == (C.HOLIDAY, C.HOLIDAY) and not day.scheduled_working_day
+    assert (day.am.paid, day.am.lop, day.pm.paid, day.pm.lop) == (0, 0, 0, 0)
 
 
 def test_on_duty_counts_as_present_per_policy() -> None:
@@ -629,6 +633,42 @@ def test_non_salaried_rest_days_unpaid_and_holiday_pay_by_adjacent_day_rule() ->
     with pytest.raises(LedgerConfigError) as caught:
         LedgerConfig(holiday_eligibility_adjacent_days=L.AdjacentDays.BOTH)
     assert caught.value.code == "ADJACENT_DAYS_NEED_ATTENDANCE"
+
+
+def test_lh_hol_03_adjacent_day_rule_with_paid_leave_before_a_two_day_holiday_block() -> None:
+    """LH-HOL-03 (05 §5.10): Thanksgiving Thu + Fri and the adjoining weekend form one block; the adjacent working day
+    before is Wed (approved paid PTO counts as present), after is Mon (worked): both holidays are paid under
+    BEFORE_AND_AFTER. Unpaid leave or an absence on Wed makes them unpaid."""
+    cfg = LedgerConfig(attendance_enabled=True, leave_enabled=True, employee_is_salaried=False,
+                       non_salaried_holiday_pay=L.NonSalariedHolidayPay.STANDARD_HOURS,
+                       holiday_eligibility_adjacent_days=L.AdjacentDays.BOTH)
+
+    def block(before: dict) -> L.DayLedger:
+        return build_ledger([DayInput(d(2), **before), DayInput(d(3), holiday=holiday()),
+                             DayInput(d(4), holiday=holiday()), DayInput(d(5), weekly_off=True),
+                             DayInput(d(6), weekly_off=True), DayInput(d(7), attendance=present())], cfg)
+
+    paid_pto = block({"leaves": (leave("pto"),)})
+    assert [paid_pto.days[i].holiday_pay_eligible for i in (1, 2)] == [True, True]
+    assert paid_pto.days[1].paid == 1 and paid_pto.days[2].paid == 1
+    unpaid = block({"leaves": (leave("lwp", treatment=PayTreatment.UNPAID),)})
+    assert [unpaid.days[i].holiday_pay_eligible for i in (1, 2)] == [False, False]
+    absent_before = block({"attendance": absent()})
+    assert absent_before.days[1].paid == 0 and absent_before.days[2].paid == 0
+
+
+def test_hourly_holiday_pay_skips_a_holiday_type_outside_paid_holiday_types() -> None:
+    """IG-LH-20 / GV-09: with paid_holiday_types = {PUBLIC} a COMPANY holiday is still a non-working HOLIDAY day
+    (BUG-11), and the hourly STANDARD_HOURS rule must not pay it; the PUBLIC holiday next to it is paid."""
+    cfg = LedgerConfig(attendance_enabled=True, leave_enabled=True, employee_is_salaried=False,
+                       non_salaried_holiday_pay=L.NonSalariedHolidayPay.STANDARD_HOURS,
+                       paid_holiday_types=frozenset({HolidayType.PUBLIC}))
+    ledger = build_ledger([DayInput(d(2), attendance=present()), DayInput(d(3), holiday=holiday(HolidayType.COMPANY)),
+                           DayInput(d(4), holiday=holiday()), DayInput(d(5), attendance=present())], cfg)
+    company, public = ledger.days[1], ledger.days[2]
+    assert not company.scheduled_working_day and company.holiday_pay_eligible is False and company.paid == 0
+    assert public.holiday_pay_eligible is True and public.paid == 1
+    assert ledger.totals.paid_holiday_hours == public.standard_hours
 
 
 # --- outputs, segments, validation ---------------------------------------------------------------------------------

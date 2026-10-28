@@ -34,6 +34,7 @@ Tests that change state (revocations, suspensions) use their own users or restor
 from __future__ import annotations
 
 import contextlib
+import types
 import hashlib
 import json
 import re
@@ -92,7 +93,9 @@ def reset_database():
     """The harness's own per-test cleanup (tests/conftest.py::clean_database), run once."""
     import tests.conftest as harness
 
-    steps = harness.clean_database.__wrapped__()
+    # The fixture now takes the pytest request (shared datasets); a stand-in node never keeps the dataset.
+    node = types.SimpleNamespace(get_closest_marker=lambda name: None, _hrms_next_item=None)
+    steps = harness.clean_database.__wrapped__(types.SimpleNamespace(node=node))
     next(steps)
     with contextlib.suppress(StopIteration):
         next(steps)
@@ -375,6 +378,7 @@ PARAM_TABLES = {
     "holiday_id": "employee_optional_holidays", "branch_id": "branches", "agreement_id": "self_billing_agreements",
     "job_id": "jobs", "user_id": "users", "funding_account_id": "funding_accounts",
     "department_id": "departments", "cost_center_id": "cost_centers", "pay_period_id": "pay_periods",
+    "hold_id": "legal_holds", "nominee_id": "nominees",
     "original_run_id": "payroll_runs", "structure_id": "salary_templates", "grade_id": "grades",
     "template_version_id": "salary_template_versions", "import_id": None, "request_id": None, "account_id": None,
     "object_id": None, "export_id": None, "evidence_id": None, "code": None,
@@ -500,6 +504,9 @@ UNTESTED_ALLOWED = {
     "compensation_imports", "wage_input_imports", "setting_change_requests", "document_requests",
     "task_evidence", "bank_verifications", "payroll", "approval_requests", "cost_centers", "employment_types",
     "designations", "work_week_patterns", "holiday_calendars", "on_duty_requests",
+    # Isolated by their own three-tenant tests (tests/payroll/test_legal_holds.py EC-SEC-16,
+    # tests/payroll/test_nominees.py EC-SEC-01); a fresh verification tenant holds none.
+    "legal_holds", "nominees",
 }
 
 

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer
+from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Integer
 from sqlalchemy.orm import declarative_base, declared_attr
 
 Base = declarative_base()
@@ -14,6 +14,20 @@ class BaseModel(Base):
     __abstract__ = True
 
     id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class BigIdModel(Base):
+    """Base of the large append-heavy tables (``attendance_punches`` and later ``attendance_days``; AS 11 §1.2).
+
+    Same columns as BaseModel with a BIGINT id; used with TenantMixin and a unique ``(company_id, id)`` like every
+    tenant table. Every column that references such a table is BIGINT too.
+    """
+
+    __abstract__ = True
+
+    id = Column(BigInteger, primary_key=True)
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 

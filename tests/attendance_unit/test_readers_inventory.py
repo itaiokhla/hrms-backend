@@ -44,6 +44,19 @@ READERS = {
     "app/services/reports_service.py::dashboard_statistics": "test_workflows.py",
     "app/services/reports_service.py::department_analytics": "test_cross_tenant_attacks.py",
     "app/services/reports_service.py::employee_analytics": "test_cross_tenant_attacks.py",
+    # AS-M2 capture v2 (reviewed: every one filters voided_at IS NULL, or reads only its own new session)
+    "app/services/attendance_sessions.py::sessions_on": "attendance/test_sessions_constraint.py",
+    "app/services/attendance_sessions.py::check_overlap": "attendance/test_sessions_constraint.py",
+    "app/services/attendance_jobs.py::close_overdue_sessions": "attendance/test_punch_log.py",
+    # MANUAL shadow punches of an HR entry; compares the legacy "absent" status only to skip time-less marks.
+    "app/services/attendance_service.py::_manual_punches": "attendance/test_punch_log.py",
+    # AS-M2 phase 2: the transparency panel lists Location VIEW audit rows of the viewer's own session ids only (no
+    # time or status is read; voided sessions keep their audit history).
+    "app/services/attendance_privacy.py::evidence_views": "attendance/test_consents.py",
+    # LH-M1 Goal 5: closure impact preview reads who had a session on the closed date (read-only, voided_at IS NULL)
+    "app/services/holiday_closures.py::closure_impact": "holiday/test_rollover.py",
+    # AS-M3: the evaluation batch loader (non-voided sessions of the range; legacy marks only for the LEGACY_V1 port)
+    "app/services/attendance_days.py::load_inputs_many": "attendance/test_attendance_days.py",
 }
 
 

@@ -39,12 +39,23 @@ def grant_app_role(connection, role: str) -> None:
     # Attendance events and loan ledgers are append-only (triggers also refuse changes).
     connection.execute(text(f"REVOKE UPDATE, DELETE ON attendance_events FROM {role}"))
     connection.execute(text(f"REVOKE UPDATE, DELETE ON loan_transactions FROM {role}"))
+    # Raw punches are never edited or deleted; only the processing columns change (as_m2_punches_sessions guard).
+    connection.execute(text(f"REVOKE UPDATE, DELETE ON attendance_punches FROM {role}"))
+    connection.execute(text(
+        f"GRANT UPDATE (employee_id, mapping_status, disposition, session_id, shift_date, photo_storage_path, "
+        f"redacted_at, updated_at) ON attendance_punches TO {role}"))
     # Bank accounts, their change requests and funding accounts are never deleted; verification events are
     # append-only (0021: the same privileges, and triggers also refuse).
     connection.execute(text(f"REVOKE DELETE ON bank_accounts, bank_account_change_requests, funding_accounts FROM {role}"))
     connection.execute(text(f"REVOKE UPDATE, DELETE ON bank_verifications FROM {role}"))
     # Payment events are append-only evidence (0022 grants SELECT, INSERT; a trigger also refuses changes).
     connection.execute(text(f"REVOKE UPDATE, DELETE ON payment_events FROM {role}"))
+    # The consent ledger and policy acknowledgements are append-only (as_m2_sites_consents; triggers refuse too).
+    connection.execute(text(f"REVOKE UPDATE, DELETE ON attendance_consents, attendance_policy_acknowledgements FROM {role}"))
+    # Roster publications and entry changes are the predictive-scheduling record (as_m5_rosters; triggers refuse too).
+    connection.execute(text(f"REVOKE UPDATE, DELETE ON roster_publications, roster_entry_changes FROM {role}"))
+    # Evaluation versions are payroll lineage (as_m3_days_policies; INV-21; a trigger refuses too).
+    connection.execute(text(f"REVOKE UPDATE, DELETE ON attendance_day_versions FROM {role}"))
     # Issued documents are immutable; only the stored-file pointer may be filled in later.
     connection.execute(text(f"REVOKE UPDATE, DELETE ON issued_documents FROM {role}"))
     connection.execute(text(f"GRANT UPDATE (sha256, storage_path, updated_at) ON issued_documents TO {role}"))

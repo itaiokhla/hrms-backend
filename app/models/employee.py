@@ -7,6 +7,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     SmallInteger,
     String,
@@ -214,10 +215,20 @@ class FaceEncoding(TenantMixin, BaseModel):
     __tablename__ = "face_encodings"
 
     employee_id = Column(Integer, nullable=False, index=True)
-    encoding = Column(Text, nullable=False)
+    # Legacy plaintext; new enrolments are stored only in encoding_enc (as_m2_sites_consents, BUG-AS-19). The
+    # attendance.v2_prepare face step encrypts old rows; as_m11_legacy_cleanup drops this column.
+    encoding = Column(Text, nullable=True)
     image_path = Column(String(255), nullable=True)
     quality_score = Column(Numeric(5, 2), nullable=True)
     is_primary = Column(Boolean, default=False, nullable=False)
+    encoding_enc = Column(LargeBinary, nullable=True)  # envelope ciphertext (key purpose ATTENDANCE_BIOMETRIC)
+    key_id = Column(String(64), nullable=True)  # tenant data key ids reach 40 characters
+    consent_id = Column(Integer, nullable=True)  # the GRANTED BIOMETRIC_FACE consent at enrolment
+    retention_until = Column(Date, nullable=True)  # deletion due (withdrawal / exit), AS 07 §6 B-8
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    # Enrolled before the consent gate (SP-AS-219): face keeps working until legacy_grace_until (AS 07 §5.5).
+    legacy_enrolled = Column(Boolean, nullable=False, default=False, server_default="false")
+    legacy_grace_until = Column(Date, nullable=True)
 
     employee = relationship(
         "Employee",
@@ -232,6 +243,12 @@ class FaceEncoding(TenantMixin, BaseModel):
             ["employees.company_id", "employees.id"],
             name="fk_face_encodings_employee",
         ),
+        ForeignKeyConstraint(["company_id", "consent_id"], ["attendance_consents.company_id", "attendance_consents.id"],
+                             name="fk_face_encodings_consent"),
+        CheckConstraint("deleted_at IS NOT NULL OR encoding IS NOT NULL OR encoding_enc IS NOT NULL",
+                        name="ck_face_encodings_stored"),
+        CheckConstraint("(encoding_enc IS NULL) = (key_id IS NULL)", name="ck_face_encodings_key"),
+        CheckConstraint("NOT legacy_enrolled OR legacy_grace_until IS NOT NULL", name="ck_face_encodings_legacy"),
     )
 
 

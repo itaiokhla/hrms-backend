@@ -263,6 +263,9 @@ def build_values(kind: str, body: Any, on_date: date, zone: str) -> dict:
     if values["break_rules"]:
         values["unpaid_break_minutes"] = sum(int(r.get("minutes") or 0) for r in values["break_rules"]
                                              if not r.get("paid"))
+    explicit = getattr(body, "legacy_duration_hours", None)
+    if explicit is not None:  # a legacy client's explicit duration wins over the computed span (zero diff)
+        values["duration_hours"] = Decimal(explicit)
     return values
 
 
@@ -619,6 +622,10 @@ def create_version(db: Session, principal: Principal, shift_id: int, body, *, le
     db.flush()
     effects = _effects(db, principal, record_type="shift_version", record_id=row.id, version=row.version_no,
                        content=version_content(values), population=population, source_kind="shift_version")
+    from app.services import shift_rosters
+
+    # Published future roster entries of this shift follow the new version (§3.5 step 5; GV-AS-SHF-14).
+    effects["roster"] = shift_rosters.reversion_entries(db, principal, shift.id, row, start, plan["end"])
     AuditLogService.log(db, principal, MODULE, "SHIFT_VERSION_ACTIVATED",
                         f"Shift {shift.code}: version {row.version_no} from {start.isoformat()}", "shift", shift.id,
                         details={"before": serialize_version(plan["previous"]) if plan["previous"] else None,
@@ -702,6 +709,7 @@ class _LegacyVersion:
         self.safety_critical = self.outdoor = False
         self.long_duty = data.start_time == data.end_time
         self.reason = None
+        self.legacy_duration_hours = data.duration_hours
         self.on_overlap = "REJECT"
         self.acknowledged_warnings = []
         self.dry_run = False
@@ -735,22 +743,10 @@ def legacy_create(db: Session, principal: Principal, data) -> Shift:
                            version=version)
     created = create_shift(db, principal, body)
     shift = db.get(Shift, created["id"])
-    if data.duration_hours is not None:
-        _legacy_duration(db, shift, db.get(ShiftVersion, created["versions"][0]["id"]), data.duration_hours)
     if not data.is_active:
         shift.status, shift.is_active = "ARCHIVED", False
     db.flush()
     return shift
-
-
-def _legacy_duration(db: Session, shift: Shift, version: ShiftVersion, duration: Decimal) -> None:
-    """A legacy client's explicit duration wins over the computed span (zero diff with today's form)."""
-    values = {f: getattr(version, f) for f in VERSION_FIELDS + ("crosses_midnight",)}
-    values["duration_hours"] = Decimal(duration)
-    version.duration_hours = Decimal(duration)
-    version.content_hash = version_hash(values)
-    if shift.current_version_id == version.id:
-        shift.duration_hours = Decimal(duration)
 
 
 def legacy_update(db: Session, principal: Principal, shift_id: int, data) -> Shift:
@@ -779,9 +775,7 @@ def legacy_update(db: Session, principal: Principal, shift_id: int, data) -> Shi
             archived_again = False
         body = _LegacyVersion(data)
         body.unpaid_break_minutes = unpaid
-        result = create_version(db, principal, shift.id, body, legacy=True)
-        if data.duration_hours is not None:
-            _legacy_duration(db, shift, db.get(ShiftVersion, result["version"]["id"]), data.duration_hours)
+        create_version(db, principal, shift.id, body, legacy=True)
         if archived_again:
             shift.status, shift.is_active = "ARCHIVED", False
     shift.row_version += 1
@@ -801,12 +795,27 @@ def serialize_rule(row: ShiftAssignmentRule) -> dict:
 
 
 def _criteria(raw: dict) -> pt.AssignmentCriteria:
+    """AssignmentCriteria plus the X-M1 team dimensions (``team_ids``, ``team_member_roles``; D-X-09)."""
+    from app.services.shift_criteria import parse_shift_criteria
+
     if "shift_ids" in (raw or {}):
         raise bad_request("Shift rules cannot use shift criteria.", "INVALID_CRITERIA")
     try:
-        return pt.parse_criteria(raw)
+        return parse_shift_criteria(raw)
     except pt.PolicyValidationError as error:
         raise AppError(400, error.message if hasattr(error, "message") else str(error), "INVALID_CRITERIA")
+
+
+def _check_team_refs(db: Session, company_id: int, criteria) -> None:
+    """Named teams exist in this tenant (else 404 like any unknown id; X-ROLE-46)."""
+    team_ids = set(getattr(criteria, "team_ids", None) or ())
+    if not team_ids:
+        return
+    from app.models.teams import Team
+
+    found = {t for (t,) in db.query(Team.id).filter(Team.company_id == company_id, Team.id.in_(sorted(team_ids)))}
+    if found != team_ids:
+        raise not_found("Team")
 
 
 def _assign_scope_check(db: Session, principal: Principal, criteria: pt.AssignmentCriteria, on: date) -> None:
@@ -815,6 +824,18 @@ def _assign_scope_check(db: Session, principal: Principal, criteria: pt.Assignme
         return
     if not principal.has(ASSIGN):
         raise forbidden()
+    team_ids = set(getattr(criteria, "team_ids", None) or ())
+    if team_ids and criteria.everyone:
+        # Team-only criteria: the actor's ASSIGNED_TEAMS targets or the teams they lead must name every team.
+        from app.services.team_service import lead_team_ids
+
+        allowed = set(principal.scope_targets(ASSIGN, Scope.ASSIGNED_TEAMS.value))
+        if principal.scopes(ASSIGN) & {Scope.TEAM.value, Scope.TEAM_TREE.value}:
+            allowed |= lead_team_ids(db, principal.company_id, principal.employee_id, on,
+                                     tree=Scope.TEAM_TREE.value in principal.scopes(ASSIGN))
+        if team_ids <= allowed:
+            return
+        raise not_found("Criteria value")
     if criteria.everyone:
         raise not_found("Criteria value")
     entities = principal.scope_targets(ASSIGN, Scope.LEGAL_ENTITY.value)
@@ -869,7 +890,9 @@ def _priority_conflicts(db: Session, company_id: int, rule: ShiftAssignmentRule,
         if rule.effective_to is not None and other.effective_from > rule.effective_to:
             continue
         try:
-            if not criteria.may_overlap(pt.parse_criteria(other.criteria)):
+            from app.services.shift_criteria import parse_shift_criteria
+
+            if not criteria.may_overlap(parse_shift_criteria(other.criteria)):
                 continue
         except pt.PolicyValidationError:
             continue
@@ -971,6 +994,7 @@ def _past_start_check(db: Session, principal: Principal, data) -> None:
 
 def create_rule(db: Session, principal: Principal, data, *, simulate: bool = False) -> dict:
     criteria = _criteria(data.criteria)
+    _check_team_refs(db, principal.company_id, criteria)
     shift = _usable_shift(db, principal, data.shift_id)
     _assign_scope_check(db, principal, criteria, data.effective_from)
     _shift_scope_check(db, shift, criteria, data.effective_from)
@@ -1021,6 +1045,7 @@ def update_rule(db: Session, principal: Principal, rule_id: int, data, expected_
     row = _load_rule(db, principal, rule_id, lock=True)
     check_row_version(row, expected_row_version)
     criteria = _criteria(data.criteria if data.criteria is not None else row.criteria)
+    _check_team_refs(db, principal.company_id, criteria)
     _assign_scope_check(db, principal, criteria, row.effective_from)
     today = _rule_owner_today(db, principal.company_id, row.legal_entity_id)
     changes = data.model_dump(exclude_unset=True, exclude={"row_version", "apply_to_locked_periods"})

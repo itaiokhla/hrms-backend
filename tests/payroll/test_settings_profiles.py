@@ -285,7 +285,8 @@ def test_f64_migration_0029_updates_only_draft_overtime_policies_with_the_exact_
 
 def test_migration_literals_match_registry_2026_10_3():
     m = _migration()
-    assert reg.REGISTRY_VERSION == "2026.10.3"
+    # The migration froze the 2026.10.3 LEGACY_V1 profile; later registry versions must still produce the same rows.
+    assert tuple(map(int, reg.REGISTRY_VERSION.split("."))) >= (2026, 10, 3)
     assert m.LEGACY_VALUES == {r.key: r.value for r in reg.profile_rows("LEGACY_V1", leave_types=())}
     assert not any(r.locked for r in reg.profile_rows("LEGACY_V1", leave_types=()))
     starters = pt.starter_policies("LEGACY_V1")

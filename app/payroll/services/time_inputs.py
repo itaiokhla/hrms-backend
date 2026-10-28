@@ -124,10 +124,24 @@ class HolidayFact:
     name: str
     type: str  # PUBLIC | COMPANY | OPTIONAL_AVAILED | OPTIONAL_NOT_AVAILED
     content_hash: str
+    # LH-M1 (LH 05 §3.2): reporting family, the holiday part of the day (union of the date's rows), status and why
+    # the holiday is on this date (ORIGINAL / OBSERVED / EMPLOYEE_SUBSTITUTE, never stored for a substitute).
+    category: str = "OTHER"
+    portion: str = "FULL"
+    status: str = "CONFIRMED"
+    observance: str = "ORIGINAL"
+    observed_from_date: Optional[date] = None
+
+    @property
+    def non_working(self) -> bool:
+        """Day facts decide only working / non-working (D-LH-11, BUG-11); payroll decides pay with
+        ``HOLIDAY_PAY_POLICY.paid_holiday_types``."""
+        return self.type != "OPTIONAL_NOT_AVAILED"
 
     @property
     def paid(self) -> bool:
-        return self.type != "OPTIONAL_NOT_AVAILED"
+        """Deprecated alias of ``non_working`` (SPINE V3-062): it never meant "paid"."""
+        return self.non_working
 
 
 @dataclass(frozen=True)
@@ -145,11 +159,32 @@ class DayFacts:
     work_source: str = "PATTERN"
     weekly_off_portion: Optional[str] = None
     rest_day: bool = False
+    # LH-M1 (04-holiday/01 §4.1): the holiday calendar resolved for the date and how (OVERRIDE / CRITERIA /
+    # BRANCH_LINK; NONE = the legacy location rule of a branch without a calendar).
+    calendar_id: Optional[int] = None
+    calendar_source: str = "NONE"
+    # LH-M1 (LH 05 §3.2, SPINE §7 step 4): a declared working day on the resolved calendar cancelled a WEEKLY off.
+    declared_working_day: bool = False
+    declared_working_portion: Optional[str] = None
+    legal_entity_id: Optional[int] = None
+    timezone: Optional[str] = None
+    # The part of the date the employee is scheduled to work (truth table LH 05 §3.4) and its net minutes x FTE.
+    working_portion: str = "NONE"
+    scheduled_minutes: int = 0
+    calendar_version: Optional[str] = None
+    # Attendance-shift fields (JC-AS-30): which step decided the shift and the built instance(s).
+    shift_source: str = "NONE"
+    shift_ids: Tuple[int, ...] = ()
+    shift_version_ids: Tuple[int, ...] = ()
+    roster_entry_ids: Tuple[int, ...] = ()
+    instances: Tuple[Tuple[datetime, datetime], ...] = ()
+    # An ORIGINAL holiday shown elsewhere because its OBSERVED partner counts (display only, LH 05 X-5).
+    observed_elsewhere: Optional[str] = None
 
     @property
     def working(self) -> bool:
-        """A scheduled working day: neither a weekly off nor a paid holiday (3.4 §3)."""
-        return not self.weekly_off and not (self.holiday is not None and self.holiday.paid)
+        """A scheduled working day: neither a full weekly off nor a non-working holiday (3.4 §3)."""
+        return not self.weekly_off and not (self.holiday is not None and self.holiday.non_working)
 
 
 def _dates(start: date, end: date) -> List[date]:
@@ -206,11 +241,67 @@ def _resolver(db: Session, company_id: int):
     return WorkWeekResolver(db, company_id)
 
 
-def _holiday_fact(holiday: Holiday, chosen: set) -> HolidayFact:
+def _holiday_fact(holiday: Holiday, chosen: set, *, observance: Optional[str] = None,
+                  observed_from: Optional[date] = None, portion: Optional[str] = None) -> HolidayFact:
     kind = holiday.holiday_type or "COMPANY"
     if kind == "OPTIONAL":
         kind = "OPTIONAL_AVAILED" if holiday.id in chosen else "OPTIONAL_NOT_AVAILED"
-    return HolidayFact(holiday.id, holiday.name, kind, content_hash(holiday_service.content(holiday)))
+    content = holiday_service.content(holiday)
+    if observance == "EMPLOYEE_SUBSTITUTE":
+        content = {**content, "substitute_for": holiday.date.isoformat()}
+    return HolidayFact(holiday.id, holiday.name, kind, content_hash(content),
+                       category=getattr(holiday, "category", None) or "OTHER",
+                       portion=portion or getattr(holiday, "portion", None) or "FULL",
+                       status=getattr(holiday, "status", None) or "CONFIRMED",
+                       observance=observance or getattr(holiday, "observance", None) or "ORIGINAL",
+                       observed_from_date=observed_from if observance == "EMPLOYEE_SUBSTITUTE"
+                       else getattr(holiday, "observed_from_date", None))
+
+
+_PORTION_SIZE = {"FULL": 0, "FIRST_HALF": 1, "SECOND_HALF": 1}
+
+
+def _union(portions: Iterable[str]) -> str:
+    """FIRST_HALF ∪ SECOND_HALF = FULL (SPINE V3-063 step 5)."""
+    seen = set(portions)
+    if "FULL" in seen or {"FIRST_HALF", "SECOND_HALF"} <= seen:
+        return "FULL"
+    return next(iter(seen)) if seen else "FULL"
+
+
+def pick_holiday(items: Sequence[Holiday], chosen: set) -> Optional[HolidayFact]:
+    """One holiday per date (SPINE V3-063 step 5): non-working rows first, then HOLIDAY_RANK (PUBLIC > COMPANY >
+    OPTIONAL), larger portion, lower id; the fact's portion is the union of the non-working rows' portions."""
+    if not items:
+        return None
+    facts = [(h, _holiday_fact(h, chosen)) for h in items]
+    ordered = sorted(facts, key=lambda pair: (not pair[1].non_working, HOLIDAY_RANK.get(pair[0].holiday_type, 3),
+                                              _PORTION_SIZE.get(pair[1].portion, 0), pair[0].id))
+    winner, fact = ordered[0]
+    counting = [f.portion for _, f in facts if f.non_working]
+    if fact.non_working and len(counting) > 1:
+        fact = _holiday_fact(winner, chosen, portion=_union(counting))
+    return fact
+
+
+# LH 05 §3.4 truth table: (weekly-off portion, holiday portion) -> working portion.
+_WORKING = {
+    (None, None): "FULL", (None, "FULL"): "NONE", (None, "FIRST_HALF"): "SECOND_HALF",
+    (None, "SECOND_HALF"): "FIRST_HALF",
+    ("FULL", None): "NONE", ("FULL", "FULL"): "NONE", ("FULL", "FIRST_HALF"): "NONE", ("FULL", "SECOND_HALF"): "NONE",
+    ("FIRST_HALF", None): "SECOND_HALF", ("FIRST_HALF", "FULL"): "NONE", ("FIRST_HALF", "FIRST_HALF"): "SECOND_HALF",
+    ("FIRST_HALF", "SECOND_HALF"): "NONE",
+    ("SECOND_HALF", None): "FIRST_HALF", ("SECOND_HALF", "FULL"): "NONE", ("SECOND_HALF", "FIRST_HALF"): "NONE",
+    ("SECOND_HALF", "SECOND_HALF"): "FIRST_HALF",
+}
+
+
+def working_portion(employed: bool, weekly_off_portion: Optional[str], holiday: Optional[HolidayFact]) -> str:
+    """Scheduled day − weekly-off portion − holiday portion (OPTIONAL only when availed); not employed -> NONE."""
+    if not employed:
+        return "NONE"
+    holiday_portion = holiday.portion if holiday is not None and holiday.non_working else None
+    return _WORKING[(weekly_off_portion, holiday_portion)]
 
 
 def _chosen_optional(db: Session, company_id: int, employee_id: int, holiday_ids: Iterable[int]) -> set:
@@ -222,33 +313,517 @@ def _chosen_optional(db: Session, company_id: int, employee_id: int, holiday_ids
         EmployeeOptionalHoliday.holiday_id.in_(ids), EmployeeOptionalHoliday.status == "CHOSEN")}
 
 
-def day_facts(db: Session, company_id: int, employee_id: int, start: date, end: date) -> List[DayFacts]:
-    """Employment, branch, work week, weekly off and holiday of every date of ``start..end``."""
-    days = _dates(start, end)
-    employee = _employee(db, company_id, employee_id)
-    assignments = primary_assignments(db, company_id, employee_id)
-    patterns = _resolver(db, company_id)
-    placed: List[Tuple[date, Optional[EmployeeAssignment], bool]] = []
+SUBSTITUTE_HORIZON_DAYS = 14  # LH 04-holiday/02 §3.6: a substitute is searched at most 14 days after the holiday
+SUBSTITUTE_LOOKBACK_DAYS = 28  # two horizons, so the chain does not depend on the queried range
+MAX_EMPLOYEE_DAYS = 200_000  # day_facts_many cap (SPINE V3-062)
+
+
+@dataclass
+class _Day:
+    date: date
+    placement: Optional[EmployeeAssignment]
+    employed: bool
+    calendar_id: Optional[int]
+    calendar_source: str
+    week: Any = None
+    holidays: List[Holiday] = None  # type: ignore[assignment]
+    fact: Optional[HolidayFact] = None
+    observed_elsewhere: Optional[str] = None
+
+
+def _standard_minutes(db: Session, company_id: int, employee_id: int, on: date) -> int:
+    """``payroll.standard_hours_per_day`` x 60 for the no-shift fallback (SPINE V3-062), default 8 h."""
+    try:
+        from app.payroll.services import settings as settings_service
+
+        value = settings_service.resolve(db, company_id, "payroll.standard_hours_per_day", employee_id=employee_id,
+                                         on=on).value
+        return int((Decimal(str(value)) * 60).to_integral_value())
+    except Exception:  # noqa: BLE001 - an unreadable setting falls back to the documented default
+        return 480
+
+
+def _dst_difference(start_at: datetime, end_at: datetime, zone: str) -> Decimal:
+    """Elapsed minutes minus wall-clock minutes of a shift (LH-TZ-10): +60 on a fall-back night, −60 on a
+    spring-forward night, 0 otherwise; the wall-clock formula stays for every other date (zero diff)."""
+    import pytz  # zone data on Windows comes from pytz (shift_engine)
+
+    try:
+        tz = pytz.timezone(zone)
+    except pytz.UnknownTimeZoneError:  # an unknown zone keeps the wall-clock minutes
+        return Decimal(0)
+    elapsed = (end_at - start_at).total_seconds()
+    wall = (end_at.astimezone(tz).replace(tzinfo=None) - start_at.astimezone(tz).replace(tzinfo=None)).total_seconds()
+    return Decimal(int(elapsed - wall) // 60)
+
+
+def _shift_minutes(resolved, day: date, portion: str, fte: Decimal, standard) -> Tuple[int, tuple]:
+    """Net scheduled minutes inside ``portion`` x FTE (LH 05 §3.4) and the built instance; the legacy-shaped
+    full day keeps payroll's own helper (``shift_resolution.scheduled_hours``) so both agree."""
+    from decimal import ROUND_HALF_UP
+
+    from app.services import shift_engine, shift_resolution
+
+    if portion == "NONE":
+        return 0, ()
+    instance = None
+    if resolved is not None:
+        try:
+            instance = shift_engine.build_instance(resolved.version, day, resolved.work_timezone)
+        except Exception:  # noqa: BLE001 - an unbuildable version uses the standard-hours fallback
+            instance = None
+    if portion == "FULL":
+        hours = shift_resolution.scheduled_hours(resolved)
+        net = (hours * 60) if hours is not None else Decimal(_value(standard))
+        if hours is not None and instance is not None and instance.start_at and instance.end_at:
+            net += _dst_difference(instance.start_at, instance.end_at, resolved.work_timezone)
+    else:
+        half = None
+        if instance is not None:
+            half = (instance.first_half if portion == "FIRST_HALF" else instance.second_half).minutes
+        net = Decimal(half) if half is not None else Decimal(_value(standard)) / 2
+    minutes = int((net * fte).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+    spans = ((instance.start_at, instance.end_at),) if instance is not None and instance.start_at else ()
+    return minutes, spans
+
+
+def _observance_of(db: Session, company_id: int, calendar_ids: Iterable[int]) -> Dict[int, str]:
+    from app.models.pay_org import HolidayCalendar
+
+    ids = sorted({c for c in calendar_ids if c})
+    if not ids:
+        return {}
+    return {c: (o or "NONE") for c, o in db.query(HolidayCalendar.id, HolidayCalendar.employee_observance).filter(
+        HolidayCalendar.company_id == company_id, HolidayCalendar.id.in_(ids))}
+
+
+def _calendar_version(db: Session, company_id: int, calendar_ids: Iterable[int], patterns: Iterable[Tuple[Any, Any]],
+                      branch_ids: Iterable[int], start: date, end: date) -> str:
+    """content_hash of the calendar years, pattern versions and assignment rows consulted (LH 05 §3.4)."""
+    from app.models.holiday import HolidayCalendarYear
+    from app.models.pay_org import BranchCalendarLink, HolidayCalendarAssignment
+    from app.services import holiday_calendar_service
+
+    graph = holiday_calendar_service._graph(db, company_id)  # noqa: SLF001
+    cals = sorted({c for cal in set(calendar_ids) if cal for c in holiday_calendar_service.reachable(graph, cal)})
+    years: List[list] = []
+    if cals:
+        stored = {(c, y): v for c, y, v in db.query(HolidayCalendarYear.calendar_id, HolidayCalendarYear.year,
+                                                     HolidayCalendarYear.version).filter(
+            HolidayCalendarYear.company_id == company_id, HolidayCalendarYear.calendar_id.in_(cals),
+            HolidayCalendarYear.year >= start.year, HolidayCalendarYear.year <= end.year)}
+        for c in cals:
+            for y in range(start.year, end.year + 1):
+                if (c, y) in stored:
+                    years.append([c, y, stored[(c, y)]])
+                else:
+                    latest = db.query(func.max(Holiday.updated_at)).filter(
+                        Holiday.company_id == company_id, Holiday.calendar_id == c,
+                        Holiday.date >= date(y, 1, 1), Holiday.date <= date(y, 12, 31)).scalar()
+                    if latest is not None:
+                        years.append([c, 0, latest.isoformat()])
+    assignments: List[list] = []
+    branches = sorted({b for b in branch_ids if b})
+    if branches:
+        assignments += [["link", i, rv] for i, rv in db.query(BranchCalendarLink.id, BranchCalendarLink.row_version)
+                        .filter(BranchCalendarLink.company_id == company_id, BranchCalendarLink.branch_id.in_(branches),
+                                BranchCalendarLink.effective_from <= end,
+                                or_(BranchCalendarLink.effective_to.is_(None), BranchCalendarLink.effective_to >= start))]
+    assignments += [["criteria", i, rv] for i, rv in db.query(HolidayCalendarAssignment.id,
+                                                              HolidayCalendarAssignment.row_version).filter(
+        HolidayCalendarAssignment.company_id == company_id, HolidayCalendarAssignment.effective_from <= end,
+        or_(HolidayCalendarAssignment.effective_to.is_(None), HolidayCalendarAssignment.effective_to >= start))]
+    return content_hash({"years": sorted(years), "patterns": sorted([list(p) for p in set(patterns) if p[0]]),
+                         "assignments": sorted(assignments)})
+
+
+def _value(standard) -> int:
+    return standard() if callable(standard) else standard
+
+
+class _Batch:
+    """Per-call caches of ``day_facts_many``: employees, placements and shifts are loaded once for every employee,
+    and calendar-level data (holidays, declared working days, observance, calendar version, zones, the
+    standard-hours setting) once per calendar or key — the statements of a dashboard do not grow with its people
+    (attendance view budget, tests/test_attendance_performance.py)."""
+
+    def __init__(self, db: Session, company_id: int, ids: Sequence[int], start: date, end: date, *,
+                 light: bool = False) -> None:
+        from app.services import shift_resolution
+
+        self.db, self.company_id, self.light = db, company_id, light
+        self.employees = {e.id: e for e in db.query(Employee).filter(Employee.company_id == company_id,
+                                                                    Employee.id.in_(list(ids) or [0]))}
+        self.assignments: Dict[int, List[EmployeeAssignment]] = defaultdict(list)
+        for row in (db.query(EmployeeAssignment)
+                    .filter(EmployeeAssignment.company_id == company_id,
+                            EmployeeAssignment.employee_id.in_(list(ids) or [0]),
+                            EmployeeAssignment.is_primary.is_(True))
+                    .order_by(EmployeeAssignment.employee_id, EmployeeAssignment.effective_from,
+                              EmployeeAssignment.id)):
+            self.assignments[row.employee_id].append(row)
+        from app.services import holiday_rosters
+
+        roster = holiday_rosters.provider()
+        if hasattr(roster, "prefetch"):  # one roster read per batch; the null provider has nothing to load
+            lookback = start - timedelta(days=SUBSTITUTE_LOOKBACK_DAYS)
+            roster.prefetch(db, company_id, list(ids), lookback, end)
+        try:
+            self.shifts = {} if light else shift_resolution.shifts_for_many(db, company_id, list(ids), start, end)
+        except Exception:  # noqa: BLE001 - shift data that cannot be resolved leaves the standard-hours fallback
+            self.shifts = {}
+        self._holidays: Dict[Tuple[str, Any, Tuple[date, ...]], Dict[date, List[Holiday]]] = {}
+        self._declared: Dict[Tuple[int, Tuple[date, ...]], Dict[date, str]] = {}
+        self._observance: Dict[int, str] = {}
+        self._versions: Dict[Any, str] = {}
+        self._zones: Dict[Any, str] = {}
+        self._standard: Dict[Any, int] = {}
+
+    def employee(self, employee_id: int) -> Employee:
+        employee = self.employees.get(employee_id)
+        if employee is None:
+            raise not_found("Employee")
+        return employee
+
+    def holidays(self, by_calendar: Mapping[int, List[date]],
+                 by_branch: Mapping[Optional[int], List[date]]) -> Dict[date, List[Holiday]]:
+        out: Dict[date, List[Holiday]] = defaultdict(list)
+        for kind, groups in (("calendar", by_calendar), ("branch", by_branch)):
+            for owner, days in groups.items():
+                key = (kind, owner, tuple(sorted(days)))
+                if key not in self._holidays:
+                    reader = (holiday_service.holidays_by_calendar_date if kind == "calendar"
+                              else holiday_service.holidays_by_branch_date)
+                    self._holidays[key] = reader(self.db, self.company_id, {owner: list(days)})
+                for day, items in self._holidays[key].items():
+                    out[day].extend(items)
+        return out
+
+    def observance(self, calendar_ids: Iterable[int]) -> Dict[int, str]:
+        wanted = {c for c in calendar_ids if c}
+        missing = wanted - set(self._observance)
+        if missing:
+            self._observance.update(_observance_of(self.db, self.company_id, missing))
+            for c in missing:
+                self._observance.setdefault(c, "NONE")
+        return {c: self._observance[c] for c in wanted}
+
+    def declared(self, calendar_id: int, days: Sequence[date]) -> Dict[date, str]:
+        from app.services import holiday_calendar_service
+
+        key = (calendar_id, tuple(sorted(days)))
+        if key not in self._declared:
+            self._declared[key] = holiday_calendar_service.declared_working_days(self.db, self.company_id,
+                                                                                calendar_id, list(days))
+        return self._declared[key]
+
+    def version(self, calendar_ids, patterns, branch_ids, start: date, end: date) -> str:
+        if self.light:
+            return ""
+        key = (tuple(sorted({c for c in calendar_ids if c})), tuple(sorted({tuple(p) for p in patterns if p[0]}, key=repr)),
+               tuple(sorted({b for b in branch_ids if b})), start, end)
+        if key not in self._versions:
+            self._versions[key] = _calendar_version(self.db, self.company_id, key[0], key[1], key[2], start, end)
+        return self._versions[key]
+
+    def zone(self, placement: EmployeeAssignment) -> str:
+        from app.services import org_structure_service
+
+        key = (placement.branch_id, placement.legal_entity_id, getattr(placement, "work_timezone", None))
+        if key not in self._zones:
+            self._zones[key] = org_structure_service.placement_zone(self.db, placement)
+        return self._zones[key]
+
+    def standard(self, employee_id: int, placement: Optional[EmployeeAssignment], on: date) -> int:
+        if self.light:
+            return 480
+        key = (getattr(placement, "legal_entity_id", None), getattr(placement, "pay_group_id", None))
+        if key not in self._standard:
+            self._standard[key] = _standard_minutes(self.db, self.company_id, employee_id, on)
+        return self._standard[key]
+
+
+def _resolve_days(db: Session, company_id: int, employee: Employee, assignments: Sequence[EmployeeAssignment],
+                  patterns, days: Sequence[date], batch: Optional["_Batch"] = None) -> List[_Day]:
+    """Steps 1-3 and the holiday rows of step 5 (before employee observance) for every date."""
+    out: List[_Day] = []
+    by_calendar: Dict[int, List[date]] = defaultdict(list)
     by_branch: Dict[Optional[int], List[date]] = defaultdict(list)
     for day in days:
         covering = _covering(assignments, day)
         placement = covering or _nearest(assignments, day)
-        placed.append((day, placement, employed_on(employee, covering, day)))
-        by_branch[placement.branch_id if placement else None].append(day)
-    holidays = holiday_service.holidays_by_branch_date(db, company_id, by_branch)
-    chosen = _chosen_optional(db, company_id, employee_id, {h.id for items in holidays.values() for h in items})
+        calendar_id, calendar_source = patterns.calendar_on(placement, day)
+        out.append(_Day(day, placement, employed_on(employee, covering, day), calendar_id, calendar_source))
+        if calendar_id:
+            by_calendar[calendar_id].append(day)
+        else:  # a branch without a calendar: the legacy location rule
+            by_branch[placement.branch_id if placement else None].append(day)
+    if batch is not None:
+        holidays = batch.holidays(by_calendar, by_branch)
+    else:
+        holidays = holiday_service.holidays_by_calendar_date(db, company_id, by_calendar)
+        for day, items in holiday_service.holidays_by_branch_date(db, company_id, by_branch).items():
+            holidays.setdefault(day, []).extend(items)
+    for d in out:
+        d.week = patterns.resolve(d.placement, d.date, employee.id)
+        d.holidays = list(holidays.get(d.date, ()))
+    return out
+
+
+def _apply_observance(db: Session, company_id: int, resolved: List[_Day], chosen: set,
+                      batch: Optional["_Batch"] = None) -> None:
+    """Step 5 per employee (LH 04-holiday/02 §3.6): pick the date's holiday, then OBSERVED_IF_OFF (an ORIGINAL date the
+    employee works keeps the holiday there) and NEXT_WORKING_DAY (a holiday on a rest day moves to the employee's next
+    scheduled working day that is neither a holiday nor an assigned substitute; ascending order, 14-day horizon)."""
+    from app.services import holiday_calendar_service
+
+    index = {d.date: d for d in resolved}
+    observance = (batch.observance([d.calendar_id for d in resolved]) if batch is not None
+                  else _observance_of(db, company_id, [d.calendar_id for d in resolved]))
+    for d in resolved:
+        d.fact = pick_holiday(d.holidays, chosen)
+    # OBSERVED_IF_OFF: the employee scheduled on the ORIGINAL date gets the holiday there, not on the observed date.
+    if_off = [d for d in resolved if d.fact is not None and d.fact.observance == "OBSERVED"
+              and observance.get(d.calendar_id) == "OBSERVED_IF_OFF"]
+    if if_off:
+        partners = holiday_calendar_service.original_partners(
+            db, company_id, [h for d in if_off for h in d.holidays if h.id == d.fact.id])
+        for d in if_off:
+            original = partners.get(d.fact.id)
+            target = index.get(original.date) if original is not None else None
+            if target is None or target.week.portion(target.date) == workweek.FULL:
+                continue  # off on the original date (or outside the range): the OBSERVED row counts
+            target.holidays.append(original)
+            target.fact = pick_holiday(target.holidays, chosen)
+            d.holidays = [h for h in d.holidays if h.id != d.fact.id]
+            d.observed_elsewhere = original.date.isoformat()
+            d.fact = pick_holiday(d.holidays, chosen)
+    # An OBSERVED row that still counts: its ORIGINAL date is display-only ("observed on <date>", 02 §3.6 NONE).
+    observed = [d for d in resolved if d.fact is not None and d.fact.observance == "OBSERVED"]
+    if observed:
+        partners = holiday_calendar_service.original_partners(
+            db, company_id, [h for d in observed for h in d.holidays if h.id == d.fact.id])
+        for d in observed:
+            original = partners.get(d.fact.id)
+            target = index.get(original.date) if original is not None else None
+            if target is not None and target.fact is None and target.observed_elsewhere is None:
+                target.observed_elsewhere = d.date.isoformat()
+    # NEXT_WORKING_DAY: substitutes for single holidays on a rest day.
+    taken = {d.date for d in resolved if d.fact is not None and d.fact.non_working}
+    for d in resolved:
+        if (d.fact is None or not d.fact.non_working or d.fact.observance != "ORIGINAL"
+                or observance.get(d.calendar_id) != "NEXT_WORKING_DAY" or not d.week.rest_day(d.date)):
+            continue
+        for step in range(1, SUBSTITUTE_HORIZON_DAYS + 1):
+            candidate = index.get(d.date + timedelta(days=step))
+            if candidate is None:
+                break  # beyond the evaluated range: no substitute shown inside it
+            if (candidate.employed and candidate.week.portion(candidate.date) != workweek.FULL
+                    and candidate.date not in taken):
+                holiday = next(h for h in d.holidays if h.id == d.fact.id)
+                candidate.fact = _holiday_fact(holiday, chosen, observance="EMPLOYEE_SUBSTITUTE", observed_from=d.date)
+                taken.add(candidate.date)
+                break
+
+
+def _facts_for(db: Session, company_id: int, employee_id: int, start: date, end: date, patterns,
+               batch: "_Batch") -> List[DayFacts]:
+    days = _dates(start, end)
+    employee = batch.employee(employee_id)
+    assignments = batch.assignments.get(employee_id, [])
+    resolved = _resolve_days(db, company_id, employee, assignments, patterns, days, batch)
+    lookback: List[_Day] = []
+    if "NEXT_WORKING_DAY" in batch.observance([d.calendar_id for d in resolved]).values():
+        # Substitutes chain over two horizons before the range, so the answer never depends on the range asked.
+        lookback = _resolve_days(db, company_id, employee, assignments, patterns,
+                                 [start - timedelta(days=i) for i in range(SUBSTITUTE_LOOKBACK_DAYS, 0, -1)], batch)
+    resolved = lookback + resolved
+    chosen = _chosen_optional(db, company_id, employee_id, {h.id for d in resolved for h in d.holidays})
+    _apply_observance(db, company_id, resolved, chosen, batch)
+    resolved = resolved[len(lookback):]
+    declared: Dict[date, str] = {}
+    by_calendar: Dict[int, List[date]] = defaultdict(list)
+    for d in resolved:
+        if d.calendar_id:
+            by_calendar[d.calendar_id].append(d.date)
+    for calendar_id, cal_days in by_calendar.items():
+        declared.update(batch.declared(calendar_id, cal_days))
+    shifts = batch.shifts
+    first = _covering(assignments, start) or _nearest(assignments, start)
+    standard = lambda: batch.standard(employee_id, first, start)  # noqa: E731 - read only when a day needs it
+    version = batch.version([d.calendar_id for d in resolved],
+                            [(d.week.pattern_id, d.week.version) for d in resolved],
+                            [d.placement.branch_id for d in resolved if d.placement is not None], start, end)
     result: List[DayFacts] = []
-    for day, placement, employed in placed:
-        week = patterns.resolve(placement, day, employee_id)
-        options = sorted(holidays.get(day, ()), key=lambda h: (HOLIDAY_RANK.get(h.holiday_type, 3), h.id))
-        facts = [_holiday_fact(h, chosen) for h in options]
-        paid = [f for f in facts if f.paid]
-        holiday = paid[0] if paid else (facts[0] if facts else None)
-        portion = week.portion(day)
-        result.append(DayFacts(day, employed, placement, placement.branch_id if placement else None,
-                               week.pattern_id, portion == workweek.FULL, holiday, week.version, week.work_source,
-                               portion, week.rest_day(day)))
+
+    for d in resolved:
+        week, placement = d.week, d.placement
+        portion = week.portion(d.date)
+        rest = week.rest_day(d.date)
+        made_up = declared.get(d.date)
+        if made_up and week.roster_off is None:
+            # A declared (make-up) working day turns a WEEKLY weekly off into work; a CYCLE keeps its offs.
+            portion = workweek.apply_declared_working_day(week.pattern, portion, made_up)
+            rest = rest and portion == workweek.FULL
+        work = working_portion(d.employed, portion, d.fact)
+        resolved_shift = shifts.get((employee_id, d.date))
+        fte = Decimal(str(getattr(placement, "fte", None) or 1)) if placement is not None else Decimal(1)
+        minutes, spans = _shift_minutes(resolved_shift, d.date, work, fte, standard) if d.employed else (0, ())
+        result.append(DayFacts(
+            d.date, d.employed, placement, placement.branch_id if placement else None, week.pattern_id,
+            portion == workweek.FULL, d.fact, week.version, week.work_source, portion, rest, d.calendar_id,
+            d.calendar_source, bool(made_up), made_up,
+            legal_entity_id=placement.legal_entity_id if placement is not None else None,
+            timezone=batch.zone(placement) if placement is not None else None,
+            working_portion=work, scheduled_minutes=minutes, calendar_version=version,
+            shift_source=resolved_shift.source if resolved_shift is not None else "NONE",
+            shift_ids=(resolved_shift.shift_id,) if resolved_shift is not None and resolved_shift.shift_id else (),
+            shift_version_ids=(resolved_shift.shift_version_id,)
+            if resolved_shift is not None and resolved_shift.shift_version_id else (),
+            roster_entry_ids=(resolved_shift.roster_entry_id,)
+            if resolved_shift is not None and resolved_shift.roster_entry_id else (),
+            instances=spans, observed_elsewhere=d.observed_elsewhere,
+        ))
     return result
+
+
+def day_facts_many(db: Session, company_id: int, employee_ids: Sequence[int], start: date,
+                   end: date, *, light: bool = False) -> Dict[int, List[DayFacts]]:
+    """The day facts of several employees (LH 05 §3.1): one implementation for every consumer; at most
+    ``MAX_EMPLOYEE_DAYS`` employee-days per call (RANGE_TOO_LONG). ``light`` (dashboards, which read portions only)
+    skips shift minutes and the calendar version: ``scheduled_minutes`` is then the 8 h default and
+    ``calendar_version`` empty."""
+    days = _dates(start, end)
+    ids = list(dict.fromkeys(employee_ids))
+    if len(ids) * len(days) > MAX_EMPLOYEE_DAYS:
+        raise bad_request("Choose fewer employees or a shorter range.", "RANGE_TOO_LONG")
+    patterns = _resolver(db, company_id)
+    owned = "lh_graph_memo" not in db.info
+    if owned:
+        db.info["lh_graph_memo"] = {}
+    try:
+        batch = _Batch(db, company_id, ids, start, end, light=light)
+        return {employee_id: _facts_for(db, company_id, employee_id, start, end, patterns, batch)
+                for employee_id in ids}
+    finally:
+        if owned:
+            db.info.pop("lh_graph_memo", None)
+
+
+def day_facts(db: Session, company_id: int, employee_id: int, start: date, end: date) -> List[DayFacts]:
+    """Employment, branch, work week, weekly off, holiday, working portion and minutes of every date of
+    ``start..end`` (SPINE §7; LH 05 §3)."""
+    return day_facts_many(db, company_id, [employee_id], start, end)[employee_id]
+
+
+# ---------------------------------------------------------------------------
+# Expected presence (LH 05 §4.2, SPINE V3-062) — attendance dashboards read it (BUG-12)
+# ---------------------------------------------------------------------------
+_HALVES = {"FULL": {"FIRST_HALF", "SECOND_HALF"}, "FIRST_HALF": {"FIRST_HALF"}, "SECOND_HALF": {"SECOND_HALF"},
+           "NONE": set()}
+
+
+def _portion_of(halves: set) -> str:
+    if halves == {"FIRST_HALF", "SECOND_HALF"}:
+        return "FULL"
+    return next(iter(halves)) if halves else "NONE"
+
+
+def portion_units(portion: str) -> Decimal:
+    return {"FULL": ONE, "FIRST_HALF": HALF, "SECOND_HALF": HALF}.get(portion, ZERO)
+
+
+@dataclass(frozen=True)
+class Expectation:
+    date: date
+    expected_portion: str
+    expected_minutes: int
+    reasons: Tuple[str, ...]
+    on_leave_portion: str = "NONE"
+    on_duty_portion: str = "NONE"
+    working_portion: str = "NONE"
+    leave_ids: Tuple[int, ...] = ()
+    calendar_version: Optional[str] = None
+
+
+def expected_presence(db: Session, company_id: int, employee_ids: Sequence[int], start: date,
+                      end: date, *, light: bool = False) -> Dict[int, List[Expectation]]:
+    """What attendance should expect per employee and date (LH 05 §4.2): the working portion, minus suspensions and
+    APPROVED leave; APPROVED on-duty satisfies its portion without a punch; pending leave only adds a reason."""
+    facts = day_facts_many(db, company_id, employee_ids, start, end, light=light)
+    ids = list(facts)
+    leave_rows = db.query(LeaveDay.employee_id, LeaveDay.date, LeaveDay.portion, LeaveDay.leave_id).join(
+        Leave, (Leave.company_id == LeaveDay.company_id) & (Leave.id == LeaveDay.leave_id)).filter(
+        LeaveDay.company_id == company_id, LeaveDay.employee_id.in_(ids or [-1]), LeaveDay.date >= start,
+        LeaveDay.date <= end, LeaveDay.voided_at.is_(None), func.lower(Leave.status) == "approved").all()
+    on_leave: Dict[Tuple[int, date], set] = defaultdict(set)
+    leave_ids: Dict[Tuple[int, date], set] = defaultdict(set)
+    for employee_id, day, portion, leave_id in leave_rows:
+        on_leave[(employee_id, day)] |= _HALVES.get(portion, set())
+        leave_ids[(employee_id, day)].add(leave_id)
+    pending: set = set()
+    for employee_id, s_, e_ in db.query(Leave.employee_id, Leave.start_date, Leave.end_date).filter(
+            Leave.company_id == company_id, Leave.employee_id.in_(ids or [-1]), Leave.start_date <= end,
+            Leave.end_date >= start, func.lower(Leave.status) == "pending"):
+        for n in range((min(e_, end) - max(s_, start)).days + 1):
+            pending.add((employee_id, max(s_, start) + timedelta(days=n)))
+    suspended: set = set()
+    for row in db.query(EmployeeSuspension).filter(
+            EmployeeSuspension.company_id == company_id, EmployeeSuspension.employee_id.in_(ids or [-1]),
+            EmployeeSuspension.status == "ACTIVE"):
+        first = max(row.start_date, start)
+        last = min(row.end_date or end, end)
+        for n in range((last - first).days + 1):
+            suspended.add((row.employee_id, first + timedelta(days=n)))
+    on_duty: Dict[Tuple[int, date], set] = defaultdict(set)
+    for employee_id, s_, e_, portion in _approved_on_duty(db, company_id, ids, start, end):
+        for n in range((min(e_, end) - max(s_, start)).days + 1):
+            on_duty[(employee_id, max(s_, start) + timedelta(days=n))] |= _HALVES.get(portion or "FULL", set())
+    out: Dict[int, List[Expectation]] = {}
+    for employee_id, rows in facts.items():
+        items: List[Expectation] = []
+        for f in rows:
+            key = (employee_id, f.date)
+            reasons: List[str] = []
+            if not f.employed:
+                items.append(Expectation(f.date, "NONE", 0, ("NOT_EMPLOYED",), calendar_version=f.calendar_version))
+                continue
+            halves = set(_HALVES[f.working_portion])
+            if f.weekly_off_portion:
+                reasons.append("WEEKLY_OFF")
+            if f.holiday is not None and f.holiday.non_working:
+                reasons.append("HOLIDAY")
+            if key in suspended and halves:
+                halves = set()
+                reasons.append("SUSPENDED")
+            leave = halves & on_leave.get(key, set())
+            if leave:
+                halves -= leave
+                reasons.append("LEAVE")
+            if key in pending:
+                reasons.append("LEAVE_PENDING")
+            duty = halves & on_duty.get(key, set())
+            if duty:
+                reasons.append("ON_DUTY")
+            portion = _portion_of(halves)
+            if portion == f.working_portion:
+                minutes = f.scheduled_minutes
+            elif portion == "NONE" or f.working_portion == "NONE":
+                minutes = 0
+            else:
+                minutes = f.scheduled_minutes // 2
+            items.append(Expectation(f.date, portion, minutes, tuple(dict.fromkeys(reasons)), _portion_of(leave),
+                                     _portion_of(duty), f.working_portion, tuple(sorted(leave_ids.get(key, ()))),
+                                     f.calendar_version))
+        out[employee_id] = items
+    return out
+
+
+def _approved_on_duty(db: Session, company_id: int, ids: Sequence[int], start: date, end: date):
+    """APPROVED on-duty requests in the range: (employee, date, date, portion)."""
+    return [(r.employee_id, r.date, r.date, r.portion) for r in db.query(OnDutyRequest).filter(
+        OnDutyRequest.company_id == company_id, OnDutyRequest.employee_id.in_(list(ids) or [-1]),
+        OnDutyRequest.date >= start, OnDutyRequest.date <= end, OnDutyRequest.status == "APPROVED")]
 
 
 # ---------------------------------------------------------------------------
@@ -535,7 +1110,8 @@ def _attendance_inputs(db: Session, company_id: int, employee_id: int, start: da
     records = (
         db.query(Attendance)
         .filter(Attendance.company_id == company_id, Attendance.employee_id == employee_id,
-                Attendance.date >= start, Attendance.date <= end)
+                Attendance.date >= start, Attendance.date <= end,
+                Attendance.voided_at.is_(None))  # AS-M2: voided sessions are never pay inputs (spine §15.4)
         .order_by(Attendance.date, Attendance.check_in_time)
         .all()
     )
@@ -562,6 +1138,28 @@ def _attendance_inputs(db: Session, company_id: int, employee_id: int, start: da
             worked_seconds=worked, late=record.status == "late", early_exit=early, regularised=False,
             content_hash=attendance_service.content_hash(record, breaks[record.id]),
         )
+    return result
+
+
+def _evaluated_inputs(db: Session, company_id: int, employee_id: int, start: date, end: date,
+                      sessions: Dict[date, ledger.AttendanceInput]) -> Dict[date, ledger.AttendanceInput]:
+    """Attendance v2 tenants (AS 05 §4, JC-AS-01): a STANDARD ``attendance_days`` row decides its date through
+    ``DAY_RESULT_TO_LEDGER`` (an input, or none); LEGACY_V1 rows and dates without a row keep today's session input
+    (the LEGACY_V1 port is exact, so the ledger output is the same either way; IG-AS-66)."""
+    from app.payroll import day_results
+    from app.services import attendance_access, attendance_days
+
+    if not attendance_access.v2_enabled(db, company_id):
+        return sessions
+    result = dict(sessions)
+    for (_, day), row in attendance_days.days_for(db, company_id, [employee_id], start, end).items():
+        if row.rules_mode != "STANDARD":
+            continue
+        mapped = day_results.to_attendance_input(row)
+        if mapped is None:
+            result.pop(day, None)
+        else:
+            result[day] = mapped
     return result
 
 
@@ -624,7 +1222,8 @@ def ledger_inputs(
     """
     facts = day_facts(db, company_id, employee_id, start, end)
     leaves = _leave_portions(db, company_id, employee_id, start, end)
-    attendance = _attendance_inputs(db, company_id, employee_id, start, end, lock_at, early_exit_grace_minutes)
+    attendance = _evaluated_inputs(db, company_id, employee_id, start, end, _attendance_inputs(
+        db, company_id, employee_id, start, end, lock_at, early_exit_grace_minutes))
     lops = _lop_by_date(db, company_id, employee_id, start, end)
     duties = _on_duty_by_date(db, company_id, employee_id, start, end)
     suspensions = _suspensions(db, company_id, employee_id, start, end)
@@ -1032,7 +1631,10 @@ def _optional_holidays_for(db: Session, company_id: int, employee_id: int, year:
     for fact in day_facts(db, company_id, employee_id, start, end):
         if fact.holiday is None:
             continue
-        for holiday in holiday_service.holidays_by_branch_date(db, company_id, {fact.branch_id: [fact.date]}).get(fact.date, []):
+        found = (holiday_service.holidays_by_calendar_date(db, company_id, {fact.calendar_id: [fact.date]})
+                 if fact.calendar_id else
+                 holiday_service.holidays_by_branch_date(db, company_id, {fact.branch_id: [fact.date]}))
+        for holiday in found.get(fact.date, []):
             if holiday.holiday_type == "OPTIONAL":
                 seen[holiday.id] = holiday
     return sorted(seen.values(), key=lambda h: (h.date, h.id))

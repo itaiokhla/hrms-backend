@@ -38,7 +38,7 @@ from app.core.principal import Principal
 from app.models.attendance import Attendance, AttendanceBreak, AttendanceEvent, LocationSample
 from app.models.employee import Employee
 from app.schemas.attendance import LocationAttempt, ReviewDecision, SampleSubmission
-from app.services import attendance_policy, geo
+from app.services import attendance_policy, attendance_review, geo  # noqa: F401 (review mirror listeners)
 from app.services.attendance_policy import AttendancePolicy
 from app.services.audit_log_service import AuditLogService
 

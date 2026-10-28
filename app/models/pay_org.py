@@ -14,6 +14,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     literal,
     select,
@@ -28,6 +29,7 @@ PAY_FREQUENCIES = ("MONTHLY", "SEMI_MONTHLY", "BI_WEEKLY", "WEEKLY", "DAILY")
 WORKER_CLASSES = ("EMPLOYEE", "CONTRACTOR", "INTERN", "APPRENTICE")
 # Bound for walking holiday-calendar inheritance (the database rejects cycles).
 MAX_CALENDAR_DEPTH = 64
+EMPLOYEE_OBSERVANCE = ("NONE", "NEXT_WORKING_DAY", "OBSERVED_IF_OFF")
 
 
 def _code_name_status(table: str):
@@ -167,9 +169,9 @@ class WorkWeekPattern(TenantMixin, BaseModel):
     nth_weekday_offs = Column(JSONB, nullable=False, default=list)
     half_day_offs = Column(JSONB, nullable=False, default=list)
     cycle_length_days = Column(Integer, nullable=True)
-    cycle_off_days = Column(JSONB, nullable=True)
+    cycle_off_days = Column(JSONB(none_as_null=True), nullable=True)
     anchor_date = Column(Date, nullable=True)
-    rest_days = Column(JSONB, nullable=True)
+    rest_days = Column(JSONB(none_as_null=True), nullable=True)
     legal_entity_id = Column(Integer, nullable=True, index=True)
     status = Column(String(10), nullable=False, default="ACTIVE")
     row_version = Column(Integer, nullable=False, default=1)
@@ -291,19 +293,27 @@ class HolidayCalendarAssignment(TenantMixin, BaseModel):
 
 
 class HolidayCalendar(TenantMixin, BaseModel):
-    """A set of holidays (3.4 §8). A calendar inherits every holiday of its ancestors, so a branch's
-    effective holidays are its calendar's plus its parents' (see calendar_lineage_select).
-    Inheritance cycles are rejected by a trigger.
+    """A set of holidays (3.4 §8; LH 04-holiday/01 §3). A calendar holds its own occurrences and includes other
+    calendars (``holiday_calendar_includes``, a DAG) minus its exclusions; ``holiday_calendar_service.flatten`` is
+    the single resolver. ``parent_calendar_id`` is the legacy single parent, mirrored as the priority-0 include.
+    ``legal_entity_id`` NULL = tenant-wide. ``weekend_days`` NULL = derived (``effective_weekend``, V3-013).
+    Inheritance cycles are rejected by triggers.
     """
 
     __tablename__ = "holiday_calendars"
 
     code = Column(String(50), nullable=False)
     name = Column(String(150), nullable=False)
+    name_i18n = Column(JSONB, nullable=False, default=dict)
+    description = Column(Text, nullable=True)
     parent_calendar_id = Column(Integer, nullable=True, index=True)
+    legal_entity_id = Column(Integer, nullable=True, index=True)
     country_code = Column(String(2), nullable=True)
     subdivision_code = Column(String(6), nullable=True)
+    weekend_days = Column(JSONB(none_as_null=True), nullable=True)
+    employee_observance = Column(String(20), nullable=False, default="NONE")
     status = Column(String(10), nullable=False, default="ACTIVE")
+    row_version = Column(Integer, nullable=False, default=1)
 
     __table_args__ = (
         *_code_name_status("holiday_calendars"),
@@ -311,6 +321,10 @@ class HolidayCalendar(TenantMixin, BaseModel):
             ["company_id", "parent_calendar_id"], ["holiday_calendars.company_id", "holiday_calendars.id"],
             name="fk_holiday_calendars_parent",
         ),
+        ForeignKeyConstraint(["company_id", "legal_entity_id"], ["legal_entities.company_id", "legal_entities.id"],
+                             name="fk_holiday_calendars_legal_entity", use_alter=True),
+        CheckConstraint(f"employee_observance IN {EMPLOYEE_OBSERVANCE}", name="ck_holiday_calendars_observance"),
+        CheckConstraint("row_version >= 1", name="ck_holiday_calendars_row_version"),
         CheckConstraint("parent_calendar_id IS NULL OR parent_calendar_id <> id", name="ck_holiday_calendars_not_own_parent"),
         CheckConstraint("country_code ~ '^[A-Z]{2}$'", name="ck_holiday_calendars_country"),
         CheckConstraint(

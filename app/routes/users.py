@@ -79,9 +79,18 @@ def revoke_sessions(user_id: int, principal: Principal = Depends(require("user:d
 @router.put("/users/{user_id}/roles")
 def set_roles(user_id: int, data: UserRolesUpdate, principal: Principal = Depends(require("user:assign_role")),
               db: Session = Depends(get_db)):
+    if data.assignments is not None:
+        windows = user_service.set_role_windows(db, principal, user_id, data.assignments)
+        db.commit()
+        return {**user_service.get_user(db, principal, user_id), "assignments": windows}
     user_service.set_roles(db, principal, user_id, data.role_ids)
     db.commit()
     return user_service.get_user(db, principal, user_id)
+
+
+@router.get("/users/{user_id}/role-assignments")
+def role_windows(user_id: int, principal: Principal = Depends(require("user:read")), db: Session = Depends(get_db)):
+    return {"items": user_service.role_windows(db, principal, user_id)}
 
 
 @router.put("/users/{user_id}/assigned-employees")

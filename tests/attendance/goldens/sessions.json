@@ -1,7 +1,7 @@
 {
  "alpha/AT-004 Asha Pillai/2026-10-19": {
   "closed_reason": null,
-  "content_hash": "611c4f09236bbf8309085f6be4c1b432527e59312464e28b45f1f03b69a0d30f",
+  "content_hash": "2367dcd67265fb194de58e0c98e172ed8bae2a4ed8489106152738b25ed57a71",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -21,7 +21,7 @@
  },
  "alpha/AT-007 Priya Shah/2026-10-05": {
   "closed_reason": null,
-  "content_hash": "8d42ee07776a42bbef759f4b39922e2393b8f86434b7da5cc0808a62dc8ac385",
+  "content_hash": "3ed770752dab58f017165465060a75ce0812ff08810b7be7a1e1eff858f3a537",
   "early_exit": false,
   "early_exit_minutes": null,
   "hours": {
@@ -41,7 +41,7 @@
  },
  "alpha/AT-007 Priya Shah/2026-10-06": {
   "closed_reason": null,
-  "content_hash": "921d8d136dc1e6dc7536f9a85595e92904e64c64685219e9aed1501be1f458df",
+  "content_hash": "820006afd3d7bed61c1aa2dfac8ef390a1857c2baa41d1cdb20d88836e6236af",
   "early_exit": false,
   "early_exit_minutes": null,
   "hours": {
@@ -61,7 +61,7 @@
  },
  "alpha/AT-007 Priya Shah/2026-10-07": {
   "closed_reason": null,
-  "content_hash": "cf58d0b5025bb50eefef881e45a3e8a2e9a8c5f5e7b248b253b13947b61bd63a",
+  "content_hash": "dbe7e07682c9fec5e2e1db12b94f9b0f7f340c6c67fb810502671f772e8c62e4",
   "early_exit": false,
   "early_exit_minutes": null,
   "hours": {
@@ -81,7 +81,7 @@
  },
  "alpha/AT-007 Priya Shah/2026-10-08": {
   "closed_reason": null,
-  "content_hash": "094f288cbe50c34b5b92288d4dbb643398a2aca84f1c2c164bc5f61ce504b706",
+  "content_hash": "781d950ef5d3201b6460083ba26cd426dc11d6752c633d8c18038dcbecbde89f",
   "early_exit": false,
   "early_exit_minutes": null,
   "hours": {
@@ -101,7 +101,7 @@
  },
  "alpha/AT-007 Priya Shah/2026-10-09": {
   "closed_reason": null,
-  "content_hash": "7b7c51fc6964bf2aed2a0d1be53b877f7f155b7546c4d9a8f361cd7cc8bbf24c",
+  "content_hash": "7a085ca1e62523837ec2e7150d045c5af047d70d9bd40a2502e9d55776b6478d",
   "early_exit": false,
   "early_exit_minutes": null,
   "hours": {
@@ -121,7 +121,7 @@
  },
  "alpha/AT-007 Priya Shah/2026-10-12": {
   "closed_reason": null,
-  "content_hash": "479afb0673b63b7ef6a7bd2aa2f012bf9d0cb4b412ddc50eccb4db6398edceae",
+  "content_hash": "7dec7a2906b14120533a30c8f2e24d24c6c7daa35e689cacab52d4e1172face4",
   "early_exit": false,
   "early_exit_minutes": null,
   "hours": {
@@ -141,7 +141,7 @@
  },
  "alpha/AT-007 Priya Shah/2026-10-13": {
   "closed_reason": null,
-  "content_hash": "53586e3ee740b5f4e8c8fffc58190720f196ec7b70e271c1a27de0bed4b98793",
+  "content_hash": "03542fd3a5e3013cb88331574d703732b10d7c97395f2d764edd22a6023de40f",
   "early_exit": false,
   "early_exit_minutes": null,
   "hours": {
@@ -161,7 +161,7 @@
  },
  "alpha/AT-007 Priya Shah/2026-10-14": {
   "closed_reason": null,
-  "content_hash": "62d302f2b128a4ec98fe95c4f988a62b0a563755b6eb61f900efb270c7f025fa",
+  "content_hash": "61c8caded19b62c7605dfbdef83a9a0e3cdb421f6dd872f688ee8fdbb80fc987",
   "early_exit": false,
   "early_exit_minutes": null,
   "hours": {
@@ -181,7 +181,7 @@
  },
  "alpha/AT-007 Priya Shah/2026-10-15": {
   "closed_reason": null,
-  "content_hash": "285f488a3141a2ada24c6acd7c0332561f46845b271c439001b57feeb12f919f",
+  "content_hash": "d120760f505c8aec96e8f406104b4e74d5490f4f06ccf7733335c3a0e2a2f4e2",
   "early_exit": false,
   "early_exit_minutes": null,
   "hours": {
@@ -201,7 +201,7 @@
  },
  "alpha/AT-007 Priya Shah/2026-10-16": {
   "closed_reason": null,
-  "content_hash": "302164945f37632ea6c4bd283bf71765d809bd43fa1a812b5ad8017e14ca441d",
+  "content_hash": "099968c11027fe63f264f0296fe42760314526d72a87f3edca5fcfeaa512d0bc",
   "early_exit": false,
   "early_exit_minutes": null,
   "hours": {
@@ -221,7 +221,7 @@
  },
  "alpha/AT-007 Priya Shah/2026-10-19": {
   "closed_reason": null,
-  "content_hash": "73ac4845fa54ae07e65145e6e2c37e1ec232fbf975d9dc1328af598c1d215655",
+  "content_hash": "0bfe4cc0346e3f2f1ff49a68a612c65df49dd4bbc0aadd7505a3b73169696ac9",
   "early_exit": false,
   "early_exit_minutes": null,
   "hours": {
@@ -241,7 +241,7 @@
  },
  "alpha/AT-010 Sameer Khan/2026-10-05": {
   "closed_reason": null,
-  "content_hash": "289a172b9d50033751f63b38f8887eefc28a57525bb1f96b45a6fe690feea411",
+  "content_hash": "e9385af4efd34b52ba22aa314510a7dce98c216f556ed52a9020a9dfb9a85450",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -261,7 +261,7 @@
  },
  "alpha/AT-010 Sameer Khan/2026-10-06": {
   "closed_reason": null,
-  "content_hash": "6efb336fff69fb73efbc333ebfd85ae5a7addd87c2ac048a9a44a5b558145ff6",
+  "content_hash": "7e9dfb9653b6e76ccf8f33d1307907af6ca60e63b7fd9d64e5af3151a2b68a2a",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -281,7 +281,7 @@
  },
  "alpha/AT-010 Sameer Khan/2026-10-07": {
   "closed_reason": null,
-  "content_hash": "5e41138064dd8b073761dbea0bfba2df84369f3308e297e1c910240315a1d8d6",
+  "content_hash": "5d007bcdccf81c91cccbdc5e9082aea7592a9787195a74b14ff7f985a2b74ec4",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -301,7 +301,7 @@
  },
  "alpha/AT-010 Sameer Khan/2026-10-08": {
   "closed_reason": null,
-  "content_hash": "3ba88759f0e484194464ca64150b8f0b891f568ec63af325745afa025222b322",
+  "content_hash": "bc6de5f28d0f838f55e3212dacea9b4eb5105ba2c12f24eadb9b5db690c73729",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -321,7 +321,7 @@
  },
  "alpha/AT-010 Sameer Khan/2026-10-09": {
   "closed_reason": null,
-  "content_hash": "e4ea4a82ddd16a652306e2a8ac690fd65a1e9f5c645b4fb4b9f5d854b30709d2",
+  "content_hash": "27f09046d4209ede0831dfafb34d6321b3a01c9fede67bb2e56ec4d4ddca754d",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -341,7 +341,7 @@
  },
  "alpha/AT-010 Sameer Khan/2026-10-12": {
   "closed_reason": null,
-  "content_hash": "58e28c837f4ce1819d3fef189644f171a8e3906b9e87f0abe9f9effddaf6afc0",
+  "content_hash": "42f83be9e99df808f0811e3472abfb7bfe5067ef3e12da608230f687db2da74c",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -361,7 +361,7 @@
  },
  "alpha/AT-010 Sameer Khan/2026-10-13": {
   "closed_reason": null,
-  "content_hash": "91387afbf5d25ebc78cc721a1b4a88b3971e684ad86d53b6449275b8e4314a09",
+  "content_hash": "3a6b1fddd29e5fe68720cd016f8bea9e4238503483957e70655f6eb67df1b0cb",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -381,7 +381,7 @@
  },
  "alpha/AT-010 Sameer Khan/2026-10-14": {
   "closed_reason": null,
-  "content_hash": "d6a4e069578c2abe0f4419be7613243a51af28bd7aac707033c5612a96204967",
+  "content_hash": "170bc5af798591aaf739eb4960ac4366ec8f7d6ea3f7c73850d22f0c3e59c9a3",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -401,7 +401,7 @@
  },
  "alpha/AT-010 Sameer Khan/2026-10-15": {
   "closed_reason": null,
-  "content_hash": "bf50b26c2b81ea9c7470d4bd169c803117a3337f580712f578c69fc206e07745",
+  "content_hash": "5fd41c2a479604060bfa91557a0b502994376bc7fd048c65e10d2dd3bb9b163b",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -421,7 +421,7 @@
  },
  "alpha/AT-010 Sameer Khan/2026-10-16": {
   "closed_reason": null,
-  "content_hash": "762355d23755abaa8bd6cefe54ab4c9db55dc53c4cc72f3dc877189012642017",
+  "content_hash": "23436c9405177bbe831cf8a44a500b990c13be688e41ec39bd990fad2def8ffd",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -441,7 +441,7 @@
  },
  "alpha/AT-015 Vikram Singh/2026-10-19": {
   "closed_reason": null,
-  "content_hash": "b8811f94195cc1ec52a5f67606605ae444c4591a2c1ec0a03c76a6c04ad7f0a7",
+  "content_hash": "21eb71d872a5ad9522241c2378733cc3e195280b5a6a1f6552c4c9c7c8800d44",
   "early_exit": true,
   "early_exit_minutes": 90,
   "hours": {
@@ -461,7 +461,7 @@
  },
  "alpha/AT-016 Kiran Joshi/2026-10-07": {
   "closed_reason": null,
-  "content_hash": "bf2f75fa5b58503d5f18be369f5da76f42f762fd672a8d7950fb393b038eb6d8",
+  "content_hash": "01eb542e705985347d4dcc6536c47fa8906590318bba9c2e69724ca7c3eea3f6",
   "early_exit": true,
   "early_exit_minutes": 290,
   "hours": {
@@ -481,7 +481,7 @@
  },
  "alpha/AT-017 Ravi Kumar/2026-10-05": {
   "closed_reason": null,
-  "content_hash": "b64ebbe491944db4b73f67c1bccbba98504853377282752c901f7fd309226e55",
+  "content_hash": "7635151a7f9f19d16f0e65b64a640505ad341212550a1ca4f738ef9e1363c4e2",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -501,7 +501,7 @@
  },
  "alpha/AT-017 Ravi Kumar/2026-10-06": {
   "closed_reason": null,
-  "content_hash": "210047f291c52d746b83d24647105447c5be236f5e4d97582ff021a317fb7bb1",
+  "content_hash": "6742d5e611974f8d05fd1a3996ed761894d44023978ff1d1d75d4a259f2081ca",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -521,7 +521,7 @@
  },
  "alpha/AT-017 Ravi Kumar/2026-10-07": {
   "closed_reason": null,
-  "content_hash": "ac2ce40cf0f9f11f96d44700dba88a114d4f7df7bdf84aa1ad14c9197527dcff",
+  "content_hash": "87f342b40fe24105561a6a484d367af0b7e7bd1f87f2d37b54aa68b59be263b5",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -541,7 +541,7 @@
  },
  "alpha/AT-017 Ravi Kumar/2026-10-08": {
   "closed_reason": null,
-  "content_hash": "2e35d5f20b3dfa927efceee52d63b335a71794380819e2cd752dfd4cf5931f06",
+  "content_hash": "7c9d7c04860405cecdeadae2b62473b6806481c44191cf429e1a5129df1c6e16",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -561,7 +561,7 @@
  },
  "alpha/AT-017 Ravi Kumar/2026-10-09": {
   "closed_reason": null,
-  "content_hash": "1bdc28a22a1b5d1f023f9637e9b425652d1815db66eb684d75c1cb4aaea88cdd",
+  "content_hash": "7ffa221809775e2217f5262e48c9f1f3ccfa16e9cdf9b38f91bc87ce76f94fb4",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -581,7 +581,7 @@
  },
  "alpha/AT-017 Ravi Kumar/2026-10-12": {
   "closed_reason": null,
-  "content_hash": "f2fee15b9dbd425ca6f99732ddd2da15c6633a84e344bf8525d07d9862bd0b72",
+  "content_hash": "69173b85f3825b243f5d5563fad3cd888b26cc5b2b4765fedee59f6f992899ca",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -601,7 +601,7 @@
  },
  "alpha/AT-017 Ravi Kumar/2026-10-13": {
   "closed_reason": null,
-  "content_hash": "ebcc06533c08a5aec761c3c6608ace24780df7afe44997249e383daff4ccc8fe",
+  "content_hash": "7c41be3af6e2710f83170c46c2c89b1c0bf47794aa58a936f444b2632e2caf35",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -621,7 +621,7 @@
  },
  "alpha/AT-017 Ravi Kumar/2026-10-14": {
   "closed_reason": null,
-  "content_hash": "cace7309ad6244d1a9c73433bfff4c8d60b2fc66c893b697dfa913f8c08c27e1",
+  "content_hash": "f4c83c3ce91fe115c92fbe52df0aa673dc51ecd31a75839d0b652d7d25e615f6",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -641,7 +641,7 @@
  },
  "alpha/AT-017 Ravi Kumar/2026-10-15": {
   "closed_reason": null,
-  "content_hash": "85cc36af752a378ee5c39f2aea53b2eac779f15e44d7380c9c8905ff72367cb8",
+  "content_hash": "9c41331de029129685a297cac36a839ead757cf5735b8b32b09df09e6dc6b0dd",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -661,7 +661,7 @@
  },
  "alpha/AT-017 Ravi Kumar/2026-10-16": {
   "closed_reason": null,
-  "content_hash": "f084130b3762795285416ada05b074399a17a6be7b1ba53156a8c3f45be55db7",
+  "content_hash": "5f2f8bed3a4072e419664066d05f457c736d295f717b49302d9527137776f214",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -681,7 +681,7 @@
  },
  "alpha/AT-017 Ravi Kumar/2026-10-26": {
   "closed_reason": null,
-  "content_hash": "b300adf3b4ba05b6979b1dfe1bba16580a00c8a211653b698df0214682ff62a9",
+  "content_hash": "2b1e9a8901e1f1b81c621aa34a1afe27e4e16d6cf4a80f52f31fc582515f880a",
   "early_exit": false,
   "early_exit_minutes": null,
   "hours": {
@@ -701,7 +701,7 @@
  },
  "alpha/AT-018 Sunita Patil/2026-10-19": {
   "closed_reason": null,
-  "content_hash": "30ebc1d437c0cf463fe44b213fdfbc243284bbae5a15264e5329a22bd7333c78",
+  "content_hash": "25dbbffcb95bf527483502b949019536c757209efa4f6604063b8929a715c453",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -721,7 +721,7 @@
  },
  "alpha/AT-019 Imran Shaikh/2026-10-20": {
   "closed_reason": null,
-  "content_hash": "6e5e0f363ab34165dcaf1f8638c933e8671e53439172af40bfae3ec0cde1b1f8",
+  "content_hash": "d37fa4b9b1476f3839e2317c1bf676df0722543233248a2d8e141f9fbf174df6",
   "early_exit": false,
   "early_exit_minutes": null,
   "hours": {
@@ -741,7 +741,7 @@
  },
  "alpha/AT-021 Ramesh Yadav/2026-10-16": {
   "closed_reason": "MANUAL_NO_PUNCH_OUT",
-  "content_hash": "c5f363cb09ce45f4c16936e710a9ae7340a898d5b1bf3fb51fcf9e77abc78c77",
+  "content_hash": "e695d35065e56a26d2e450cf697354fbaac401aad6f4fdea167374d3d2a7cfe8",
   "early_exit": false,
   "early_exit_minutes": null,
   "hours": {
@@ -763,7 +763,7 @@
  },
  "alpha/AT-023 Anjali Menon/2026-10-05": {
   "closed_reason": null,
-  "content_hash": "dab003219b92db89dea4db833d7023f67f8a8a2c8c4a2ed048ea7d99cb6dd504",
+  "content_hash": "5b4b327b8edb8ac5a6b2413fedf38a9064b5fe780713b730c84c7c4b71cf91dc",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -783,7 +783,7 @@
  },
  "alpha/AT-023 Anjali Menon/2026-10-06": {
   "closed_reason": null,
-  "content_hash": "526f1db4148a6d9b1b854c6fadd02e9a55feae4c269636799879b8dab23cccf0",
+  "content_hash": "77bfd0919d3b3f3266bd9160244b8b5e6afb2bcbb18b49305a9bb4ea3e483134",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -803,7 +803,7 @@
  },
  "alpha/AT-023 Anjali Menon/2026-10-07": {
   "closed_reason": null,
-  "content_hash": "b29245ee8b77bfe9abfdc96d18efa8c3f1db01962f59f59c893ad84859aa8a5d",
+  "content_hash": "d544c0bcb0e4e5bb0ab011d13aec7d9057557dbea4eec1e12d1d7e1b4545cddf",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -823,7 +823,7 @@
  },
  "alpha/AT-023 Anjali Menon/2026-10-08": {
   "closed_reason": null,
-  "content_hash": "cb3be7581846c65557e9d602bd5d9f1870202b4c57b1d07c5ccd435a38f99510",
+  "content_hash": "8e8d71ece35fa0a5e3dcebda6f7c011c82442a180b8923e25ba2276b31ff2f0b",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -843,7 +843,7 @@
  },
  "alpha/AT-023 Anjali Menon/2026-10-09": {
   "closed_reason": null,
-  "content_hash": "3975199f65599af77d378757a18ec63d8d1613df4704f20342aba62c5823d57c",
+  "content_hash": "272267b2b7b88a56789875c105d8b72ac40e658b00c610c85a7a0edbb547308f",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -863,7 +863,7 @@
  },
  "alpha/AT-023 Anjali Menon/2026-10-12": {
   "closed_reason": null,
-  "content_hash": "6c0e11908f43ac19840e5489b7ad8bb04909534af213a6f484942723d4724f16",
+  "content_hash": "5db21974ead3875e607686e79d677bce296d082b1693a28e88a37d79b1c0e71d",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -883,7 +883,7 @@
  },
  "alpha/AT-023 Anjali Menon/2026-10-13": {
   "closed_reason": null,
-  "content_hash": "799bcce5d1bb407a68121fc414f90088586445857267863fddc75456a5de8c4d",
+  "content_hash": "26b2a1f19801072e9ca931455a521249c22722c45093c1e7df0bb815147cbd6b",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -903,7 +903,7 @@
  },
  "alpha/AT-023 Anjali Menon/2026-10-14": {
   "closed_reason": null,
-  "content_hash": "dd9f07b614f8a360cab9c83be2417bf32a9927bf25683bb0144912b20d7fff50",
+  "content_hash": "6a3c229761675d2a7b340fac2d9ab9b7d29411334067f2c35305e4272b18b8ba",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -923,7 +923,7 @@
  },
  "alpha/AT-023 Anjali Menon/2026-10-15": {
   "closed_reason": null,
-  "content_hash": "9f7035a9d55dc131cffeac3c8780b279c93a85f65305cce2bbb8cf8fdcf393c9",
+  "content_hash": "82d08c294c32b1989364f9c81075bb7986c8a2128dc74f8c2b7b6c2404ecdc47",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -943,7 +943,7 @@
  },
  "alpha/AT-023 Anjali Menon/2026-10-16": {
   "closed_reason": null,
-  "content_hash": "85dc8a7ea62b340636b8cffe58221d1528ee53469cd92b3a57544abfcce6180f",
+  "content_hash": "bca3089d3b2249a9548242bb6aca35438db30763d01d6f8a9d9fbfeb06691ccf",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -963,7 +963,7 @@
  },
  "beta/BT-003 Layla Hassan/2026-10-05": {
   "closed_reason": null,
-  "content_hash": "ef97fd25bb002d3863e700354fcef1913f307241364bbf81522f2aeb86fa2628",
+  "content_hash": "ccdff2ca225cbc7d8beea5bce0604c0751b56d4f3dbc5e7700e2f81dade67c25",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -983,7 +983,7 @@
  },
  "beta/BT-003 Layla Hassan/2026-10-06": {
   "closed_reason": null,
-  "content_hash": "09e25be46690d36c3ec3bed761e91c602444889fe6a212db8a1c5e32025cd702",
+  "content_hash": "9dad1c2dd540cbdbbc0ce43caf3d9be11ce844344637ae8abc128b8293f019af",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1003,7 +1003,7 @@
  },
  "beta/BT-003 Layla Hassan/2026-10-07": {
   "closed_reason": null,
-  "content_hash": "99e8ec56a450db8bdde8a58505ba7d46adb1a2159dced37da9f775113f4a4fb1",
+  "content_hash": "6a019685f6730704f45e5735b2fd074200db480ba7dbca4addd7fdd1d248949f",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1023,7 +1023,7 @@
  },
  "beta/BT-003 Layla Hassan/2026-10-08": {
   "closed_reason": null,
-  "content_hash": "9f50f0ebaa2c2a3cbe199e2003f3063ab2099da3fcfde09598c7f772a29a5953",
+  "content_hash": "9c45fc7aff92cf3bd767c64df0f0778789b745e96a7cc0812c1cd87ff30bc8ca",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1043,7 +1043,7 @@
  },
  "beta/BT-003 Layla Hassan/2026-10-09": {
   "closed_reason": null,
-  "content_hash": "b2ee3ed1deffafb2cbff0eeac6373d980d8d0261a99b59fadfa2c9e47e56cdef",
+  "content_hash": "edb81d41af4c5404225e8e6542e4cd86ba2c63a37c02e07bb75d16f88bf5c1c1",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1063,7 +1063,7 @@
  },
  "beta/BT-003 Layla Hassan/2026-10-12": {
   "closed_reason": null,
-  "content_hash": "86b8a1ae120316dbaee835e9e970fb642859f28a2795270d3cdc067ec2b78c99",
+  "content_hash": "21f87e04ca293f4c196363f3bf7fc027293e66ba40f57e9f06a7a307f29cb8b9",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1083,7 +1083,7 @@
  },
  "beta/BT-003 Layla Hassan/2026-10-13": {
   "closed_reason": null,
-  "content_hash": "a0584805aaca837fcd48d82ac37036e91c0bf84a829574204008b386b686383b",
+  "content_hash": "9649a9765a22d58a2be42894e392c4b4dc8ce795c7c6d0dcfc222b073fd4635f",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1103,7 +1103,7 @@
  },
  "beta/BT-003 Layla Hassan/2026-10-14": {
   "closed_reason": null,
-  "content_hash": "e39828f1f1e988369acfc1be32e9d48daaa22d6667abf94a074eb7ff448de008",
+  "content_hash": "8bfc8e034c55be76dae576ae4c99d02b988b43d2a496c936114d6f2229b5fcce",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1123,7 +1123,7 @@
  },
  "beta/BT-003 Layla Hassan/2026-10-15": {
   "closed_reason": null,
-  "content_hash": "c1accd6278cbc5f268d4a4a8439464a34228f532fd5fb18d3402dcb78c1997c5",
+  "content_hash": "a091e190c18f33025d5a205bc7cae8fbc414dc67e445b88ecfa297d0252196a5",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1143,7 +1143,7 @@
  },
  "beta/BT-003 Layla Hassan/2026-10-16": {
   "closed_reason": null,
-  "content_hash": "ecad15496be4ca37d8cf60117f09df8ec294fc0adbd7e3185cfc04e0edbb65d4",
+  "content_hash": "4329c059febe5c1c8557a57531f252742e4fb2f8518d49e1d54d4d360459e5a0",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1163,7 +1163,7 @@
  },
  "beta/BT-004 Maria Santos/2026-10-05": {
   "closed_reason": null,
-  "content_hash": "4bc5faf2e5076224125b3f05a043edfbfecfd7e574f1a515185b3bbe9712b79b",
+  "content_hash": "5cf94314a74c275d8a5fd1b3d06cbe596ea5d0501b017c214bf9a40f1a4b0817",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1183,7 +1183,7 @@
  },
  "beta/BT-004 Maria Santos/2026-10-06": {
   "closed_reason": null,
-  "content_hash": "e143fce0b9aee7f4fcd5c2381bbe6c8cf007e2bf0de56bff68eb4ebfa4761cca",
+  "content_hash": "9daf10e9db74711bdb30bc61d162eac51dccf174b98e1e29b82a15b278b58fcb",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1203,7 +1203,7 @@
  },
  "beta/BT-004 Maria Santos/2026-10-07": {
   "closed_reason": null,
-  "content_hash": "108c08738fc19f337c0bf26dc61b51bad09a335fa43f80b1ff07867d6933fcf5",
+  "content_hash": "db7e71aae69d6e15b9bfcaba0d6097d7c79fc65d1c7b62ae2124bd4bb9879c0c",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1223,7 +1223,7 @@
  },
  "beta/BT-004 Maria Santos/2026-10-08": {
   "closed_reason": null,
-  "content_hash": "bf53662a7459aaa0fe9defe0b4a645df6cdffdd84e16e7f777a24258911ae1dd",
+  "content_hash": "2e362f711d7013bbee5500132326371e6fac3b60bbd6f15dfab843f1c9dc8a0f",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1243,7 +1243,7 @@
  },
  "beta/BT-004 Maria Santos/2026-10-09": {
   "closed_reason": null,
-  "content_hash": "58ba669ad8e43520b171e881b7ed00a7ce2e7666539a87fcc0cdb999b93053f8",
+  "content_hash": "715fc83396b23a3b4ea2cfe2f8ffb4b9f63ce32a1c6a89ff276f41320f91ff51",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1263,7 +1263,7 @@
  },
  "beta/BT-004 Maria Santos/2026-10-12": {
   "closed_reason": null,
-  "content_hash": "50305549585b7736c8e3853e3b838230275f50d886a370f29895b41afff8ffbf",
+  "content_hash": "80766e2b3e77ec3e04a56c002a129cd0b6173114de85105878d8eb518fd1744f",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1283,7 +1283,7 @@
  },
  "beta/BT-004 Maria Santos/2026-10-13": {
   "closed_reason": null,
-  "content_hash": "8caf9beece605dd3dee74936aaa18f0d982cf36f5fe5a01d3eabd580058616d4",
+  "content_hash": "ee31502873686c55ed2341529882c53ba7839989f297d38ed2b15bfc9e5d6bcf",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1303,7 +1303,7 @@
  },
  "beta/BT-004 Maria Santos/2026-10-14": {
   "closed_reason": null,
-  "content_hash": "3c8cbd48206bf78b0d8d23c846f74c548620c9af114f737623d5e9e3eececf15",
+  "content_hash": "c7efaa6fd336e05b607dbcb84a0eec76877514ed10a1628b68f650904a19cb5d",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1323,7 +1323,7 @@
  },
  "beta/BT-004 Maria Santos/2026-10-15": {
   "closed_reason": null,
-  "content_hash": "e937743545b3e76a2e3012dbc8cddfc84fb95c023e61e64770075a110ab3a324",
+  "content_hash": "cbf3fe00148a735745413dbc33002aa24aa154f89e8478d644112b200dd00f56",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1343,7 +1343,7 @@
  },
  "beta/BT-004 Maria Santos/2026-10-16": {
   "closed_reason": null,
-  "content_hash": "8547aa7d7f1b46622ad8a068d82a51dd7383ee38597cabd74d53d8f341718480",
+  "content_hash": "787525e065bdf2b7a160a9c7796aa07411713e10660e15c20c32613cabf744b3",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1363,7 +1363,7 @@
  },
  "gamma/GT-002 Jordan Lee/2026-10-05": {
   "closed_reason": null,
-  "content_hash": "57f078029f00e6c1b96c020dbb59ec85175040059ea235a19f39cee88e5ebbf6",
+  "content_hash": "4293fcfceda2d9a98ea0f1e4692b31d72615458022a3385c4c55fb96eaacad88",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1383,7 +1383,7 @@
  },
  "gamma/GT-002 Jordan Lee/2026-10-06": {
   "closed_reason": null,
-  "content_hash": "cf2a51aaf3149cee825b1fe8d8eeb53ccd217ba43c6103f5982c1453769b162b",
+  "content_hash": "b15ccb07beb5735d7f6d9b093aa5b4e846d162156113a1ef2194af4c8177affb",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1403,7 +1403,7 @@
  },
  "gamma/GT-002 Jordan Lee/2026-10-07": {
   "closed_reason": null,
-  "content_hash": "12cb4cd3750a6bedfa847d7cd8f457c81555bd0373b770e18113dba26a3aa6a6",
+  "content_hash": "58d7ba5ba14e2ae30cc8531d624cdd124e2e8c103055f4b1a0448af44e720034",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1423,7 +1423,7 @@
  },
  "gamma/GT-002 Jordan Lee/2026-10-08": {
   "closed_reason": null,
-  "content_hash": "cab0021aa4068de3bd57d1055e87c56269380c91dd8ed0c2479c4f618d01cc63",
+  "content_hash": "f1b3b69893f68bc6bdb59d8e58957659a5604a7d01d269bdb7682b1c2840a54a",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1443,7 +1443,7 @@
  },
  "gamma/GT-002 Jordan Lee/2026-10-09": {
   "closed_reason": null,
-  "content_hash": "1186cc04e0d38b3c131249f353da9231ec1515dedb6e6a2e97cd84448ee75b24",
+  "content_hash": "0be7368d5b551a23f17d3dd87e686f1166b5f4c88db3cd50b93811b8bea74cd1",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1463,7 +1463,7 @@
  },
  "gamma/GT-002 Jordan Lee/2026-10-12": {
   "closed_reason": null,
-  "content_hash": "5067fc6b3aa46a3f8813947f98efba96047c2c30b96bdb82ae7b07cf04813bf8",
+  "content_hash": "61bedc4f7157b8f1531af98b59111d573d10dc06644bb0770a221c630c4e9aba",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1483,7 +1483,7 @@
  },
  "gamma/GT-002 Jordan Lee/2026-10-13": {
   "closed_reason": null,
-  "content_hash": "43cfa746fb49b46cbaa35f044d9b845523e984dd3b10b67c41622f4b91a0dd62",
+  "content_hash": "c323d9d4d7921842abbbce0d4dd788ecf45052af0d1e1b6b9cf8b609d5243876",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1503,7 +1503,7 @@
  },
  "gamma/GT-002 Jordan Lee/2026-10-14": {
   "closed_reason": null,
-  "content_hash": "f6689b24a39c3b4f76a074ab801bed29cd031faa96074553a75b47a66b05ae63",
+  "content_hash": "d5e6c42b677550bd4598cf32d1f5e293b5570611e387cabde31d3fe011f03031",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1523,7 +1523,7 @@
  },
  "gamma/GT-002 Jordan Lee/2026-10-15": {
   "closed_reason": null,
-  "content_hash": "f32b3b560c4aae2baa79e0e0503ed0f9095cb555ec8b21b1f7660e6bdb44e1c1",
+  "content_hash": "aef58827e3b18131cff88d2a92e35377530d1f29db1e6554676ab2c31e278440",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1543,7 +1543,7 @@
  },
  "gamma/GT-002 Jordan Lee/2026-10-16": {
   "closed_reason": null,
-  "content_hash": "e20eb39c85b41b2cfcc4eaf52d1b8750c11d769b32c7109632f2e6019bf5a308",
+  "content_hash": "40988d144691b3fc3f65f4be3028bb3b64bb3a1406b58d58a4421d78d0173d41",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1563,7 +1563,7 @@
  },
  "gamma/GT-003 Carlos Diaz/2026-10-05": {
   "closed_reason": null,
-  "content_hash": "30841287487411405c325f80583566f7ed809b4ea038b54af825e515b4289993",
+  "content_hash": "6e13c19500f88e296900f8be5f8659d64060280edceae374ae742aaf630882b6",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1583,7 +1583,7 @@
  },
  "gamma/GT-003 Carlos Diaz/2026-10-06": {
   "closed_reason": null,
-  "content_hash": "d42b0be262a8322b2370cfcd8e0c5f0fe0db79ae7684c08f89a39191d826de8c",
+  "content_hash": "87a3c61bc5398fcad91767c0f8e556998f961481f835e9e1bb3afdd338634589",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1603,7 +1603,7 @@
  },
  "gamma/GT-003 Carlos Diaz/2026-10-07": {
   "closed_reason": null,
-  "content_hash": "6a4d23193738b593359379bc32d94b998a766fba90e0b12127480f3e295f5ecc",
+  "content_hash": "7b9ab7b592db3542addd24c8ac41b16306d0f1910db01a7ac197de02c2933a3e",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1623,7 +1623,7 @@
  },
  "gamma/GT-003 Carlos Diaz/2026-10-08": {
   "closed_reason": null,
-  "content_hash": "b84a946ec72a050d1837266ff5414280ae43693017e0561afb97c48c3acfee4f",
+  "content_hash": "0e47c529b6689a1d0b61030d595aee889d4689a66cc151460d851e1ca60cdf30",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1643,7 +1643,7 @@
  },
  "gamma/GT-003 Carlos Diaz/2026-10-09": {
   "closed_reason": null,
-  "content_hash": "6c4e3c9bde605a0bb2d100c069921dc34fb000444af6592a82786f9977397533",
+  "content_hash": "33818fe34c3bec648977bf49e23ff12278d72cd2a4fd7ab5073428614bb27031",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1663,7 +1663,7 @@
  },
  "gamma/GT-003 Carlos Diaz/2026-10-12": {
   "closed_reason": null,
-  "content_hash": "3429379daa5c569e8ada0f40bc30a04c1fc6c9ee48fcc3d8619c0da7cbecd328",
+  "content_hash": "7edeee3df4cec24dbb057ab053baf94ee3125ffbfcf8608b346c2b51ae8bbb81",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1683,7 +1683,7 @@
  },
  "gamma/GT-003 Carlos Diaz/2026-10-13": {
   "closed_reason": null,
-  "content_hash": "387d1fb4c2a571cf6db3c66b858de9ccda3846ec16fab56fccad81e0f674e52e",
+  "content_hash": "3075002842f26eee7f5b07690d70fb060fc8003999cc2758136586e733d67ad0",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1703,7 +1703,7 @@
  },
  "gamma/GT-003 Carlos Diaz/2026-10-14": {
   "closed_reason": null,
-  "content_hash": "d9c3451799cc2f5115cb7712c7866cd6f5558f30e9e05ef57a6a05ea9b8b6832",
+  "content_hash": "673ce4efab15fbc71222006f40541d57740a134602a25ff303ee4fbfc849a6fb",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1723,7 +1723,7 @@
  },
  "gamma/GT-003 Carlos Diaz/2026-10-15": {
   "closed_reason": null,
-  "content_hash": "9c684990890d705344d975c644ebba6db61ba332c04206c83b4619cdc59cad35",
+  "content_hash": "bc8f598c85528835388c4e77fc16a2a0d22099454c863d8ed4632e7af7631f3b",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1743,7 +1743,7 @@
  },
  "gamma/GT-003 Carlos Diaz/2026-10-16": {
   "closed_reason": null,
-  "content_hash": "ba4dfb57cfb6f4f8eb21e00924956fee086734f13a03e574cf1fccc7b587004f",
+  "content_hash": "e8a131c5898337c3b16b90e2a4425cc8fba9e87838cc8eab928c59c9e0ad8c32",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {
@@ -1763,7 +1763,7 @@
  },
  "gamma/GT-003 Carlos Diaz/2026-10-19": {
   "closed_reason": null,
-  "content_hash": "01d4ed0138df569ab3742725202d7e68dd3aa9af0b6bd2fb693f6adfcdc13f5c",
+  "content_hash": "c09e485112a38f3f7b86e901180ff39f1c73cc6da143adfb668be82b03f87094",
   "early_exit": false,
   "early_exit_minutes": 0,
   "hours": {

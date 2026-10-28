@@ -52,8 +52,9 @@ SPEC_5_1 = {
     **{f"payroll:statutory:{a}": ({_LE, _C}, "restricted", "yes") for a in ("review", "submit")},
     **{f"payroll:reports:{a}": ({_PG, _LE, _C}, "restricted", "yes") for a in ("read", "export")},
     "payroll:audit:read": ({_C}, "confidential", "no"),
-    "overtime:request": ({_S}, "standard", "no"),
-    "overtime:approve": ({_DR, _RT, _D, _AG, _C}, "standard", "no"),
+    # JC-AS-24 (X-M1): team scopes on the payroll-registered overtime codes; module and semantics unchanged.
+    "overtime:request": ({_S, _DR, _RT, _D, _AG, _C, "TEAM", "TEAM_TREE", "ASSIGNED_TEAMS"}, "standard", "no"),
+    "overtime:approve": ({_DR, _RT, "TEAM", "TEAM_TREE", _D, _AG, "ASSIGNED_TEAMS", _LE, _BR, _C}, "standard", "no"),
     "task:read": ({_S, _DR, _RT, _D, _AG, _C}, "standard", "no"),
     "task:manage": ({_S, _DR, _RT, _D, _AG, _C}, "standard", "no"),
     "task:approve": ({_DR, _RT, _D, _AG, _C}, "standard", "no"),
@@ -105,7 +106,8 @@ def test_every_3_9_5_1_code_is_registered_with_its_scopes_sensitivity_and_full_a
         assert {s.value for s in perm.scopes} == scopes, code
         assert perm.sensitivity == sensitivity, code
         implied = {s.value for s in perm.implied_scopes}
-        expected = {"yes": set(), "except SELF": {_S} & scopes, "no": scopes - {_LE, _BR, _PG}}[excluded]
+        expected = {"yes": set(), "except SELF": {_S} & scopes,
+                    "no": scopes - {_LE, _BR, _PG, "ASSIGNED_TEAMS"}}[excluded]  # targeted scopes never implied
         assert implied == expected, code
         assert perm.payroll_confidential == (excluded != "no"), code
         assert not perm.deprecated, code
@@ -146,11 +148,12 @@ def test_pay_group_scope_is_targeted_and_offered_only_on_payroll_codes():
         Scope.LEGAL_ENTITY: "legal_entity_id", Scope.BRANCH: "branch_id", Scope.PAY_GROUP: "pay_group_id",
     }
     with_pay_group = {p.code for p in reg.PERMISSIONS if Scope.PAY_GROUP in p.scopes}
-    assert with_pay_group and all(code.startswith("payroll:") for code in with_pay_group)
-    for code in ("employee:read", "employee:read_confidential", "attendance:read", "location:read", "leave:read",
+    # JC-AS-24: payroll roles read attendance at PAY_GROUP; every other PAY_GROUP code is a payroll code.
+    assert with_pay_group and all(code.startswith("payroll:") for code in with_pay_group - {"attendance:read"})
+    for code in ("employee:read", "employee:read_confidential", "location:read", "leave:read",
                  "asset:read", "report:read", "employee:update"):
         assert not reg.is_valid_grant(code, _PG), code
-    assert reg.is_valid_grant("payroll:run:read", _PG)
+    assert reg.is_valid_grant("payroll:run:read", _PG) and reg.is_valid_grant("attendance:read", _PG)
 
 
 def test_default_roles_are_valid_and_only_payroll_roles_hold_confidential_payroll_codes():
@@ -167,7 +170,7 @@ def test_default_roles_are_valid_and_only_payroll_roles_hold_confidential_payrol
             assert confidential == {("payroll:reports:read", _C)}
         else:
             assert not confidential, (role.system_key, confidential)
-    assert reg.REGISTRY_VERSION == "2026.10.4"
+    assert reg.REGISTRY_VERSION >= "2026.10.4"  # pinned per version in tests/payroll_unit/registry_versions.json
 
 
 def test_default_role_contents_follow_3_9_5_3():
@@ -353,8 +356,7 @@ def test_pay_group_grants_accepted_on_payroll_codes_and_rejected_elsewhere(app):
     assert ok.status_code == 200, ok.text
     assert {(g["permission"], g["scope"]) for g in ok.json()["grants"]} == {
         ("payroll:run:read", _PG), ("payroll:compensation:read", _PG)}
-    for code in ("employee:read", "attendance:read", "leave:read", "location:read", "asset:read",
-                 "payroll:payment:prepare"):
+    for code in ("employee:read", "leave:read", "location:read", "asset:read", "payroll:payment:prepare"):
         r = founder.post("/api/v1/roles", json={"name": f"Bad {code}", "grants": [{"permission": code, "scope": "PAY_GROUP"}]})
         assert r.status_code == 400, code
     catalog = founder.get("/api/v1/permissions").json()
@@ -447,7 +449,8 @@ def test_payroll_audit_rows_hidden_without_payroll_audit_read(app):
     hr_view = _audit(hr)
     assert not any(r["module"] in PAYROLL_AUDIT_MODULES for r in hr_view["logs"])
     assert hr_view["total"] == len(hr_view["logs"])
-    assert _audit(hr, module="Payroll Runs") == {"total": 0, "logs": []}
+    hidden = _audit(hr, module="Payroll Runs")
+    assert (hidden["total"], hidden["logs"]) == (0, [])
     assert _audit(hr, module="Payroll Roles")["total"] == 0
     # Every payroll-module row of this tenant (the three planted above, the founder's payroll role grant and
     # whatever signup provisioning wrote), counted independently of the API under test.
@@ -488,7 +491,9 @@ def test_last_company_wide_payroll_approver_is_protected(app):
     db = SessionLocal()
     try:
         bind_tenant(db, founder.company_id)
-        last = _sql("SELECT a.user_id FROM user_role_assignments a WHERE a.role_id = :r", r=approver_role)[0][0]
+        # Ended windows stay as history (X 01 §6.7, BUG-AS-48): the remaining approver holds the open one.
+        last = _sql("SELECT a.user_id FROM user_role_assignments a WHERE a.role_id = :r "
+                    "AND (a.effective_until IS NULL OR a.effective_until > now())", r=approver_role)[0][0]
         with pytest.raises(AppError) as exc:
             rbac_service.assert_not_last_payroll_approver(db, founder.company_id, last)
         assert exc.value.code == "LAST_PAYROLL_APPROVER"
@@ -509,13 +514,28 @@ def test_payroll_approver_can_go_when_nobody_creates_runs(app):
 # ---------------------------------------------------------------------------
 # Data migration 0010 (EC-MIG-07, EC-MIG-08)
 # ---------------------------------------------------------------------------
+LATER_GRANT_REVISIONS = ("0033_tax_profiles_unclaimed", "0042_as_m1_permissions", "0048_x_m1_permissions",
+                         "0050_as_m2_sites_consents")
+
+
 def _later_grants(key):
     """Default-role grants added by migrations after 0010 (each lists them in NEW_GRANTS): 0010 is history and
-    stays frozen, the registry defaults are 0010's literals plus these explicit later additions."""
-    spec = importlib.util.spec_from_file_location("m0033", ROOT / "alembic" / "versions" / "0033_tax_profiles_unclaimed.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return set(module.NEW_GRANTS.get(key, ()))
+    stays frozen, the registry defaults are 0010's literals plus these explicit later additions (0033 tax profiles,
+    0038 LH-M1 holiday codes, 0042 AS-M1 shift / roster codes, 0048 X-M1 team codes and JC-AS-24)."""
+    grants = set()
+    for revision in LATER_GRANT_REVISIONS:
+        spec = importlib.util.spec_from_file_location(f"m{revision[:4]}", ROOT / "alembic" / "versions" / f"{revision}.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        grants |= set(module.NEW_GRANTS.get(key, ()))
+    spec = importlib.util.spec_from_file_location("m0038", ROOT / "alembic" / "versions" / "0038_lh_m1_permissions.py")
+    lh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lh)
+    if key in lh.SELF_SERVICE_ROLES:
+        grants.add(("holiday:choose_optional", "SELF"))
+    if key == "hr_admin":
+        grants.add(("holiday:publish", "COMPANY"))  # 0038: every holder of holiday:manage COMPANY
+    return grants
 
 
 def test_migration_literals_match_registry_2026_10_4():

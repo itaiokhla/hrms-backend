@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core import authz, storage
 from app.core.errors import bad_request
 from app.core.principal import Principal, get_principal, require, require_any
-from app.core.rate_limit import client_ip
+from app.core.rate_limit import client_ip, limiter
 from app.database.db import get_db
 from app.modules.face_recognition import engine as face_engine
 from app.schemas.admin import ManualAttendance
@@ -38,7 +38,13 @@ def _parse_meta(raw: Optional[str]) -> Optional[EventMeta]:
         raise RequestValidationError([{**err, "loc": ("meta", *err["loc"])} for err in exc.errors()])
 
 
+# Punch endpoints 20 / min per user and the operator kiosk 60 / min per operator (AS 07 §10, spine §8.1; BUG-AS-62).
+LEGACY_PUNCH_PER_MINUTE = 20
+KIOSK_SCAN_PER_MINUTE = 60
+
+
 async def _act(action: str, request: Request, file, meta, principal: Principal, db: Session) -> dict:
+    limiter.check(f"punch-legacy:{principal.company_id}:{principal.user_id}", LEGACY_PUNCH_PER_MINUTE, 60)
     image = await _optional_image(file)
     result = attendance_service.perform(db, principal, action, image, _parse_meta(meta), client_ip(request))
     db.commit()
@@ -131,6 +137,7 @@ def update_policy(data: Dict[str, Any] = Body(...), principal: Principal = Depen
 @router.post("/attendance/kiosk/scan")
 async def kiosk_scan(request: Request, file: UploadFile = File(...),
                      principal: Principal = Depends(require("attendance:kiosk")), db: Session = Depends(get_db)):
+    limiter.check(f"kiosk-scan:{principal.company_id}:{principal.user_id}", KIOSK_SCAN_PER_MINUTE, 60)
     data, _ = await storage.read_image_upload(file)
     result = attendance_service.kiosk_scan(db, principal, data, client_ip(request))
     db.commit()

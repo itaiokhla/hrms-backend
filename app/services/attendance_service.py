@@ -16,8 +16,10 @@ acting twice. Hours are always computed by attendance_hours.compute.
 """
 
 import json
+from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pytz
 from fastapi import status as http_status
@@ -32,10 +34,9 @@ from app.core.principal import Principal
 from app.models.attendance import Attendance, AttendanceBreak, AttendanceEvent
 from app.models.company import Company
 from app.models.employee import Department, Employee, FaceEncoding, Shift
-from app.models.leave import Leave
 from app.modules.face_recognition import engine as face_engine
 from app.schemas.attendance import EventMeta
-from app.services import attendance_hours, attendance_policy, location_service, settings_service
+from app.services import attendance_hours, attendance_policy, attendance_sessions, location_service, settings_service
 from app.services.attendance_policy import AttendancePolicy
 from app.services.audit_log_service import AuditLogService
 
@@ -45,7 +46,41 @@ ATTENDANCE_LOCK_NAMESPACE = 4243
 NOT_PUNCHED_IN, WORKING, ON_LUNCH, PUNCHED_OUT = "NOT_PUNCHED_IN", "WORKING", "ON_LUNCH", "PUNCHED_OUT"
 LEGACY_STATE = {NOT_PUNCHED_IN: "not_checked_in", WORKING: "working", ON_LUNCH: "working", PUNCHED_OUT: "completed"}
 ACTIONS = ("PUNCH_IN", "LUNCH_IN", "LUNCH_OUT", "PUNCH_OUT")
-LIVE_CONSTRAINTS = ("uq_attendance_employee_day", "uq_attendance_one_live_session")
+LIVE_CONSTRAINTS = ("uq_attendance_employee_day_seq", "uq_attendance_one_live_session")
+# Punch direction of each legacy action (spine §3.13 PUNCH_DIRECTIONS; 01 §4.1).
+DIRECTION_OF = {"PUNCH_IN": "IN", "PUNCH_OUT": "OUT", "LUNCH_IN": "BREAK_START", "LUNCH_OUT": "BREAK_END"}
+ACTION_OF = {v: k for k, v in DIRECTION_OF.items()}
+
+
+@dataclass
+class Capture:
+    """How a punch was captured (AS-M2): written to attendance_punches and the session (spine §3.1, §3.2).
+
+    Legacy callers get the defaults of their lowercase source; ``attendance_capture`` fills the v2 fields.
+    ``punch_id`` is set by the transition that wrote the punch.
+    """
+
+    source: str = "WEB"  # CAPTURE_SOURCES
+    multiple_sessions_allowed: bool = False
+    verify_mode: Optional[str] = None
+    device_id: Optional[int] = None
+    site_id: Optional[int] = None
+    geofence_result: str = "NOT_CHECKED"
+    evidence_flags: Tuple[str, ...] = ()
+    ip: Optional[str] = None
+    work_mode: str = "ON_SITE"
+    skip_face: bool = False
+    # The capture policy overlaid on the company settings (attendance_capture_policy.as_attendance_policy); None = the
+    # company attendance policy, as for the legacy endpoints.
+    attendance_policy: object = field(default=None, repr=False)
+    punch_id: Optional[int] = None
+    shift_instance: object = field(default=None, repr=False)
+
+    @classmethod
+    def legacy(cls, source: str, ip: Optional[str] = None) -> "Capture":
+        from app.models.attendance import CAPTURE_OF_SOURCE
+
+        return cls(source=CAPTURE_OF_SOURCE.get(source, "WEB"), ip=ip)
 
 
 def _company(db: Session, principal: Principal) -> Company:
@@ -83,7 +118,8 @@ def lock_employee(db: Session, employee_id: int) -> None:
 
 def live_session(db: Session, employee_id: int, lock: bool = False) -> Optional[Attendance]:
     query = db.query(Attendance).filter(
-        Attendance.employee_id == employee_id, Attendance.check_out_time.is_(None), Attendance.closed_at.is_(None)
+        Attendance.employee_id == employee_id, Attendance.check_out_time.is_(None), Attendance.closed_at.is_(None),
+        Attendance.voided_at.is_(None),
     )
     if lock:
         query = query.with_for_update()
@@ -93,7 +129,7 @@ def live_session(db: Session, employee_id: int, lock: bool = False) -> Optional[
 def _record_for_day(db: Session, employee_id: int, day: date) -> Optional[Attendance]:
     return (
         db.query(Attendance)
-        .filter(Attendance.employee_id == employee_id, Attendance.date == day)
+        .filter(Attendance.employee_id == employee_id, Attendance.date == day, Attendance.voided_at.is_(None))
         .order_by(Attendance.check_in_time.desc())
         .first()
     )
@@ -123,7 +159,7 @@ def breaks_by_session(db: Session, attendance_ids) -> Dict[int, List[AttendanceB
 
 
 def is_live(record: Attendance) -> bool:
-    return record.check_out_time is None and record.closed_at is None
+    return record.check_out_time is None and record.closed_at is None and record.voided_at is None
 
 
 def hours_for(record: Attendance, breaks: List[AttendanceBreak], now: datetime) -> attendance_hours.Hours:
@@ -145,6 +181,8 @@ def content(record: Attendance, breaks: List[AttendanceBreak]) -> dict:
         "check_in_time": record.check_in_time, "check_out_time": record.check_out_time,
         "closed_at": record.closed_at, "closed_reason": record.closed_reason, "shift_id": record.shift_id,
         "late_minutes": record.late_minutes, "early_exit_minutes": record.early_exit_minutes,
+        # AS-M2 (spine §3.1, A-18): a void, a second session or a source change is a new version.
+        "voided_at": record.voided_at, "session_seq": record.session_seq, "capture_source": record.capture_source,
         "breaks": sorted(
             [{"kind": b.kind, "started_at": b.started_at, "ended_at": b.ended_at, "is_paid": bool(b.is_paid)} for b in breaks],
             key=lambda b: (b["started_at"], b["ended_at"] or b["started_at"])),
@@ -216,29 +254,30 @@ def session_state(record: Optional[Attendance], breaks: List[AttendanceBreak]) -
 
 
 def _insert_day(db: Session, record: Attendance) -> Attendance:
-    """Insert a person's record for a day; of two concurrent inserts, the second gets a 409."""
+    """Insert a person's session; of two concurrent inserts the second gets a 409 (``ALREADY_CHECKED_IN`` for the
+    same date and number or a second live session, ``SESSION_OVERLAP`` from the overlap trigger), never a 500."""
+    from app.core import db_errors
+
     try:
         with db.begin_nested():
             db.add(record)
             db.flush()
     except IntegrityError as exc:
-        constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
-        if constraint == "uq_attendance_employee_day":
-            raise conflict("Attendance for this day has already been recorded.", "ALREADY_CHECKED_IN")
-        if constraint == "uq_attendance_one_live_session":
-            raise conflict("This person already has a shift in progress. Close it first.", "ALREADY_CHECKED_IN")
+        error = db_errors.map_integrity(exc)
+        if error is not None:
+            raise error
         raise
     return record
 
 
 def _event(db: Session, record: Attendance, event_type: str, now: datetime, source: str, actor: Optional[int],
            *, key: Optional[str] = None, score: Optional[float] = None, location_status: str = "NOT_APPLICABLE",
-           note: Optional[str] = None, details: Optional[dict] = None) -> AttendanceEvent:
+           note: Optional[str] = None, details: Optional[dict] = None, punch_id: Optional[int] = None) -> AttendanceEvent:
     event = AttendanceEvent(
         company_id=record.company_id, attendance_id=record.id, employee_id=record.employee_id,
         event_type=event_type, occurred_at=now, source=source, actor_user_id=actor, idempotency_key=key,
         face_match_score=score, location_status=location_status, note=note,
-        details=json.dumps(details, default=str) if details else None,
+        details=json.dumps(details, default=str) if details else None, punch_id=punch_id,
     )
     db.add(event)
     db.flush()
@@ -252,6 +291,7 @@ def expire_if_needed(db: Session, record: Attendance, policy: AttendancePolicy, 
     location_service.stop_tracking(db, record, policy, min(now, record.check_in_time + policy.max_shift), "SHIFT_EXPIRED")
     record.closed_at = now
     record.closed_reason = "MISSING_PUNCH_OUT"
+    record.occupied_until = attendance_sessions.occupied_until(record, policy.max_shift_hours)
     _event(db, record, "SESSION_CLOSED", now, "system", None,
            note=f"No punch-out within {policy.max_shift_hours} hours; closed for HR correction")
     record_version(db, record, "UPDATED", None)
@@ -284,10 +324,10 @@ def _encode_or_400(image: bytes) -> str:
 def verify_own_face(db: Session, employee: Employee, image: bytes) -> float:
     """1:1 verification of the signed-in employee against their own enrolment."""
     probe = _encode_or_400(image)
-    candidates = [
-        (e.employee_id, e.encoding)
-        for e in db.query(FaceEncoding).filter(FaceEncoding.employee_id == employee.id).all()
-    ]
+    from app.services import attendance_faces
+
+    candidates = attendance_faces.candidates(
+        db, db.query(FaceEncoding).filter(FaceEncoding.employee_id == employee.id).all())
     if not candidates:
         raise bad_request("Your face is not enrolled yet. Ask HR to register it.", "FACE_NOT_ENROLLED")
     match = face_engine.best_match(probe, candidates, app_settings.face_recognition_threshold)
@@ -310,19 +350,53 @@ def _face_score(db: Session, employee: Employee, action: str, image: Optional[by
 # ---------------------------------------------------------------------------
 # Transitions
 # ---------------------------------------------------------------------------
-def _punch_in(db, principal, company, employee, policy, meta: EventMeta, score, now, source="self") -> Attendance:
+def _placement(db: Session, employee: Employee, day: date):
+    from app.models.org import EmployeeAssignment
+
+    return (db.query(EmployeeAssignment)
+            .filter(EmployeeAssignment.company_id == employee.company_id, EmployeeAssignment.employee_id == employee.id,
+                    EmployeeAssignment.is_primary.is_(True), EmployeeAssignment.effective_from <= day)
+            .order_by(EmployeeAssignment.effective_from.desc(), EmployeeAssignment.id.desc()).first())
+
+
+def _write_punch(db: Session, record: Attendance, employee: Employee, capture: "Capture", direction: str,
+                 now: datetime, meta: EventMeta, score) -> int:
+    """The raw punch of an interactive transition (spine §3.2, 01 §3.1), linked to its session."""
+    verify = capture.verify_mode or ("FACE" if score is not None else "NONE")
+    punch = attendance_sessions.record_punch(
+        db, company_id=record.company_id, employee_id=employee.id, source=capture.source, direction=direction,
+        occurred_at=now, session=record, shift_date=record.date, idempotency_key=meta.idempotency_key,
+        client_sent_at=meta.client_sent_at, verify_mode=verify, face_match_score=score, device_id=capture.device_id,
+        site_id=capture.site_id, geofence_result=capture.geofence_result, evidence_flags=capture.evidence_flags,
+        ip=capture.ip,
+    )
+    attendance_sessions.apply_interactive(db, record.company_id, punch, capture.shift_instance, record)
+    capture.punch_id = punch.id
+    return punch.id
+
+
+def _punch_in(db, principal, company, employee, policy, meta: EventMeta, score, now, source="self",
+              capture: Optional[Capture] = None) -> Attendance:
+    capture = capture or Capture.legacy(source)
     if live_session(db, employee.id) is not None:
         raise conflict("Already checked in today.", "ALREADY_CHECKED_IN")
-    day = local_today(company, now)
-    if _record_for_day(db, employee.id, day) is not None:
-        raise conflict("Attendance for today is complete.", "ALREADY_CHECKED_IN")
+    # Shift date = start date of the matched instance in the work zone (BUG-AS-02); one session per date unless the
+    # capture policy allows several (v1 tenants never do, spine §3.1 legacy guard).
+    shift = attendance_sessions.resolve_shift_date(db, company.id, employee, now, "IN")
+    seq = attendance_sessions.next_session_seq(db, company.id, employee.id, shift.date,
+                                               capture.multiple_sessions_allowed)
+    attendance_sessions.check_overlap(db, company.id, employee.id, now, None)
+    capture.shift_instance = shift.instance
     if source == "self" and (policy.tracking_enabled or policy.location_punch != "OFF") and not meta.location_consent:
         raise bad_request("Please acknowledge the location notice before punching in.", "LOCATION_NOTICE_REQUIRED")
     location = location_service.evaluate_event(policy, "PUNCH_IN", meta.location, meta.exception_reason, now,
                                                meta.client_sent_at, source)
+    placement = _placement(db, employee, shift.date)
     record = _insert_day(db, Attendance(
-        company_id=company.id, employee_id=employee.id, check_in_time=now, date=day, shift_id=employee.shift_id,
-        face_match_score=score, is_manual=False, source=source,
+        company_id=company.id, employee_id=employee.id, check_in_time=now, date=shift.date, shift_id=employee.shift_id,
+        face_match_score=score, is_manual=False, source=source, capture_source=capture.source, session_seq=seq,
+        work_timezone=shift.work_timezone, shift_version_id=shift.shift_version_id, work_mode=capture.work_mode,
+        legal_entity_id=getattr(placement, "legal_entity_id", None), branch_id=getattr(placement, "branch_id", None),
         status=_status_for_check_in(db, company, employee, now), recorded_by_user_id=principal.user_id,
     ))
     if policy.tracking_enabled:
@@ -330,13 +404,18 @@ def _punch_in(db, principal, company, employee, policy, meta: EventMeta, score, 
             location_service.start_tracking(record, policy, now)
         else:
             record.tracking_stop_reason = "KIOSK_SESSION"
+    punch_id = _write_punch(db, record, employee, capture, "IN", now, meta, score)
     event = _event(db, record, "PUNCH_IN", now, source, principal.user_id, key=meta.idempotency_key, score=score,
-                   location_status=location.event_status, details=location_service.event_details(location))
+                   location_status=location.event_status, details=location_service.event_details(location),
+                   punch_id=punch_id)
     location_service.record_event_sample(db, record, event, location, policy, now, meta.client_sent_at)
     return record
 
 
-def _lunch_in(db, principal, company, employee, policy, meta: EventMeta, score, now, live) -> Attendance:
+def _lunch_in(db, principal, company, employee, policy, meta: EventMeta, score, now, live,
+              capture: Optional[Capture] = None) -> Attendance:
+    capture = capture or Capture.legacy("self")
+    source = "kiosk" if capture.source == "KIOSK" else "self"
     if live is None:
         raise conflict("Punch in before starting lunch.", "NOT_CHECKED_IN")
     breaks = breaks_by_session(db, [live.id])[live.id]
@@ -345,39 +424,49 @@ def _lunch_in(db, principal, company, employee, policy, meta: EventMeta, score, 
     if breaks and not policy.allow_multiple_lunches:
         raise conflict("Your company allows one lunch break per shift.", "LUNCH_LIMIT")
     location = location_service.evaluate_event(policy, "LUNCH_IN", meta.location, meta.exception_reason, now,
-                                               meta.client_sent_at, "self")
+                                               meta.client_sent_at, source)
+    punch_id = _write_punch(db, live, employee, capture, "BREAK_START", now, meta, score)
     db.add(AttendanceBreak(
         company_id=live.company_id, attendance_id=live.id, employee_id=employee.id, kind="LUNCH", started_at=now,
-        is_paid=policy.lunch_is_paid, created_by_user_id=principal.user_id,
+        is_paid=policy.lunch_is_paid, created_by_user_id=principal.user_id, start_punch_id=punch_id,
     ))
     db.flush()
-    event = _event(db, live, "LUNCH_IN", now, "self", principal.user_id, key=meta.idempotency_key, score=score,
-                   location_status=location.event_status, details=location_service.event_details(location))
+    event = _event(db, live, "LUNCH_IN", now, source, principal.user_id, key=meta.idempotency_key, score=score,
+                   location_status=location.event_status, details=location_service.event_details(location),
+                   punch_id=punch_id)
     location_service.record_event_sample(db, live, event, location, policy, now, meta.client_sent_at)
     if policy.pause_on_lunch:
         location_service.pause_tracking(db, live, policy, now)
     return live
 
 
-def _lunch_out(db, principal, company, employee, policy, meta: EventMeta, score, now, live) -> Attendance:
+def _lunch_out(db, principal, company, employee, policy, meta: EventMeta, score, now, live,
+               capture: Optional[Capture] = None) -> Attendance:
+    capture = capture or Capture.legacy("self")
+    source = "kiosk" if capture.source == "KIOSK" else "self"
     if live is None:
         raise conflict("Punch in before ending lunch.", "NOT_CHECKED_IN")
     open_break = _open_break(db, live.id)
     if open_break is None:
         raise conflict("You are not on lunch.", "NOT_ON_LUNCH")
     location = location_service.evaluate_event(policy, "LUNCH_OUT", meta.location, meta.exception_reason, now,
-                                               meta.client_sent_at, "self")
+                                               meta.client_sent_at, source)
+    punch_id = _write_punch(db, live, employee, capture, "BREAK_END", now, meta, score)
     open_break.ended_at = now
     open_break.end_reason = "LUNCH_OUT"
+    open_break.end_punch_id = punch_id
     db.flush()
     location_service.resume_tracking(live, policy, now)
-    event = _event(db, live, "LUNCH_OUT", now, "self", principal.user_id, key=meta.idempotency_key, score=score,
-                   location_status=location.event_status, details=location_service.event_details(location))
+    event = _event(db, live, "LUNCH_OUT", now, source, principal.user_id, key=meta.idempotency_key, score=score,
+                   location_status=location.event_status, details=location_service.event_details(location),
+                   punch_id=punch_id)
     location_service.record_event_sample(db, live, event, location, policy, now, meta.client_sent_at)
     return live
 
 
-def _punch_out(db, principal, company, employee, policy, meta: EventMeta, score, now, live, source="self") -> Attendance:
+def _punch_out(db, principal, company, employee, policy, meta: EventMeta, score, now, live, source="self",
+               capture: Optional[Capture] = None) -> Attendance:
+    capture = capture or Capture.legacy(source)
     if live is None:
         raise bad_request("No active check-in found for today.", "NOT_CHECKED_IN")
     if now - live.check_in_time < MIN_SESSION:
@@ -398,11 +487,14 @@ def _punch_out(db, principal, company, employee, policy, meta: EventMeta, score,
         db.flush()  # the break closes before the session does (both are checked by triggers)
     location_service.stop_tracking(db, live, policy, now, "PUNCHED_OUT")
     live.check_out_time = now
+    live.occupied_until = now
     apply_timing(db, company, live)
     db.flush()
+    punch_id = _write_punch(db, live, employee, capture, "OUT", now, meta, score)
     record_version(db, live, "UPDATED", principal.user_id)
     event = _event(db, live, "PUNCH_OUT", now, source, principal.user_id, key=meta.idempotency_key, score=score,
-                   location_status=location.event_status, note=note, details=location_service.event_details(location))
+                   location_status=location.event_status, note=note, details=location_service.event_details(location),
+                   punch_id=punch_id)
     location_service.record_event_sample(db, live, event, location, policy, now, meta.client_sent_at)
     return live
 
@@ -413,8 +505,11 @@ _VERBS = {"PUNCH_IN": "punched in", "PUNCH_OUT": "punched out", "LUNCH_IN": "sta
 
 
 def perform(db: Session, principal: Principal, action: str, image: Optional[bytes], meta: Optional[EventMeta],
-            ip: Optional[str]) -> dict:
-    """Run one self-service transition and return the employee's fresh attendance view."""
+            ip: Optional[str], *, capture: Optional[Capture] = None) -> dict:
+    """Run one self-service transition and return the employee's fresh attendance view.
+
+    Every transition writes one attendance_punches row (source WEB for the legacy endpoints; ``capture`` from
+    ``attendance_capture.punch`` for ``POST /attendance/me/punch``)."""
     if action not in ACTIONS:
         raise bad_request("Unknown attendance action.")
     if not principal.has("attendance:mark"):
@@ -423,13 +518,14 @@ def perform(db: Session, principal: Principal, action: str, image: Optional[byte
     if not employee.is_active:
         raise forbidden("Your employment record is inactive.")
     company = _company(db, principal)
-    policy = attendance_policy.load(db, company.id)
+    capture = capture or Capture.legacy("self", ip)
+    policy = capture.attendance_policy or attendance_policy.load(db, company.id)
     meta = meta or EventMeta()
-    score = _face_score(db, employee, action, image, policy)
+    score = None if capture.skip_face else _face_score(db, employee, action, image, policy)
 
     lock_employee(db, employee.id)
     # Re-read under the lock: a policy changed while the face was being checked applies to this action.
-    policy = attendance_policy.load(db, company.id)
+    policy = capture.attendance_policy or attendance_policy.load(db, company.id)
     if meta.idempotency_key:
         previous = db.query(AttendanceEvent).filter(
             AttendanceEvent.employee_id == employee.id, AttendanceEvent.idempotency_key == meta.idempotency_key
@@ -443,13 +539,15 @@ def perform(db: Session, principal: Principal, action: str, image: Optional[byte
     live = live_session(db, employee.id, lock=True)
     if live is not None and expire_if_needed(db, live, policy, now):
         live = None
-    if action != "PUNCH_IN" and meta.attendance_id is not None and (live is None or live.id != meta.attendance_id):
+    # Step 9 of 01 §4.2: the stale-tab guard applies only while a live session exists; without one the transition
+    # answers 400 NOT_CHECKED_IN (EC AS-CAP-01 (b)).
+    if action != "PUNCH_IN" and meta.attendance_id is not None and live is not None and live.id != meta.attendance_id:
         raise conflict("Your attendance changed in another tab or device. The page has been refreshed.", "STALE_SESSION")
 
     if action == "PUNCH_IN":
-        record = _punch_in(db, principal, company, employee, policy, meta, score, now)
+        record = _punch_in(db, principal, company, employee, policy, meta, score, now, capture=capture)
     else:
-        record = _HANDLERS[action](db, principal, company, employee, policy, meta, score, now, live)
+        record = _HANDLERS[action](db, principal, company, employee, policy, meta, score, now, live, capture=capture)
     AuditLogService.log(db, principal, "Attendance", _AUDIT[action], f"{employee.full_name} {_VERBS[action]}",
                         "attendance", record.id, ip)
     # Backwards compatible: the record acted on at the top level (as before), plus the fresh view.
@@ -472,17 +570,17 @@ def kiosk_scan(db: Session, principal: Principal, image: bytes, ip: Optional[str
     if not principal.has_company_scope("attendance:kiosk"):
         raise forbidden()
     probe = _encode_or_400(image)
-    candidates = [
-        (e.employee_id, e.encoding)
-        for e in db.query(FaceEncoding)
-        .join(Employee, Employee.id == FaceEncoding.employee_id)
-        .filter(
-            FaceEncoding.company_id == principal.company_id,
-            FaceEncoding.is_primary.is_(True),
-            Employee.is_active.is_(True),
-        )
-        .all()
-    ]
+    from app.services import attendance_consents, attendance_faces
+
+    rows = (db.query(FaceEncoding).join(Employee, Employee.id == FaceEncoding.employee_id)
+            .filter(FaceEncoding.company_id == principal.company_id, FaceEncoding.is_primary.is_(True),
+                    Employee.is_active.is_(True)).all())
+    # B-7: 1:N only among employees whose face step is allowed today (consent, or a legacy enrolment in its grace
+    # under the LEGACY_V1 policy of the operator kiosk).
+    today = local_today(_company(db, principal), _now())
+    rows = [r for r in rows if attendance_consents.face_allowed(db, principal.company_id, r.employee_id, today,
+                                                                 profile="LEGACY_V1")]
+    candidates = attendance_faces.candidates(db, rows)
     if not candidates:
         raise bad_request("No faces are enrolled for this company yet.", "NO_ENROLMENTS")
     match = face_engine.best_match(probe, candidates, app_settings.face_recognition_threshold)
@@ -498,17 +596,20 @@ def kiosk_scan(db: Session, principal: Principal, image: bytes, ip: Optional[str
     if live is not None and expire_if_needed(db, live, policy, now):
         live = None
     if live is None:
-        if _record_for_day(db, employee.id, local_today(company, now)) is not None:
+        shift = attendance_sessions.resolve_shift_date(db, company.id, employee, now, "IN")
+        if attendance_sessions.sessions_on(db, company.id, employee.id, shift.date):
             return {"success": True, "action": "completed", "employee_name": employee.full_name,
                     "message": "Attendance already completed today."}
-        record = _punch_in(db, principal, company, employee, policy, EventMeta(), score, now, source="kiosk")
+        record = _punch_in(db, principal, company, employee, policy, EventMeta(), score, now, source="kiosk",
+                           capture=Capture(source="KIOSK", verify_mode="FACE", ip=ip))
         action, message = "check_in", "Check-in successful"
     else:
         if now - live.check_in_time < MIN_SESSION:
             return {"success": False, "action": "wait", "employee_name": employee.full_name,
                     "message": "Please wait a minute before checking out."}
         # Scanning out at the kiosk is the confirmation: an open lunch ends with the shift.
-        record = _punch_out(db, principal, company, employee, policy, EventMeta(), score, now, live, source="kiosk")
+        record = _punch_out(db, principal, company, employee, policy, EventMeta(), score, now, live, source="kiosk",
+                            capture=Capture(source="KIOSK", verify_mode="FACE", ip=ip))
         action, message = "check_out", "Check-out successful"
     AuditLogService.log(
         db, principal, "Attendance", f"KIOSK_{action.upper()}", f"Kiosk {action.replace('_', ' ')}: {employee.full_name}",
@@ -680,6 +781,7 @@ def record_manual(db: Session, principal: Principal, data) -> Attendance:
     record.notes = data.notes
     record.is_manual = True
     record.source = "manual"
+    record.capture_source = "MANUAL"
     record.recorded_by_user_id = principal.user_id
     if data.check_out_time is not None:
         record.closed_at, record.closed_reason = None, None
@@ -689,13 +791,19 @@ def record_manual(db: Session, principal: Principal, data) -> Attendance:
     if was_live and not is_live(record):
         settle_until = min(now, data.check_out_time) if data.check_out_time else now
         location_service.stop_tracking(db, record, policy, settle_until, "CORRECTED")
+    record.occupied_until = attendance_sessions.occupied_until(record, policy.max_shift_hours)
     if record.id is None:
         _insert_day(db, record)
     else:
+        from app.core import db_errors
+
         try:
             with db.begin_nested():
                 db.flush()
-        except IntegrityError:
+        except IntegrityError as exc:
+            error = db_errors.map_integrity(exc)
+            if error is not None and error.code == "SESSION_OVERLAP":
+                raise error
             raise conflict(f"{employee.full_name} already has a shift in progress.", "ALREADY_CHECKED_IN")
     for item in data.breaks or []:
         db.add(AttendanceBreak(
@@ -708,6 +816,7 @@ def record_manual(db: Session, principal: Principal, data) -> Attendance:
     if is_live(record) and record.tracking_state == location_service.PAUSED and _open_break(db, record.id) is None:
         location_service.resume_tracking(record, policy, now)  # the lunch it was paused for no longer exists
     apply_timing(db, company, record)
+    _manual_punches(db, principal, record, data)
     record_version(db, record, "CREATED" if created else "UPDATED", principal.user_id, bump=not created)
     after = _snapshot(record, breaks_by_session(db, [record.id])[record.id])
     _event(db, record, "CORRECTION", now, "manual", principal.user_id,
@@ -718,6 +827,21 @@ def record_manual(db: Session, principal: Principal, data) -> Attendance:
         description = f"Corrected attendance for {employee.full_name} on {data.date} (was {previous})"
     AuditLogService.log(db, principal, "Attendance", "REGULARIZE", description, "attendance", record.id)
     return record
+
+
+def _manual_punches(db: Session, principal: Principal, record: Attendance, data) -> None:
+    """MANUAL raw punches of an HR entry (v1 shadow input, 01 S-3); the same times again collapse (P-5a)."""
+    if record.status == "absent":
+        return
+    reason = (data.notes or "Manual attendance entry")[:500]
+    for direction, at in (("IN", record.check_in_time), ("OUT", record.check_out_time)):
+        if at is None:
+            continue
+        attendance_sessions.record_punch(
+            db, company_id=record.company_id, employee_id=record.employee_id, source="MANUAL", direction=direction,
+            occurred_at=at, session=record, shift_date=record.date, actor_user_id=principal.user_id or None,
+            reason=reason,
+        )
 
 
 def _summary(record: Attendance, company: Company) -> str:
@@ -754,7 +878,10 @@ def serialize(record: Attendance, employee: Optional[Employee] = None, *, breaks
         "status": record.status,
         "source": record.source,
         "is_manual": record.is_manual,
-        "face_match_score": record.face_match_score,
+        # E3 evidence (07 §8): numeric scores only through the audited reveal (attendance:evidence:read + step-up);
+        # everyone else sees whether a face match ran (E1).
+        "face_match_score": None,
+        "face_verified": record.face_match_score is not None,
         "notes": record.notes,
         "attendance_state": session_state(record, breaks),
         "closed_reason": record.closed_reason,
@@ -857,7 +984,7 @@ def session_detail(db: Session, principal: Principal, attendance_id: int, includ
                         location=location_service.summaries(db, [record.id])[record.id])
     payload["events"] = [
         {"id": e.id, "event_type": e.event_type, "occurred_at": e.occurred_at.isoformat(), "source": e.source,
-         "location_status": e.location_status, "note": e.note, "face_match_score": e.face_match_score}
+         "location_status": e.location_status, "note": e.note, "face_verified": e.face_match_score is not None}
         for e in db.query(AttendanceEvent)
         .filter(AttendanceEvent.attendance_id == record.id)
         .order_by(AttendanceEvent.occurred_at, AttendanceEvent.id)
@@ -951,6 +1078,53 @@ def month_hours(db: Session, employee_id: int, first: date, last: date, include_
     return attendance_hours.total((hours_for(r, breaks[r.id], now) for r in records), include_provisional)
 
 
+def _units(value) -> float:
+    number = float(value)
+    return int(number) if number == int(number) else number
+
+
+def _expectations(db: Session, company_id: int, employee_ids, start: date, end: date) -> dict:
+    """``{(employee_id, date): Expectation}`` from the day resolver (LH 05 §4.2, BUG-12)."""
+    from app.payroll.services import time_inputs
+
+    if not employee_ids:
+        return {}
+    # Dashboards read portions only: the light resolver skips shift minutes and the calendar version.
+    by_employee = time_inputs.expected_presence(db, company_id, sorted(employee_ids), start, end, light=True)
+    return {(employee_id, e.date): e for employee_id, items in by_employee.items() for e in items}
+
+
+def _day_measures(expectations: dict, ids, day: date, present_ids: set) -> dict:
+    """Portion-weighted board figures of one date (LH 05 §4.9; AS K-AS-02 / K-AS-03)."""
+    from app.payroll.services.time_inputs import portion_units
+
+    expected = present_units = on_leave = on_duty = 0
+    present_people = off = worked_off = expected_people = 0
+    for employee_id in ids:
+        e = expectations.get((employee_id, day))
+        if e is None or "NOT_EMPLOYED" in e.reasons:
+            continue
+        units = portion_units(e.expected_portion)
+        expected += units
+        on_leave += portion_units(e.on_leave_portion)
+        if e.working_portion == "NONE":
+            off += 1
+        if units:
+            expected_people += 1
+        if employee_id in present_ids:
+            if units:
+                present_people += 1
+                present_units += units
+            else:
+                worked_off += 1  # worked on approved leave or a non-working day: footnote, not "present"
+        elif units:
+            on_duty += portion_units(e.on_duty_portion)
+    absent = max(expected - present_units - on_duty, 0)
+    return {"expected": expected, "present_people": present_people, "present_units": present_units,
+            "on_leave": on_leave, "on_duty": on_duty, "off": off, "absent": absent,
+            "expected_people": expected_people, "worked_non_working_day": worked_off}
+
+
 def today_summary(db: Session, principal: Principal) -> dict:
     """Live board for the caller's attendance scope (company, team or self)."""
     scope = authz.employee_scope(db, principal, "attendance:read")
@@ -974,36 +1148,32 @@ def today_summary(db: Session, principal: Principal) -> dict:
         .order_by(Attendance.check_in_time.desc())
         .all()
     )
-    on_leave = (
-        db.query(func.count(func.distinct(Leave.employee_id)))
-        .join(Employee, Employee.id == Leave.employee_id)
-        .filter(
-            Leave.company_id == principal.company_id,
-            Leave.status == "approved",
-            Leave.start_date <= today,
-            Leave.end_date >= today,
-            Employee.is_active.is_(True),
-            scope.clause(Employee.id),
-        )
-        .scalar()
-    )
     serialized = serialize_many(db, rows, now)
     present_ids = {a.employee_id for a, _, _ in rows}
     on_lunch = sum(1 for item in serialized if item["attendance_state"] == ON_LUNCH)
     working = sum(1 for item in serialized if item["attendance_state"] == WORKING)
     late = sum(1 for a, _, _ in rows if a.status == "late")
-    present = len(present_ids)
+    # BUG-12 (LH 05 §4.9): expected, absent and on-leave come from the day resolver, portion-weighted; people off
+    # today (weekly off, holiday) are neither expected nor absent.
+    ids = [e.id for e in employees_q.with_entities(Employee.id)]
+    m = _day_measures(_expectations(db, principal.company_id, ids, today, today), ids, today, present_ids)
     return {
         "date": today.isoformat(),
         "total_employees": total,
-        "present_today": present,
-        "absent_today": max(total - present - on_leave, 0),
-        "on_leave": on_leave,
+        "expected_today": _units(m["expected"]),
+        "present_today": m["present_people"],
+        "present_units": _units(m["present_units"]),
+        "absent_today": _units(m["absent"]),
+        "on_leave": _units(m["on_leave"]),
+        "on_duty_today": _units(m["on_duty"]),
+        "off_today": m["off"],
+        "worked_non_working_day": m["worked_non_working_day"],
         "working_now": working,
         "on_lunch_now": on_lunch,
-        "completed_today": present - working - on_lunch,
+        "completed_today": len(present_ids) - working - on_lunch,
         "late_today": late,
-        "attendance_percentage": round(present / total * 100, 1) if total else 0,
+        "attendance_percentage": round(m["present_people"] / m["expected_people"] * 100, 1)
+        if m["expected_people"] else 0,
         "employees": [
             {**item, "department": dept or "-"} for item, (_, _, dept) in list(zip(serialized, rows))[:200]
         ],
@@ -1015,26 +1185,22 @@ def trend(db: Session, principal: Principal, days: int = 7) -> List[dict]:
     company = _company(db, principal)
     today = local_today(company)
     start = today - timedelta(days=days - 1)
-    total = db.query(func.count(Employee.id)).filter(
-        Employee.company_id == principal.company_id, Employee.is_active.is_(True), scope.clause(Employee.id)
-    ).scalar()
-    counts = dict(
-        db.query(Attendance.date, func.count(func.distinct(Attendance.employee_id)))
-        .filter(
-            Attendance.company_id == principal.company_id,
-            Attendance.date >= start,
-            Attendance.date <= today,
-            scope.clause(Attendance.employee_id),
-        )
-        .group_by(Attendance.date)
-        .all()
-    )
+    ids = [i for (i,) in db.query(Employee.id).filter(
+        Employee.company_id == principal.company_id, Employee.is_active.is_(True), scope.clause(Employee.id))]
+    present_by_day: Dict[date, set] = defaultdict(set)
+    for day, employee_id in db.query(Attendance.date, Attendance.employee_id).filter(
+            Attendance.company_id == principal.company_id, Attendance.date >= start, Attendance.date <= today,
+            scope.clause(Attendance.employee_id)):
+        present_by_day[day].add(employee_id)
+    expectations = _expectations(db, principal.company_id, ids, start, today)
     result = []
     for offset in range(days):
         day = start + timedelta(days=offset)
-        present = counts.get(day, 0)
-        result.append({"date": day.isoformat(), "label": day.strftime("%d %b"), "present": present,
-                       "absent": max(total - present, 0)})
+        # BUG-12: absent = expected − present − on-duty per date (weekly offs and holidays are not absences).
+        m = _day_measures(expectations, ids, day, present_by_day.get(day, set()))
+        result.append({"date": day.isoformat(), "label": day.strftime("%d %b"), "present": m["present_people"],
+                       "absent": _units(m["absent"]), "expected": _units(m["expected"]),
+                       "off": m["off"]})
     return result
 
 
@@ -1046,6 +1212,21 @@ def monthly_stats(db: Session, principal: Principal, employee_id: int, year: int
         Attendance.employee_id == employee.id, Attendance.date >= first, Attendance.date <= last
     ).group_by(Attendance.status).all()
     counts = {s: c for s, c in rows}
+    # BUG-12: what the month expected of the employee (portion units) and what stayed unaccounted for.
+    worked = {d for (d,) in db.query(Attendance.date).filter(
+        Attendance.employee_id == employee.id, Attendance.date >= first, Attendance.date <= last)}
+    expectations = _expectations(db, employee.company_id, [employee.id], first, last)
+    from app.payroll.services.time_inputs import portion_units
+
+    expected = unaccounted = 0
+    off = 0
+    for (_, day), e in expectations.items():
+        units = portion_units(e.expected_portion)
+        expected += units
+        if e.working_portion == "NONE" and "NOT_EMPLOYED" not in e.reasons:
+            off += 1
+        if units and day not in worked:
+            unaccounted += max(units - portion_units(e.on_duty_portion), 0)
     return {
         "employee_id": employee.id,
         "year": year,
@@ -1055,6 +1236,9 @@ def monthly_stats(db: Session, principal: Principal, employee_id: int, year: int
         "half_day": counts.get("half-day", 0),
         "absent": counts.get("absent", 0),
         "hours": month_hours(db, employee.id, first, last),
+        "expected_days": _units(expected),
+        "off_days": off,
+        "unaccounted_days": _units(unaccounted),
     }
 
 
@@ -1084,6 +1268,17 @@ def recent_activity(db: Session, principal: Principal, limit: int = 10) -> List[
 # ---------------------------------------------------------------------------
 def enroll_face(db: Session, principal: Principal, employee_id: int, image: bytes, ext: str, make_primary: bool = True) -> dict:
     employee = authz.ensure_employee_access(db, principal, "face:enroll", employee_id)
+    from datetime import timedelta as _days
+
+    from app.services import attendance_consents, attendance_faces, org_structure_service
+
+    # Consent gate on enrolment (BUG-AS-19, 07 §5.1, T-09): a GRANTED BIOMETRIC_FACE consent, or under the LEGACY_V1
+    # capture policy a legacy enrolment with the grace clock (07 §5.5; zero diff for v1 tenants).
+    today = org_structure_service.employee_local_today(db, employee)
+    basis = attendance_consents.can_enrol(db, principal.company_id, employee.id, today)
+    if basis is None:
+        raise AppError(422, "Record the employee's face consent before enrolling a face.", "CONSENT_REQUIRED",
+                       extra={"details": {"purpose": "BIOMETRIC_FACE"}})
     encoding = _encode_or_400(image)
     from app.core import storage
 
@@ -1092,12 +1287,12 @@ def enroll_face(db: Session, principal: Principal, employee_id: int, image: byte
             {FaceEncoding.is_primary: False}, synchronize_session=False
         )
     path = storage.save_bytes(principal.company_id, "faces", image, ext)
-    record = FaceEncoding(
-        company_id=principal.company_id,
-        employee_id=employee.id,
-        encoding=encoding,
-        image_path=path,
-        is_primary=make_primary,
+    consent = attendance_consents.state_on(db, principal.company_id, employee.id, "BIOMETRIC_FACE", today)
+    legacy = basis == "LEGACY"
+    record = attendance_faces.new_row(
+        db, principal.company_id, employee.id, encoding, image_path=path, is_primary=make_primary,
+        consent_id=consent.id if basis == "CONSENT" else None, legacy_enrolled=legacy,
+        legacy_grace_until=today + _days(days=attendance_consents.LEGACY_FACE_GRACE_DAYS) if legacy else None,
     )
     db.add(record)
     db.flush()
@@ -1107,7 +1302,8 @@ def enroll_face(db: Session, principal: Principal, employee_id: int, image: byte
 
 def face_status(db: Session, principal: Principal, employee_id: int) -> dict:
     employee = authz.ensure_employee_access(db, principal, "employee:read", employee_id)
-    rows = db.query(FaceEncoding).filter(FaceEncoding.employee_id == employee.id).all()
+    rows = db.query(FaceEncoding).filter(FaceEncoding.employee_id == employee.id,
+                                         FaceEncoding.deleted_at.is_(None)).all()
     return {
         "employee_id": employee.id,
         "total_encodings": len(rows),

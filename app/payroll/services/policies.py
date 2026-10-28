@@ -84,9 +84,20 @@ def _policy_error(error: pt.PolicyValidationError, status: int = 400) -> AppErro
     return AppError(status, detail, error.code)
 
 
-def _require_company_write(principal: Principal) -> None:
-    if not principal.has(WRITE, "COMPANY"):
+def _require_company_write(principal: Principal, type_code: str | None = None) -> None:
+    """COMPANY-scope write gate of the policy's type: ``payroll:configuration:write``, or the type's own
+    ``write_permission`` (JC-AS-22: ``attendance:manage_policy`` for the attendance types)."""
+    ptype = pt.POLICY_TYPES.get(type_code) if type_code else None
+    permission = (ptype.write_permission if ptype is not None else None) or WRITE
+    if not principal.has(permission, "COMPANY"):
+        if permission != WRITE:
+            raise forbidden("Changing this policy needs company-wide access to its settings.")
         raise forbidden("Policies are company-wide: changing them needs company-wide payroll configuration access.")
+
+
+def _type_of(db: Session, company_id: int, policy_id: int) -> str | None:
+    found = db.query(Policy.type).filter(Policy.company_id == company_id, Policy.id == policy_id).first()
+    return found[0] if found else None
 
 
 def _today(db: Session, company_id: int) -> date:
@@ -223,10 +234,12 @@ def policy_json(policy: Policy, versions: Sequence[PolicyVersion], rules: Sequen
 
 
 def list_policies(db: Session, principal: Principal, *, type_code: str | None = None,
-                  include_archived: bool = False) -> list[dict[str, Any]]:
+                  include_archived: bool = False, module: str = "payroll") -> list[dict[str, Any]]:
     query = db.query(Policy).filter(Policy.company_id == principal.company_id)
     if type_code is not None:
         query = query.filter(Policy.type == _type(type_code).code)
+    else:  # each API lists its own module's types (JC-AS-22, A-11)
+        query = query.filter(Policy.type.in_([c for c, d in pt.POLICY_TYPES.items() if d.module == module]))
     if not include_archived:
         query = query.filter(Policy.status == "ACTIVE")
     policies = query.order_by(Policy.type, Policy.name).all()
@@ -284,8 +297,8 @@ def _audit(db: Session, principal: Principal | None, action: str, policy: Policy
 def create_policy(db: Session, principal: Principal, *, type_code: str, name: str, description: str | None = None,
                   fields: Mapping[str, Any] | None = None, effective_from: date | None = None) -> dict[str, Any]:
     """A new policy with its first DRAFT version (defaults filled in)."""
-    _require_company_write(principal)
     ptype = _type(type_code)
+    _require_company_write(principal, ptype.code)
     name = _name(name)
     cid = principal.company_id
     if db.query(Policy.id).filter(Policy.company_id == cid, Policy.type == ptype.code,
@@ -308,7 +321,7 @@ def create_policy(db: Session, principal: Principal, *, type_code: str, name: st
 def create_version(db: Session, principal: Principal, policy_id: int, *, fields: Mapping[str, Any] | None = None,
                    effective_from: date | None = None) -> dict[str, Any]:
     """A new DRAFT version; without fields it copies the latest version (editing never changes an active one)."""
-    _require_company_write(principal)
+    _require_company_write(principal, _type_of(db, principal.company_id, policy_id))
     policy = _load(db, principal.company_id, policy_id, lock=True)
     if policy.status != "ACTIVE":
         raise AppError(409, "An archived policy cannot get new versions.", "POLICY_ARCHIVED")
@@ -328,7 +341,7 @@ def create_version(db: Session, principal: Principal, policy_id: int, *, fields:
 def update_version(db: Session, principal: Principal, policy_id: int, version: int, *,
                    fields: Mapping[str, Any] | None = None, effective_from: date | None = None) -> dict[str, Any]:
     """Edit a DRAFT version in place; an activated version is immutable (409)."""
-    _require_company_write(principal)
+    _require_company_write(principal, _type_of(db, principal.company_id, policy_id))
     policy = _load(db, principal.company_id, policy_id)
     row = _version(db, principal.company_id, policy.id, version, lock=True)
     if row.status != "DRAFT":
@@ -370,6 +383,17 @@ def _legal_issues(db: Session, company_id: int, code: str, name: str, fields: Ma
     return reg.policy_legal_issues(code, fields, constraints, name=name)
 
 
+def _require_activation_step_up(db: Session, principal: Principal, type_code: str | None) -> None:
+    """LH-SEC-02 (07 §5.2): a type naming an ``activation_step_up_setting`` needs a fresh step-up to activate a
+    version while the tenant has that setting on (403 STEP_UP_REQUIRED)."""
+    ptype = pt.POLICY_TYPES.get(type_code) if type_code else None
+    key = ptype.activation_step_up_setting if ptype else None
+    if key and engine.resolve(db, principal.company_id, key, on=_today(db, principal.company_id)).value is True:
+        from app.payroll.services.step_up import ensure_step_up
+
+        ensure_step_up(db, principal)
+
+
 def activate_version(db: Session, principal: Principal, policy_id: int, version: int, *,
                      effective_from: date | None = None, reason: str | None = None) -> dict[str, Any]:
     """Activate a DRAFT version from ``effective_from``, closing the version it replaces.
@@ -377,8 +401,10 @@ def activate_version(db: Session, principal: Principal, policy_id: int, version:
     A version starting earlier ends the day before; versions starting from that date up to today
     are superseded; a version scheduled after both stays and bounds the new one.
     """
-    _require_company_write(principal)
+    type_code = _type_of(db, principal.company_id, policy_id)
+    _require_company_write(principal, type_code)
     cid = principal.company_id
+    _require_activation_step_up(db, principal, type_code)
     policy = _load(db, cid, policy_id, lock=True)
     if policy.status != "ACTIVE":
         raise AppError(409, "An archived policy cannot be activated.", "POLICY_ARCHIVED")
@@ -436,7 +462,7 @@ def activate_version(db: Session, principal: Principal, policy_id: int, version:
 
 def archive_policy(db: Session, principal: Principal, policy_id: int) -> dict[str, Any]:
     """Archive a policy (never deleted, EC-CFG-16): it stops resolving; versions and rules are kept."""
-    _require_company_write(principal)
+    _require_company_write(principal, _type_of(db, principal.company_id, policy_id))
     policy = _load(db, principal.company_id, policy_id, lock=True)
     if policy.status == "ARCHIVED":
         raise AppError(409, "This policy is already archived.", "POLICY_ARCHIVED")
@@ -523,7 +549,7 @@ def get_assignments(db: Session, principal: Principal, policy_id: int) -> dict[s
 
 def put_assignments(db: Session, principal: Principal, policy_id: int, rules: Sequence[RuleInput]) -> dict[str, Any]:
     """Replace a policy's rule set; earlier rules become INACTIVE (kept for history)."""
-    _require_company_write(principal)
+    _require_company_write(principal, _type_of(db, principal.company_id, policy_id))
     cid = principal.company_id
     policy = _load(db, cid, policy_id, lock=True)
     if policy.status != "ACTIVE":

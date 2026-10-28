@@ -18,15 +18,20 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, FrozenSet, Iterable, List, Optional, Tuple
 
-REGISTRY_VERSION = "2026.10.6"
+REGISTRY_VERSION = "2026.10.8"
 
 
 class Scope(str, Enum):
     SELF = "SELF"
     DIRECT_REPORTS = "DIRECT_REPORTS"
     REPORTING_TREE = "REPORTING_TREE"
+    # Teams the principal leads (LEAD / DEPUTY_LEAD), and with TEAM_TREE their sub-teams (X 01 §4; X-M1).
+    TEAM = "TEAM"
+    TEAM_TREE = "TEAM_TREE"
     DEPARTMENT = "DEPARTMENT"
     ASSIGNED_GROUP = "ASSIGNED_GROUP"
+    # Members of the teams named as targets of the role assignment (targeted, like LEGAL_ENTITY).
+    ASSIGNED_TEAMS = "ASSIGNED_TEAMS"
     # Employees currently placed in the listed legal entities / branches / pay groups (for payroll
     # objects also the runs and batches of those entities or pay groups). Targets are stored per
     # role assignment; a targeted scope without targets grants nothing.
@@ -42,8 +47,11 @@ SCOPE_LABELS = {
     Scope.SELF: "Own records",
     Scope.DIRECT_REPORTS: "Direct reports",
     Scope.REPORTING_TREE: "Entire reporting tree",
+    Scope.TEAM: "Teams I lead",
+    Scope.TEAM_TREE: "Teams I lead and their sub-teams",
     Scope.DEPARTMENT: "Own and headed departments",
     Scope.ASSIGNED_GROUP: "Explicitly assigned employees",
+    Scope.ASSIGNED_TEAMS: "Selected teams",
     Scope.LEGAL_ENTITY: "Selected legal entities",
     Scope.BRANCH: "Selected branches",
     Scope.PAY_GROUP: "Selected pay groups",
@@ -51,9 +59,10 @@ SCOPE_LABELS = {
 }
 
 # Scopes whose coverage comes from explicit targets on the role assignment.
-TARGETED_SCOPES = (Scope.LEGAL_ENTITY, Scope.BRANCH, Scope.PAY_GROUP)
+TARGETED_SCOPES = (Scope.ASSIGNED_TEAMS, Scope.LEGAL_ENTITY, Scope.BRANCH, Scope.PAY_GROUP)
 
 # The employee_assignments column each targeted scope matches (employee scopes, payroll object filters).
+# ASSIGNED_TEAMS has none: it matches team_memberships (X 01 §4.2), so loops over this map skip it by design.
 TARGET_ASSIGNMENT_COLUMNS: Dict[Scope, str] = {
     Scope.LEGAL_ENTITY: "legal_entity_id",
     Scope.BRANCH: "branch_id",
@@ -61,6 +70,7 @@ TARGET_ASSIGNMENT_COLUMNS: Dict[Scope, str] = {
 }
 
 _S, _DR, _RT, _D, _AG = Scope.SELF, Scope.DIRECT_REPORTS, Scope.REPORTING_TREE, Scope.DEPARTMENT, Scope.ASSIGNED_GROUP
+_TM, _TT, _AT = Scope.TEAM, Scope.TEAM_TREE, Scope.ASSIGNED_TEAMS
 _LE, _BR, _PG, _C = Scope.LEGAL_ENTITY, Scope.BRANCH, Scope.PAY_GROUP, Scope.COMPANY
 
 # Spelled out on purpose: PAY_GROUP is offered only where 3.9 §5.1 lists it (payroll permissions).
@@ -76,9 +86,10 @@ _ORG_UNITS = (_LE, _BR, _C)
 _PAY_GROUPS = (_LE, _PG, _C)
 _OWN_PAY_GROUPS = (_S, _LE, _PG, _C)
 _OWN_ENTITY = (_S, _LE, _C)
-# AS spine §7.1 bundles; the team scopes (TM, TT, AT) join them with X-M1 (G-05).
-_ALL_T = _ALL
-_TEAM_T = _TEAM
+# AS spine §7.1 bundles with the team scopes (X-M1, G-05); _ALL and _TEAM are not edited.
+_ALL_T = (_S, _DR, _RT, _TM, _TT, _D, _AG, _AT, _LE, _BR, _C)
+_TEAM_T = (_DR, _RT, _TM, _TT, _D, _AG, _AT, _LE, _BR, _C)
+_ALL_WITH_PG_T = (_S, _DR, _RT, _TM, _TT, _D, _AG, _AT, _LE, _BR, _PG, _C)
 _ROSTER_PLANNING = (_D, _LE, _BR, _C)
 
 # Explicit-only markers for PermissionDef.full_access_scopes (payroll confidentiality and its generic reuse).
@@ -159,7 +170,7 @@ PERMISSIONS: List[PermissionDef] = [
     PermissionDef("department:manage", "People", "Manage departments & shifts", "Create and edit departments and shifts.", _COMPANY),
     PermissionDef("face:enroll", "People", "Enroll faces", "Register biometric face data for attendance.", _COMPANY, "restricted"),
     # Attendance
-    PermissionDef("attendance:read", "Attendance", "View attendance", "View attendance records.", _ALL),
+    PermissionDef("attendance:read", "Attendance", "View attendance", "View attendance records.", _ALL_WITH_PG_T),
     PermissionDef("attendance:mark", "Attendance", "Mark own attendance", "Check in and out after face verification.", _SELF),
     PermissionDef("attendance:kiosk", "Attendance", "Operate face kiosk", "Run the shared check-in kiosk for the company.", _COMPANY),
     PermissionDef("attendance:regularize", "Attendance", "Correct attendance", "Record or correct attendance manually.", _TEAM),
@@ -172,10 +183,22 @@ PERMISSIONS: List[PermissionDef] = [
         "location:review", "Attendance", "Review location flags",
         "Approve location exceptions and acknowledge movement flags.", _TEAM, "confidential",
     ),
+    # Capture v2 (AS-M2; spine §7.1, AS 11 §11.2 note C-3, SP-AS-169, -220).
+    PermissionDef("attendance:review", "Attendance", "Review attendance flags",
+                  "Decide review-queue items other than location flags and see the raw punch log.", _TEAM_T),
+    PermissionDef("attendance:evidence:read", "Attendance", "Reveal attendance evidence",
+                  "Reveal punch photos and face-match scores one punch at a time. Needs step-up; every reveal is "
+                  "recorded.", _TEAM_T, "confidential", ()),
+    PermissionDef("attendance:manage_policy", "Attendance", "Configure attendance",
+                  "Manage attendance policies, capture settings, consents recorded by HR and privacy notices.", _ENTITY),
+    PermissionDef("attendance:manage_devices", "Attendance", "Manage attendance devices",
+                  "Register, pair, suspend and retire kiosks and devices.", _ORG_UNITS, "restricted"),
+    PermissionDef("attendance:manage_sites", "Attendance", "Manage work sites",
+                  "Manage sites, geofences, office networks and QR posters.", _ORG_UNITS),
     # Leave
-    PermissionDef("leave:read", "Leave", "View leave", "View leave requests and balances.", _ALL),
+    PermissionDef("leave:read", "Leave", "View leave", "View leave requests and balances.", _ALL_T),
     PermissionDef("leave:apply", "Leave", "Apply for leave", "Submit and cancel own leave requests.", _SELF),
-    PermissionDef("leave:approve", "Leave", "Approve leave", "Act on leave requests routed to you.", _TEAM),
+    PermissionDef("leave:approve", "Leave", "Approve leave", "Act on leave requests routed to you.", _TEAM_T),
     PermissionDef("leave:manage_policy", "Leave", "Configure leave", "Manage leave types and approval chains.", _COMPANY),
     # Holidays
     PermissionDef("holiday:read", "Holidays", "View holidays", "View the company holiday calendar.", _COMPANY),
@@ -212,8 +235,10 @@ PERMISSIONS: List[PermissionDef] = [
                   "Publish over a blocking roster validation result with an exemption reference. Needs step-up.",
                   _ORG_UNITS, "restricted", ()),
     # Overtime and tasks (approvals never include the requester's own records)
-    PermissionDef("overtime:request", "Overtime", "Request overtime", "Submit own overtime for approval.", _SELF),
-    PermissionDef("overtime:approve", "Overtime", "Approve overtime", "Approve overtime requests routed to you.", _TEAM_APPROVAL),
+    # JC-AS-24: team scopes on the payroll-registered overtime codes (module and money semantics unchanged).
+    PermissionDef("overtime:request", "Overtime", "Request overtime", "Submit own overtime for approval.",
+                  (_S,) + _TEAM_APPROVAL + (_TM, _TT, _AT)),
+    PermissionDef("overtime:approve", "Overtime", "Approve overtime", "Approve overtime requests routed to you.", _TEAM_T),
     PermissionDef("task:read", "Tasks", "View tasks", "View tasks, assignees and completed units.", _SELF_OR_TEAM_APPROVAL),
     PermissionDef("task:manage", "Tasks", "Manage tasks", "Create, assign and update tasks.", _SELF_OR_TEAM_APPROVAL),
     PermissionDef("task:approve", "Tasks", "Approve tasks", "Approve completed tasks for task pay.", _TEAM_APPROVAL),
@@ -358,6 +383,13 @@ PERMISSIONS: List[PermissionDef] = [
         "email_template:manage", "Administration", "Manage email templates",
         "Edit the wording of transactional emails.", _COMPANY,
     ),
+    # Teams (X 01 §10.3; X-M1)
+    PermissionDef("team:read", "People", "View teams",
+                  "See teams, their leads and members for people in scope; your own teams always.", _ALL_T),
+    PermissionDef("team:manage", "People", "Manage teams", "Create, edit, re-parent and archive teams.", _ORG_UNITS),
+    PermissionDef("team:membership:manage", "People", "Manage team members",
+                  "Add and end members, deputies and leads of teams in scope; set primary teams and routing leads. "
+                  "Holders at Teams I lead and their sub-teams change members only.", (_TT, _AT, _LE, _BR, _C)),
     # Organisation structure
     PermissionDef(
         "org:read", "Organization", "View organization structure",
@@ -428,6 +460,8 @@ def scope_covers(held: Iterable[str], wanted: str) -> bool:
     if Scope.COMPANY.value in held or wanted in held:
         return True
     if wanted == Scope.DIRECT_REPORTS.value and Scope.REPORTING_TREE.value in held:
+        return True
+    if wanted == Scope.TEAM.value and Scope.TEAM_TREE.value in held:  # COMPANY ⊇ TEAM_TREE ⊇ TEAM (X 01 §4.1)
         return True
     return False
 
@@ -519,6 +553,7 @@ SELF_SERVICE = [
     ("shift:read", _S),
     ("roster:read", _S),
     ("roster:request", _S),
+    ("team:read", _S),
 ]
 
 
@@ -572,7 +607,9 @@ DEFAULT_ROLES: List[DefaultRole] = [
             "delegation:manage", "audit:read", "email_template:manage", "org:read", "org:manage_branches",
             "org:manage_entities", "org:manage_dimensions", "overtime:approve", "task:approve",
             "shift:read", "shift:manage", "shift:assign", "roster:read", "roster:plan", "roster:publish",
-            "roster:approve",
+            "roster:approve", "team:read", "team:manage", "team:membership:manage",
+            # AS-M2 (migration 0050): the capture-side codes; attendance:evidence:read has no default grant.
+            "attendance:review", "attendance:manage_devices", "attendance:manage_sites", "attendance:manage_policy",
         ),
     ),
     DefaultRole(
@@ -588,6 +625,7 @@ DEFAULT_ROLES: List[DefaultRole] = [
             "report:read", "report:export",
         )
         + _PAYROLL_PROCESSOR
+        + (("attendance:read", _PG),)  # JC-AS-24
         + _company_wide(
             "payroll:run:finalize", "payroll:run:reverse", "payroll:run:close", "payroll:configuration:write",
             "payroll:payslip:publish", "payroll:statutory:review", "payroll:statutory:submit",
@@ -598,7 +636,7 @@ DEFAULT_ROLES: List[DefaultRole] = [
         "Payroll Processor",
         "Prepares payroll: inputs, compensation changes, calculation and review of runs, loans, claims and "
         "payroll reports. Cannot approve runs or release payments.",
-        _PAYROLL_PROCESSOR,
+        _PAYROLL_PROCESSOR + (("attendance:read", _PG),),  # JC-AS-24: targets = pay groups (migration 0048)
     ),
     DefaultRole(
         "payroll_approver",
@@ -641,6 +679,7 @@ DEFAULT_ROLES: List[DefaultRole] = [
             ("shift:read", _RT),
             ("roster:read", _RT),
             ("roster:approve", _RT),
+            ("team:read", _RT),
         ),
     ),
     DefaultRole(

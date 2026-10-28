@@ -172,10 +172,19 @@ def cast(db, company_id: int):
     return [e for e in rows if (e.employee_code or "").startswith(CAST_PREFIXES)]
 
 
+# Fields added after the goldens were frozen, omitted while they hold their default — the same rule as the snapshot
+# JSON (app/payroll/engine/snapshot._attendance_dict; JC-AS-01: STANDARD-only fields keep v1 inputs byte-identical).
+_LATE_DEFAULT_FIELDS = {
+    "AttendanceInput": ("rules_mode", "present_portion", "other_half", "late_regularised", "early_exit_regularised"),
+}
+
+
 def jsonable(value: Any) -> Any:
     """Canonical JSON form: dataclasses field by field, ORM rows by id, decimals and dates as strings."""
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {f.name: jsonable(getattr(value, f.name)) for f in dataclasses.fields(value)}
+        late = _LATE_DEFAULT_FIELDS.get(type(value).__name__, ())
+        return {f.name: jsonable(getattr(value, f.name)) for f in dataclasses.fields(value)
+                if not (f.name in late and getattr(value, f.name) == f.default)}
     if isinstance(value, dict):
         return {str(k): jsonable(v) for k, v in sorted(value.items(), key=lambda kv: str(kv[0]))}
     if isinstance(value, (list, tuple)):

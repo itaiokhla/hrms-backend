@@ -1,11 +1,12 @@
 from datetime import date, datetime
 from decimal import Decimal
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import EmailStr, Field
 
 from app.schemas.attendance import BreakWrite
 from app.schemas.auth import Money, StrictModel
+from app.schemas.teams import AssignmentWindowIn
 
 
 class UserInvite(StrictModel):
@@ -26,6 +27,8 @@ class UserStatusUpdate(StrictModel):
 
 class UserRolesUpdate(StrictModel):
     role_ids: List[int] = Field(default_factory=list, max_length=20)
+    # P-3 (SP-AS-135): the windowed form; when present it replaces ``role_ids``.
+    assignments: Optional[List[AssignmentWindowIn]] = Field(None, max_length=50)
 
 
 class AssignedEmployeesUpdate(StrictModel):
@@ -98,6 +101,9 @@ class HolidayWrite(StrictModel):
     location: Optional[str] = Field(None, max_length=100)
     is_optional: bool = False
     description: Optional[str] = Field(None, max_length=500)
+    # BUG-22 (LH 12): a statutory (PUBLIC) or company-granted (COMPANY) holiday; omitted keeps COMPANY on create and
+    # the stored type on edit. An optional holiday is always OPTIONAL.
+    holiday_type: Optional[Literal["PUBLIC", "COMPANY"]] = None
 
 
 class AssetWrite(StrictModel):

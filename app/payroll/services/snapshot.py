@@ -102,6 +102,7 @@ from app.models.payroll_config import (
 from app.models.time_inputs import EmployeeSuspension
 from app.models.variable_inputs import ReimbursementClaim
 from app.payroll import calendar as paycal
+from app.payroll import day_results
 from app.payroll import incentives
 from app.payroll import packs
 from app.payroll import policy_types as pt
@@ -128,7 +129,25 @@ LOCKABLE_STATES = ("READY", "CALCULATING", "CALCULATED", "VALIDATION_FAILED", "R
                    "REOPENED_FOR_CORRECTION")
 # Settings sections that never change an amount stay out of the snapshot (their services read them live).
 EXCLUDED_SECTIONS = frozenset({reg.S_PAYSLIPS, reg.S_NOTIFICATIONS, reg.S_ACCOUNTING, reg.S_PRIVACY})
-SKIPPED_POLICY_TYPES = frozenset({"APPROVAL_CHAIN", "PAYSLIP_TEMPLATE"})
+# Attendance types are never in payroll snapshots (AS spine §6.2: payroll reads evaluations, not capture policies).
+def _evaluated_shift_dates(builder) -> Optional[set]:
+    """JC-AS-07: shift dates of the attendance window with a FINAL, worked STANDARD evaluation; None for v1 tenants
+    (checked first, so v1 callers need no attendance window)."""
+    from app.services import attendance_access, attendance_days
+
+    if not attendance_access.v2_enabled(builder.db, builder.cid):
+        return None
+    start, end = builder.attendance_window()
+    rows = attendance_days.days_for(builder.db, builder.cid, [builder.eid], start, end)
+    if not any(r.rules_mode == "STANDARD" for r in rows.values()):
+        return None
+    return {day for (_, day), r in rows.items() if r.rules_mode == "STANDARD" and r.evaluation_state == "FINAL"
+            and r.day_result in ("PRESENT", "HALF_DAY") and r.session_count}
+
+
+# JC-AS-18: payroll reads evaluations, never the four attendance policy types.
+SKIPPED_POLICY_TYPES = frozenset({"APPROVAL_CHAIN", "PAYSLIP_TEMPLATE", "ATTENDANCE_CAPTURE_POLICY",
+                                  "ATTENDANCE_RULES_POLICY", "ATTENDANCE_REQUEST_POLICY", "SCHEDULING_POLICY"})
 NON_SALARIED_STRUCTURES = frozenset({"HOURLY", "DAILY", "TASK_BASED"})
 NON_WORKING_DAY_SWITCHES = ("payroll.holiday_work_premium.enabled", "payroll.weekly_off_pay.enabled",
                             "payroll.overtime.enabled")
@@ -596,7 +615,11 @@ class _Builder:
                 self.source("holiday", day.holiday.holiday_id, {"hash": day.holiday.content_hash,
                                                                 "type": day.holiday.type.value})
             if day.attendance is not None and day.attendance.session_id is not None:
-                self.source("attendance", day.attendance.session_id, digest=day.attendance.content_hash)
+                evaluated = day_results.parse_lineage(day.attendance.session_id)
+                if evaluated is not None:  # JC-AS-13: the evaluation and its content hash (INV-21)
+                    self.source("attendance_day", evaluated[0], digest=day.attendance.content_hash)
+                else:
+                    self.source("attendance", day.attendance.session_id, digest=day.attendance.content_hash)
             for lop in day.manual_lop:
                 self.source("lop_input", lop.source_id, digest=lop.content_hash)
             for duty in day.on_duty:
@@ -875,9 +898,10 @@ class _Builder:
             else:
                 continue
             # Work on a non-working day counts as approved when an approved on-duty request covers it.
+            session_id = attendance.get("session_id")
+            ref = session_id if day_results.parse_lineage(session_id) else f"attendance:{session_id}"
             result.append({"date": item["date"], "day_type": day_type, "worked_minutes": int(seconds) // 60,
-                           "approved": bool(item.get("on_duty")), "choice": None,
-                           "ref": f"attendance:{attendance.get('session_id')}"})
+                           "approved": bool(item.get("on_duty")), "choice": None, "ref": ref})
         return result
 
     def shifts_json(self, days: Sequence[dict]) -> List[dict]:
@@ -886,12 +910,27 @@ class _Builder:
         from app.services import attendance_service
 
         weekly_off = {item["date"]: bool(item.get("weekly_off")) for item in days if item["employed"]}
-        records = (self.db.query(Attendance)
-                   .filter(Attendance.company_id == self.cid, Attendance.employee_id == self.eid,
-                           Attendance.date >= self.start, Attendance.date <= self.end,
-                           Attendance.check_out_time.isnot(None))
-                   .order_by(Attendance.date, Attendance.check_in_time).all())
-        records = [r for r in records if r.date.isoformat() in weekly_off]
+        evaluated = _evaluated_shift_dates(self)
+        if evaluated is not None:
+            # JC-AS-07 (BUG-AS-27, -28): v2 tenants pay the allowance from FINAL evaluations of the attendance window,
+            # with the sessions of those shift dates as the worked intervals (allowance policy and money unchanged).
+            start, end = self.attendance_window()
+            records = (self.db.query(Attendance)
+                       .filter(Attendance.company_id == self.cid, Attendance.employee_id == self.eid,
+                               Attendance.date.in_(sorted(evaluated) or [start]), Attendance.date >= start,
+                               Attendance.date <= end, Attendance.check_out_time.isnot(None),
+                               Attendance.voided_at.is_(None))
+                       .order_by(Attendance.date, Attendance.check_in_time).all())
+            records = [r for r in records if r.date in evaluated]
+            for record in records:
+                weekly_off.setdefault(record.date.isoformat(), False)
+        else:
+            records = (self.db.query(Attendance)
+                       .filter(Attendance.company_id == self.cid, Attendance.employee_id == self.eid,
+                               Attendance.date >= self.start, Attendance.date <= self.end,
+                               Attendance.check_out_time.isnot(None))
+                       .order_by(Attendance.date, Attendance.check_in_time).all())
+            records = [r for r in records if r.date.isoformat() in weekly_off]
         breaks = attendance_service.breaks_by_session(self.db, [r.id for r in records]) if records else {}
         result = []
         for record in records:

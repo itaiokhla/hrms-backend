@@ -63,7 +63,13 @@ def test_every_policy_type_of_3_1_section_3_2():
         "ATTENDANCE_PAY_POLICY", "LEAVE_PAY_POLICY", "HOLIDAY_PAY_POLICY", "OVERTIME_POLICY", "TASK_PAY_POLICY",
         "LATE_PENALTY_POLICY", "SHIFT_ALLOWANCE_POLICY", "INCENTIVE_PLAN", "REIMBURSEMENT_POLICY", "LOAN_POLICY",
         "ADVANCE_POLICY", "PAYSLIP_TEMPLATE", "APPROVAL_CHAIN",
+        "ATTENDANCE_CAPTURE_POLICY",  # AS-M2 (JC-AS-22): attendance-owned, write gate attendance:manage_policy
+        "ATTENDANCE_RULES_POLICY",  # AS-M3 (JC-AS-22): read by the day evaluation only
     }
+    assert {c for c, d in POLICY_TYPES.items() if d.module != "payroll"} == {"ATTENDANCE_CAPTURE_POLICY",
+                                                                            "ATTENDANCE_RULES_POLICY"}
+    assert POLICY_TYPES["ATTENDANCE_CAPTURE_POLICY"].write_permission == "attendance:manage_policy"
+    assert POLICY_TYPES["ATTENDANCE_RULES_POLICY"].write_permission == "attendance:manage_policy"
 
 
 @pytest.mark.parametrize(
@@ -83,6 +89,8 @@ def test_every_policy_type_of_3_1_section_3_2():
         ("ADVANCE_POLICY", ("payroll.advances.enabled",), "PERIOD"),
         ("PAYSLIP_TEMPLATE", (), "PERIOD"),
         ("APPROVAL_CHAIN", (), "PERIOD"),
+        ("ATTENDANCE_CAPTURE_POLICY", (), "DAY"),
+        ("ATTENDANCE_RULES_POLICY", (), "DAY"),
     ],
 )
 def test_gate_switches_and_grain(code, gates, grain):

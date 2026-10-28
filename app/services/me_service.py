@@ -54,6 +54,7 @@ def build_me(db: Session, principal: Principal) -> dict:
             code: sorted(scopes, key=scope_order.index) for code, scopes in sorted(principal.grants.items())
         },
         "is_company_admin": principal.is_company_admin,
+        "teams": _team_facts(db, principal),
         "registry_version": REGISTRY_VERSION,
         "brand_version": _brand_version(principal.company_id),
     }
@@ -66,3 +67,10 @@ def _brand_version(company_id: int):
         return brand_service.effective_for_company(company_id).version
     except Exception:  # branding must never block signing in
         return None
+
+
+def _team_facts(db: Session, principal: Principal):
+    """``me.teams`` (X 01 §11): own teams, led teams and acting-for delegations on the user's local today."""
+    from app.services import team_service
+
+    return team_service.team_facts(db, principal)

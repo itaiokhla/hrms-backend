@@ -435,6 +435,23 @@ def test_lh_rec_03_offset_into_previous_year() -> None:
     assert [(r.date, r.rule_year) for r in y2026.rows] == [(D(2026, 12, 31), 2027)]
 
 
+def test_goal_label_rec_03_nearest_workday_saturday_to_friday_sunday_to_monday() -> None:
+    """Goal 3 reading of LH-REC-03 (catalogue GV-REC-08 family): on a Sat+Sun weekend NEAREST_WORKDAY moves a Saturday
+    holiday back to Friday and a Sunday holiday forward to Monday; a weekday holiday does not move."""
+    nearest = {"observed_rule": "NEAREST_WORKDAY"}
+    rules = [fixed(6, 19, "Juneteenth", 1, **nearest), fixed(7, 4, "Independence Day", 2, **nearest),
+             fixed(11, 11, "Veterans Day", 3, **nearest)]
+    rows = [(r.date, r.name, r.observance, r.observed_from_date) for r in gen(rules, 2027).rows]
+    assert rows == [
+        (D(2027, 6, 18), "Juneteenth", "OBSERVED", D(2027, 6, 19)),       # Sat -> Fri
+        (D(2027, 6, 19), "Juneteenth", "ORIGINAL", None),
+        (D(2027, 7, 4), "Independence Day", "ORIGINAL", None),
+        (D(2027, 7, 5), "Independence Day", "OBSERVED", D(2027, 7, 4)),   # Sun -> Mon
+        (D(2027, 11, 11), "Veterans Day", "ORIGINAL", None),               # Thursday: stays
+    ]
+    assert R.apply_observance(gen(rules[:1], 2027).rows[1:], SAT_SUN, set())[-1].date == D(2027, 6, 18)
+
+
 def test_lh_rec_04_uk_substitute_chain_2026_and_2027() -> None:
     y2026 = [(r.date, r.name, r.observance) for r in gen(UK_XMAS, 2026).rows if r.date.month == 12]
     assert y2026 == [

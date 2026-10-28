@@ -61,7 +61,7 @@ CALENDAR_RULE_KEYS = (
 MAX_AMOUNT_DIGITS = 15  # salary_ranges_valid(): at most 15 integer digits
 PLACEMENT_FIELDS = (
     "pay_group_id", "grade_id", "employment_type_id", "designation_id", "cost_center_id", "work_week_pattern_id",
-    "shift_id", "fte",
+    "shift_id", "fte", "holiday_calendar_id", "work_timezone",
 )
 READ_CODES = ("org:read", "org:manage_dimensions")
 PAY_GROUP_READ_CODES = READ_CODES + ("payroll:configuration:read",)
@@ -208,13 +208,13 @@ def usage(db: Session, company_id: int, kind: str, object_id: int) -> Optional[s
                                            LegalEntity.default_work_week_pattern_id == object_id).first():
             return "a legal entity"
     if kind == "holiday_calendar":
+        from app.services import holiday_calendar_service
+
         if db.query(Branch.id).filter(Branch.company_id == company_id, Branch.status == "ACTIVE",
                                       Branch.holiday_calendar_id == object_id).first():
             return "a branch"
-        if db.query(HolidayCalendar.id).filter(HolidayCalendar.company_id == company_id,
-                                               HolidayCalendar.status == "ACTIVE",
-                                               HolidayCalendar.parent_calendar_id == object_id).first():
-            return "a calendar that inherits from it"
+        # Effective-dated links, criteria rows, overrides and includes (LH 04-holiday/01 §3.9).
+        return holiday_calendar_service.usage_reason(db, company_id, object_id)
     return None
 
 
@@ -275,7 +275,7 @@ def serialize(kind: str, row) -> dict:
         data.update(weekly_off_days=row.weekly_off_days or [], nth_weekday_offs=row.nth_weekday_offs or [])
     elif kind == "holiday_calendar":
         data.update(parent_calendar_id=row.parent_calendar_id, country_code=row.country_code,
-                    subdivision_code=row.subdivision_code)
+                    subdivision_code=row.subdivision_code, legal_entity_id=row.legal_entity_id)
     return data
 
 
@@ -526,25 +526,24 @@ def save_work_week(db: Session, principal: Principal, data: Mapping[str, Any], p
     return row
 
 
-def _calendar_ancestors(db: Session, company_id: int, calendar_id: int) -> List[int]:
-    seen: List[int] = []
-    current = calendar_id
-    while current is not None and current not in seen and len(seen) < 1000:
-        seen.append(current)
-        current = db.query(HolidayCalendar.parent_calendar_id).filter(
-            HolidayCalendar.company_id == company_id, HolidayCalendar.id == current).scalar()
-    return seen
-
-
 def save_holiday_calendar(db: Session, principal: Principal, data: Mapping[str, Any], calendar_id: Optional[int] = None) -> HolidayCalendar:
+    """Legacy alias of /api/v1/holiday-calendars: ``parent_calendar_id`` is mirrored as the priority-0 include
+    (LH 04-holiday/01 §3.3 rule 4), so flattening sees the same tree."""
+    from app.services import holiday_calendar_service
+
     cid = principal.company_id
+    old_parent = None
+    if calendar_id is not None:
+        old_parent = db.query(HolidayCalendar.parent_calendar_id).filter(
+            HolidayCalendar.company_id == cid, HolidayCalendar.id == int(calendar_id)).scalar()
 
     def apply(row: HolidayCalendar) -> None:
         if "parent_calendar_id" in data:
             parent_id = data["parent_calendar_id"]
             if parent_id is not None:
                 parent = _get(db, cid, "holiday_calendar", parent_id)
-                if row.id is not None and row.id in _calendar_ancestors(db, cid, parent.id):
+                if row.id is not None and (parent.id == row.id or holiday_calendar_service.include_path(
+                        holiday_calendar_service._graph(db, cid), parent.id, row.id) is not None):
                     raise bad_request("A holiday calendar cannot inherit from itself or one of its descendants.",
                                       "ORG_CALENDAR_CYCLE")
                 parent_id = parent.id
@@ -570,8 +569,29 @@ def save_holiday_calendar(db: Session, principal: Principal, data: Mapping[str, 
                     raise bad_request("The region must belong to the calendar's country.", "ORG_SUBDIVISION_INVALID")
             row.subdivision_code = sub or None
 
-    return _save_simple(db, principal, "holiday_calendar", data, calendar_id,
-                        ("parent_calendar_id", "country_code", "subdivision_code"), apply)
+    row = _save_simple(db, principal, "holiday_calendar", data, calendar_id,
+                       ("parent_calendar_id", "country_code", "subdivision_code"), apply)
+    if row.parent_calendar_id != old_parent:
+        _mirror_parent(db, row, old_parent)
+    return row
+
+
+def _mirror_parent(db: Session, row: HolidayCalendar, old_parent: Optional[int]) -> None:
+    """Create, re-point or delete the priority-0 include that mirrors ``parent_calendar_id``."""
+    from app.models.holiday import HolidayCalendarInclude
+
+    mirror = db.query(HolidayCalendarInclude).filter(HolidayCalendarInclude.company_id == row.company_id,
+                                                     HolidayCalendarInclude.calendar_id == row.id,
+                                                     HolidayCalendarInclude.priority == 0).first()
+    if row.parent_calendar_id is None:
+        if mirror is not None:
+            db.delete(mirror)
+    elif mirror is not None:
+        mirror.included_calendar_id = row.parent_calendar_id
+    else:
+        db.add(HolidayCalendarInclude(company_id=row.company_id, calendar_id=row.id,
+                                      included_calendar_id=row.parent_calendar_id, priority=0))
+    _flush(db, "Holiday calendar")
 
 
 def link_branch(db: Session, principal: Principal, branch_id: int, data: Mapping[str, Any]) -> Branch:
@@ -675,7 +695,20 @@ def branch_own_calendar(db: Session, branch: Branch, principal: Optional[Princip
     )
     db.add(calendar)
     db.flush()
+    if calendar.parent_calendar_id is not None:
+        _mirror_parent(db, calendar, None)
+    old_calendar_id = branch.holiday_calendar_id
     branch.holiday_calendar_id = calendar.id
+    # The branch's effective-dated links follow too (LH 04-holiday/01 §3.8): the new calendar includes the old one and
+    # holds only the regional holidays being created, so every past date keeps its holidays (zero diff with the legacy
+    # column-only behaviour, which applied the branch calendar to every date).
+    from app.models.pay_org import BranchCalendarLink
+
+    for link in db.query(BranchCalendarLink).filter(BranchCalendarLink.company_id == cid,
+                                                    BranchCalendarLink.branch_id == branch.id):
+        if link.holiday_calendar_id == old_calendar_id or link.holiday_calendar_id is None:
+            link.holiday_calendar_id = calendar.id
+            link.row_version += 1
     db.flush()
     AuditLogService.log(db, principal, AUDIT_MODULE, "HOLIDAY_CALENDAR_CREATED",
                         f"Created holiday calendar {calendar.code} for the regional holidays of branch {branch.code}",
@@ -796,6 +829,28 @@ def placement_dimensions(db: Session, company_id: int, *, entity_id: int, branch
         out["shift_id"] = base.shift_id or employee.shift_id
     else:
         out["shift_id"] = employee.shift_id
+
+    # Employee-level holiday calendar (LH 04-holiday/01 §4.2): kept on a continuation only while the branch stays.
+    if given("holiday_calendar_id"):
+        calendar = _active(db, company_id, "holiday_calendar", data["holiday_calendar_id"])
+        if calendar.legal_entity_id is not None and calendar.legal_entity_id != entity_id:
+            raise AppError(422, f"Holiday calendar {calendar.code} belongs to another legal entity.",
+                           "CALENDAR_ENTITY_MISMATCH")
+        out["holiday_calendar_id"] = calendar.id
+    elif base is not None and "holiday_calendar_id" not in data and base.branch_id == branch.id:
+        out["holiday_calendar_id"] = base.holiday_calendar_id
+    else:
+        out["holiday_calendar_id"] = None
+    if given("work_timezone"):
+        import pytz
+
+        if str(data["work_timezone"]) not in pytz.all_timezones_set:
+            raise bad_request("Choose a time zone from the IANA list (for example Asia/Kolkata).", "INVALID_TIMEZONE")
+        out["work_timezone"] = str(data["work_timezone"])
+    elif base is not None and "work_timezone" not in data:
+        out["work_timezone"] = base.work_timezone
+    else:
+        out["work_timezone"] = None
 
     if given("fte"):
         out["fte"] = _fte(data["fte"])

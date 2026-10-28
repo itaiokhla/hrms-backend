@@ -98,7 +98,8 @@ class UserRoleAssignment(TenantMixin, BaseModel):
             ondelete="RESTRICT",
             name="fk_user_role_assignments_role",
         ),
-        UniqueConstraint("user_id", "role_id", name="uq_user_role_assignment"),
+        # The same role may be held several times with non-overlapping windows (D-X-07): the unique
+        # (user_id, role_id) is gone; trigger user_role_assignments_no_overlap() -> 409 ROLE_WINDOW_OVERLAP.
         UniqueConstraint("company_id", "id", name="uq_user_role_assignments_company_id_id"),
         CheckConstraint(
             "effective_until IS NULL OR effective_until > effective_from",

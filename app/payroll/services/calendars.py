@@ -35,9 +35,8 @@ from sqlalchemy.orm import Session
 from app.core import clock
 from app.core.errors import AppError, bad_request, conflict, forbidden, not_found
 from app.core.principal import Principal
-from app.models.holiday import Holiday
 from app.models.org import LegalEntity
-from app.models.pay_org import HolidayCalendar, PayGroup, calendar_lineage_select
+from app.models.pay_org import HolidayCalendar, PayGroup
 from app.models.pay_runs import PayCalendar, PayPeriod, PayrollRun
 from app.payroll import audit as payroll_audit
 from app.payroll import calendar as paycal
@@ -167,8 +166,11 @@ def banking_calendar_id(db: Session, group: PayGroup, entity: LegalEntity, on: d
 
 def banking_calendar(db: Session, group: PayGroup, entity: LegalEntity, start: date, end: date,
                      calendar_id: Optional[int] = None) -> paycal.BankingCalendar:
-    """Business days between ``start`` and ``end`` (with a margin for shifting): the country's weekend
-    and every non-optional holiday of the banking calendar and its ancestors."""
+    """Business days between ``start`` and ``end`` (with a margin for shifting): the banking calendar's effective
+    weekend and every non-optional FULL-day occurrence of its flattened calendar (LH 04-holiday/01 §7 B-2, B-3:
+    includes minus exclusions through ``holiday_calendar_service.flatten``)."""
+    from app.services import holiday_calendar_service
+
     try:
         weekend = frozenset(countries.default_weekend(entity.country_code))
     except Exception:  # an unknown or inactive country: Saturday and Sunday (fail safe for shifting)
@@ -176,12 +178,14 @@ def banking_calendar(db: Session, group: PayGroup, entity: LegalEntity, start: d
     calendar_id = calendar_id if calendar_id is not None else banking_calendar_id(db, group, entity, start)
     holidays: frozenset = frozenset()
     if calendar_id is not None:
-        lineage = calendar_lineage_select(group.company_id, calendar_id)
+        calendar = db.get(HolidayCalendar, calendar_id)
+        if calendar is not None and (calendar.weekend_days or calendar.country_code):
+            weekend = frozenset(holiday_calendar_service.effective_weekend(db, calendar))
         margin = timedelta(days=paycal.MAX_SHIFT_SEARCH_DAYS + 5)
-        holidays = frozenset(day for (day,) in db.query(Holiday.date).filter(
-            Holiday.company_id == group.company_id, Holiday.calendar_id.in_(lineage),
-            Holiday.holiday_type != "OPTIONAL", Holiday.date >= start - margin, Holiday.date <= end + margin,
-        ))
+        flat = holiday_calendar_service.flatten(db, group.company_id, calendar_id, start - margin, end + margin)
+        holidays = frozenset(f.row.date for f in flat.rows
+                             if f.row.holiday_type != "OPTIONAL" and f.row.portion == "FULL"
+                             and f.row.status in ("CONFIRMED", "PROVISIONAL"))
     return paycal.BankingCalendar(weekend, holidays)
 
 
@@ -651,6 +655,39 @@ def period_containing(db: Session, company_id: int, pay_group_id: int, day: date
             .filter(PayPeriod.company_id == company_id, PayPeriod.pay_group_id == pay_group_id,
                     PayPeriod.period_start <= day, PayPeriod.period_end >= day)
             .first())
+
+
+PERIOD_STATE = {"PROCESSING": "INPUT_LOCKED", "CLOSED": "FINALIZED"}
+
+
+def period_state_on(db: Session, company_id: int, employee_id: int, day: date, *,
+                    now: Optional[datetime] = None) -> str:
+    """OPEN / INPUT_LOCKED / FINALIZED for an employee's date (SPINE V3-069; LH 05 §5.6; LH-TZ-03).
+
+    The pay period of the employee's pay group (placement valid on ``day``) that contains the date: CLOSED is
+    FINALIZED, PROCESSING is INPUT_LOCKED, and an OPEN period becomes INPUT_LOCKED once the **employee's** local today
+    is after its ``input_cutoff_on`` (a New York employee of a Dubai pay group locks later than a Dubai colleague).
+    No pay group or no stored period: OPEN. Payroll's own snapshot lock always decides what a run contains.
+    """
+    from app.models.employee import Employee
+    from app.models.org import EmployeeAssignment
+    from app.services import org_structure_service
+
+    placement = (db.query(EmployeeAssignment)
+                 .filter(EmployeeAssignment.company_id == company_id, EmployeeAssignment.employee_id == employee_id,
+                         EmployeeAssignment.is_primary.is_(True), EmployeeAssignment.effective_from <= day,
+                         or_(EmployeeAssignment.effective_to.is_(None), EmployeeAssignment.effective_to >= day))
+                 .order_by(EmployeeAssignment.effective_from.desc()).first())
+    if placement is None or not placement.pay_group_id:
+        return "OPEN"
+    period = period_containing(db, company_id, placement.pay_group_id, day)
+    if period is None:
+        return "OPEN"
+    if period.status in PERIOD_STATE:
+        return PERIOD_STATE[period.status]
+    employee = db.get(Employee, employee_id)
+    local_today = org_structure_service.employee_local_date(db, employee, now or clock.utcnow())
+    return "INPUT_LOCKED" if local_today > period.input_cutoff_on else "OPEN"
 
 
 def period_accepts_inputs(db: Session, company_id: int, pay_group_id: int, start: date, end: date) -> bool:

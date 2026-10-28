@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING, Any, Final
 if TYPE_CHECKING:
     from app.payroll.policy_types import AssignmentRule, EmployeeAttributes
 
-REGISTRY_VERSION: Final = "2026.10.3"
+REGISTRY_VERSION: Final = "2026.10.9"
 STARTER_REASON: Final = "Starter configuration"
 LEGACY_REASON: Final = "Legacy payroll migration"
 
@@ -217,8 +217,12 @@ class SettingDef:
 
     @property
     def fails_closed(self) -> bool:
-        """Payroll keys never fall back to a default when a stored value is invalid (3.1 §2.2)."""
-        return self.module == PAYROLL_MODULE
+        """Payroll, leave and holiday keys never fall back to a default when a stored value is invalid (3.1 §2.2;
+        LH V3-085, 02 §10.1 rule 7, LH-WL-02). Leave / holiday keys whose default is ``Derived`` from context (the
+        branch's ``holiday.calendar_id`` mirror) keep their documented derivation fallback."""
+        if self.module == PAYROLL_MODULE:
+            return True
+        return self.module in ("Leave", "Holidays") and not isinstance(self.default, Derived)
 
     @property
     def nullable(self) -> bool:
@@ -240,6 +244,7 @@ SECTIONS: Final[tuple[Section, ...]] = (
     Section("attendance", "Attendance & LOP", "3.1 §5.2", ("ATTENDANCE_PAY_POLICY",)),
     Section("leave", "Leave pay", "3.1 §5.3", ("LEAVE_PAY_POLICY",)),
     Section("holidays", "Holidays & weekly offs", "3.1 §5.4", ("HOLIDAY_PAY_POLICY",)),
+    Section("holiday-policies", "Holidays", "LH 14 WI-1.10"),
     Section("overtime", "Overtime", "3.1 §5.5", ("OVERTIME_POLICY",)),
     Section("tasks", "Task pay", "3.1 §5.6", ("TASK_PAY_POLICY",)),
     Section("late-penalties", "Late & penalties", "3.1 §5.7", ("LATE_PENALTY_POLICY",)),
@@ -345,6 +350,7 @@ S_GENERAL = "General & calendars"
 S_ATTENDANCE = "Attendance & LOP"
 S_LEAVE = "Leave pay"
 S_HOLIDAYS = "Holidays & weekly offs"
+S_HOLIDAY_POLICIES = "Holidays"
 S_OVERTIME = "Overtime"
 S_TASKS = "Task pay"
 S_LATE = "Late & penalties"
@@ -701,6 +707,14 @@ def _catalogue() -> list[SettingDef]:
             depends_on=("payroll.attendance.enabled",), requires_approval=True,
             ui={"control": "select", "visible_when": on_attendance},
         ),
+        # JC-AS-12 / JC-AS-23 (AS 05 §6): severity of the attendance pending items at the cutoff (consumed from AS-M4).
+        _enum(
+            "payroll.attendance.pending_at_cutoff", ("EXCEPTION", "WARNING"), "EXCEPTION", (T, LE), S_ATTENDANCE,
+            "Attendance still pending at cutoff",
+            "Attendance requests and undecided days still pending at the input cutoff: raise a blocking exception "
+            "(waivable), or only warn.",
+            depends_on=("payroll.attendance.enabled",), legacy_v1=False, ui={"visible_when": on_attendance},
+        ),
         _enum(
             "payroll.lop.proration_basis",
             ("CALENDAR_DAYS", "WORKING_DAYS", "FIXED_30", "FIXED_26", "CUSTOM_DAYS", "HOURS"),
@@ -755,6 +769,20 @@ def _catalogue() -> list[SettingDef]:
             "Leave still pending at the input cutoff: raise an exception, treat the days as absent, or wait "
             "and settle it as a retro adjustment once decided.",
             depends_on=("payroll.leave.enabled",),
+        ),
+        _flag(
+            "leave.override.requires_step_up", "Step-up for leave overrides",
+            on="A company-wide approver who decides a request that is not waiting for them (an override) confirms "
+               "it's them first (LH-SEC-02).",
+            off="Overrides need no extra confirmation (the original behaviour).",
+            default=False, levels=_T, section=S_LEAVE, legacy_v1=False,
+        ),
+        _flag(
+            "leave.plan_activation.requires_step_up", "Step-up for leave and holiday plan activation",
+            on="Activating a version of a leave or holiday plan (the leave pay and holiday pay policies) needs a fresh "
+               "step-up first (LH-SEC-02).",
+            off="Activation needs no extra confirmation (the original behaviour).",
+            default=False, levels=_T, section=S_LEAVE, legacy_v1=False,
         ),
         _flag(
             "leave.half_day.enabled", "Half-day leave",
@@ -812,6 +840,52 @@ def _catalogue() -> list[SettingDef]:
             "Optional holidays an employee may choose each year.",
             constraints={"min": 0, "max": 10}, ui={"unit": "days"},
         ),
+        # LH 14 WI-1.10 — holiday calendar publication (04-holiday/01 §6, 02 §6); not pay settings.
+        _flag(
+            "holiday.provisional_counts", "Expected holidays count",
+            on="A holiday whose date is still expected (moon sighting, government notice) counts on its expected "
+               "date once its year is published.",
+            off="An expected holiday counts only after HR confirms its date.",
+            default=True, levels=_T_LE, section=S_HOLIDAY_POLICIES, legacy_v1=False,
+        ),
+        _setting(
+            "holiday.backdate_days", "int", 7, _T_LE, S_HOLIDAY_POLICIES, "Backdated holiday changes (days)",
+            "How many days back a published calendar may still be changed: closures recorded, expected dates "
+            "confirmed, moved or cancelled. Older dates are kept for payroll history.",
+            constraints={"min": 0, "max": 31}, ui={"unit": "days"}, legacy_v1=False,
+        ),
+        _flag(
+            "holiday.publish.requires_second_person", "Second person publishes holidays",
+            on="Publishing a holiday year, every amendment and every backdated closure needs a second holiday "
+               "publisher; the first one only requests it.",
+            off="One holiday publisher publishes and amends on their own.",
+            default=False, levels=_T_LE, section=S_HOLIDAY_POLICIES, legacy_v1=False,
+        ),
+        _flag(
+            "holiday.publish.notify_employees", "Tell employees about published holidays",
+            on="Employees get a notification when their holiday year is published or a date changes.",
+            off="Publication and amendments are not announced to employees.",
+            default=True, levels=_T, section=S_HOLIDAY_POLICIES, legacy_v1=False,
+        ),
+        _setting(
+            "holiday.rollover.generate_on", "string", "10-01", _T, S_HOLIDAY_POLICIES, "Draft next year on",
+            "The day (MM-DD) on which next year's holidays are drafted from the repeating rules for review.",
+            constraints={"regex": r"(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])", "max_length": 5}, legacy_v1=False,
+        ),
+        _enum(
+            "holiday.legacy.unknown_location", ("UNMATCHED", "REFUSE"), "UNMATCHED", _T, S_HOLIDAY_POLICIES,
+            "Holiday location that matches no branch",
+            "What the Holidays page does with a location that names no branch: keep it on the review calendar "
+            "UNMATCHED (the original behaviour), or refuse it so the person picks a branch (LH-HOL-27).",
+            legacy_v1=False,
+        ),
+        _setting(
+            "holiday.provisional.confirm_reminder_days", "json", [14, 2], _T_LE, S_HOLIDAY_POLICIES,
+            "Remind publishers before expected holidays",
+            "Days before an expected holiday on which holiday publishers are reminded to confirm its date "
+            "(whole numbers 0-60).",
+            legacy_v1=False,
+        ),
         # 3.1 §5.5 — Overtime
         _switch(
             "payroll.overtime.enabled", "Overtime pay",
@@ -848,6 +922,32 @@ def _catalogue() -> list[SettingDef]:
             "Minutes after the shift start before a check-in counts as late. Flexible shifts are never late.",
             constraints={"min": 0, "max": 240}, aliases=("graceTime",), resolution_grain="DAY",
             ui={"unit": "minutes"},
+        ),
+        # AS-M3 evaluation settings (AS 04-attendance/02 §3.3; 04-attendance/03 §2.2). ``attendance.v2.enabled`` is
+        # written only by the cut-over (spine §15.1): the settings API refuses it (``ui.system_written``).
+        _flag(
+            "attendance.v2.enabled", "Attendance v2",
+            on="Days are evaluated and payroll reads the evaluations (set by the attendance cut-over).",
+            off="Legacy attendance: payroll reads the sessions as before.",
+            default=False, levels=_T, section=S_ATTENDANCE, legacy_v1=False, lockable=False,
+            effective_dated=False, ui={"system_written": True},
+        ),
+        _flag(
+            "attendance.capture.enabled", "Attendance capture",
+            on="People punch in and out.",
+            off="Nobody punches: expected days are presumed present (keep payroll attendance off in the same scope).",
+            default=True, levels=(T, LE, B), section=S_ATTENDANCE, legacy_v1=False, resolution_grain="DAY",
+        ),
+        _setting(
+            "attendance.day_close.buffer_minutes", "int", 240, (T, LE, B), S_ATTENDANCE, "Day close buffer",
+            "Minutes after the last shift end before the day is decided (absent, missing punch).",
+            constraints={"min": 0, "max": 720}, legacy_v1=False, resolution_grain="DAY", ui={"unit": "minutes"},
+        ),
+        _setting(
+            "attendance.night_window", "json", {"start": "22:00", "end": "06:00"}, (T, LE, B), S_SHIFTS,
+            "Night window",
+            "Local start and end (HH:MM) of the night: worked time inside it is the day's night minutes.",
+            legacy_v1=False, resolution_grain="DAY",
         ),
         # 3.1 §5.8 — Shifts and allowances
         _switch(
@@ -2438,6 +2538,8 @@ def _assignment_issues(
 
     issues: list[Issue] = []
     for code, ptype in POLICY_TYPES.items():
+        if ptype.module != "payroll":  # attendance types fall back to their LEGACY_V1 mapping (JC-AS-22)
+            continue
         type_rules = list(rules.get(code, ()))
         for conflict in find_priority_conflicts(type_rules, employees, on=as_of):
             issues.append(Issue(

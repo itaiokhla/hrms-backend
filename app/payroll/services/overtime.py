@@ -700,7 +700,8 @@ def _worked(db: Session, company_id: int, employee_id: int, first: date, last: d
     """Canonical net worked seconds of completed sessions per date, with the session's shift."""
     records = (db.query(Attendance)
                .filter(Attendance.company_id == company_id, Attendance.employee_id == employee_id,
-                       Attendance.date >= first, Attendance.date <= last).all())
+                       Attendance.date >= first, Attendance.date <= last,
+                       Attendance.voided_at.is_(None)).all())  # AS-M2 (spine §15.4)
     breaks = attendance_service.breaks_by_session(db, [r.id for r in records])
     now = utcnow()
     worked: dict[date, tuple[int, int | None]] = {}

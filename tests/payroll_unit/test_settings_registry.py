@@ -710,6 +710,10 @@ def test_starter_v1_switches_i13():
         "payroll.bank.change_requires_approval", "notify.payroll.payment_status_to_employee",
         "leave.half_day.enabled", "payslip.queries_enabled", "payslip.show_attendance_summary",
         "payslip.show_bank_masked", "payslip.show_leave_balances", "payslip.show_ytd",
+        # LH WI-1.10 defaults (holiday calendar publication, not pay).
+        "holiday.provisional_counts", "holiday.publish.notify_employees",
+        # AS-M3: punching stays on (today's behaviour); it changes no pay by itself.
+        "attendance.capture.enabled",
     }
     assert {k for k, v in values.items() if v is True} == STARTER_ON | safety_and_display
     for key in STARTER_OFF_WITH_DECISION:

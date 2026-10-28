@@ -77,6 +77,7 @@ SUMMARY_SETTINGS = (
 SOURCE_PERMISSIONS: Dict[str, Optional[str]] = {
     "compensation_assignment": "payroll:compensation:read",
     "day_ledger": "attendance:read", "attendance": "attendance:read", "on_duty": "attendance:read",
+    "attendance_day": "attendance:read",  # JC-AS-13: evaluation lineage of v2 tenants
     "late_mark": "attendance:read", "shift": "attendance:read",
     "leave": "leave:read",
     "holiday": "holiday:read", "work_week": "holiday:read",

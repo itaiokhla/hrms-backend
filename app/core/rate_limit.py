@@ -37,6 +37,21 @@ class RateLimiter:
                 )
             hits.append(now)
 
+    def count(self, key: str, window_seconds: int) -> int:
+        """Hits of ``key`` within the window, without recording one (cooldown checks)."""
+        now = time.monotonic()
+        with self._lock:
+            hits = self._hits.get(key)
+            if not hits:
+                return 0
+            while hits and now - hits[0] > window_seconds:
+                hits.popleft()
+            return len(hits)
+
+    def clear(self, key: str) -> None:
+        with self._lock:
+            self._hits.pop(key, None)
+
     def reset(self) -> None:
         with self._lock:
             self._hits.clear()
@@ -48,8 +63,13 @@ limiter = RateLimiter()
 def client_ip(request: Request) -> str:
     # Only trust X-Forwarded-For when explicitly deployed behind a trusted proxy
     # (e.g. the Next.js rewrite or a load balancer); otherwise it is spoofable.
+    # The trusted-hop rule (AS-GEO-07, AS 07 §18 T-28): the entry ``trusted_proxy_hops`` positions from the right is
+    # the one our nearest trusted proxy appended; anything to its left is client-controlled.
     if settings.trust_proxy_headers:
         forwarded = request.headers.get("x-forwarded-for")
         if forwarded:
-            return forwarded.split(",")[0].strip()[:64]
+            entries = [e.strip() for e in forwarded.split(",") if e.strip()]
+            if entries:
+                hops = max(1, int(settings.trusted_proxy_hops or 1))
+                return entries[max(len(entries) - hops, 0)][:64]
     return request.client.host if request.client else "unknown"

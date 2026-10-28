@@ -39,6 +39,9 @@ PUBLIC_ROUTES = {
     # Anyone holding a document may check it: issuer, type, date, number and masked name only, never
     # amounts; rate limited per IP and limited to the host's tenant (tests/payroll/test_document_isolation.py).
     ("GET", "/api/v1/documents/verify/{public_id}"),
+    # AS-M2: a kiosk pairs itself with the one-time claim code an attendance admin created (no user session by design,
+    # SP-AS-207); rate limited per address and host, failures counted per device (tests/attendance/test_kiosk_token.py).
+    ("POST", "/api/v1/attendance/kiosk/pair"),
 }
 
 # Tables with a company_id column that are deliberately not tenant (RLS) tables.
@@ -66,7 +69,8 @@ def test_every_api_route_requires_a_principal_unless_reviewed_as_public(app):
     from app.core import principal
 
     authenticated = {principal.get_principal, principal.get_principal_any_subscription,
-                     principal.get_platform_principal, principal.get_partner_principal}
+                     principal.get_platform_principal, principal.get_partner_principal,
+                     principal.get_device_principal}  # paired kiosks: device token (AS-M2)
     unprotected = set()
     for route in app.routes:
         if isinstance(route, APIRoute) and route.path.startswith("/api/"):

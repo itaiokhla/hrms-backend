@@ -7,7 +7,7 @@ request body, query parameter or header can choose the tenant.
 """
 
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Dict, FrozenSet, Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -213,6 +213,10 @@ def build_principal(db: Session, user: User, session_id: Optional[str], company:
     has_targeted = any(scopes & targeted for scopes in grants.values())
     targets = load_scope_targets(db, user.id) if has_targeted else {}
     employee_id = db.query(Employee.id).filter(Employee.user_id == user.id).scalar()
+    extra = {}
+    team_scopes = {Scope.TEAM.value, Scope.TEAM_TREE.value, Scope.ASSIGNED_TEAMS.value}
+    if any(scopes & team_scopes for scopes in grants.values()):
+        extra["local_today"] = principal_local_today(db, employee_id, company)
     return Principal(
         user_id=user.id,
         company_id=user.company_id,
@@ -226,8 +230,24 @@ def build_principal(db: Session, user: User, session_id: Optional[str], company:
         is_company_admin=is_admin,
         permission_version=user.permission_version,
         subscription_active=subscription_is_active(company),
+        extra=extra,
         targets=targets,
     )
+
+
+def principal_local_today(db: Session, employee_id: Optional[int], company: Company) -> date:
+    """The user's local today: the linked employee's work zone, else the company zone (team as-of rules, X 01 §4.3)."""
+    from app.core import clock
+
+    if employee_id is not None:
+        from app.services.org_structure_service import employee_local_today
+
+        employee = db.get(Employee, employee_id)
+        if employee is not None:
+            return employee_local_today(db, employee)
+    import pytz
+
+    return clock.utcnow().astimezone(pytz.timezone(company.timezone or "UTC")).date()
 
 
 def _resolve_principal(request: Request, db: Session) -> Principal:
@@ -393,3 +413,35 @@ def get_platform_principal(request: Request) -> PlatformPrincipal:
 
 def get_partner_principal(request: Request) -> PlatformPrincipal:
     return _operator_principal(request, "partner")
+
+
+# ---------------------------------------------------------------------------
+# Paired kiosk devices (device token, AS-M2; secret / HMAC devices follow in AS-M7)
+# ---------------------------------------------------------------------------
+KIOSK_TOKEN_COOKIE = "hrms_kiosk_device"
+KIOSK_COOKIE_PATH = "/api/v1/attendance/kiosk"
+
+
+def get_device_principal(request: Request, db: Session = Depends(get_db)):
+    """The paired kiosk behind ``/attendance/kiosk/identify|punch`` (04-attendance/01 K-1..K-4, K-12).
+
+    The device-token cookie (``HttpOnly; Secure; SameSite=Strict; Path=/api/v1/attendance/kiosk``) names the tenant
+    and device; the tenant is bound before the device row is read (RLS), and the secret is compared in constant time.
+    It is never a user session and carries no permission. 401 ``DEVICE_AUTH_FAILED`` for a missing, wrong, expired or
+    revoked token; 403 ``DEVICE_SUSPENDED``. A tenant host serves only its own tenant's kiosks.
+    """
+    from app.services import attendance_devices
+
+    parsed = attendance_devices.parse_token(request.cookies.get(KIOSK_TOKEN_COOKIE))
+    if parsed is None:
+        raise AppError(status.HTTP_401_UNAUTHORIZED, "This kiosk is not paired.", "DEVICE_AUTH_FAILED")
+    company_id, device_id, secret = parsed
+    if not company_allowed_on_host(request_host(request), company_id):
+        raise AppError(status.HTTP_401_UNAUTHORIZED, "This kiosk is not paired.", "DEVICE_AUTH_FAILED")
+    bind_tenant(db, company_id)
+    company = db.get(Company, company_id)
+    if company is None or company.status != "active" or not subscription_is_active(company):
+        raise AppError(status.HTTP_401_UNAUTHORIZED, "This kiosk is not active.", "DEVICE_AUTH_FAILED")
+    device = attendance_devices.authenticate(db, device_id, secret)
+    request.state.device_principal = device
+    return device

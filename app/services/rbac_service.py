@@ -375,7 +375,13 @@ def set_user_roles(db: Session, principal: Principal, target: User, role_ids: Se
     if len(roles) != len(wanted_ids):
         raise not_found("Role")
 
-    current = {a.role_id: a for a in target.role_assignments}
+    # Ended windows are history (D-X-07): only active and future assignments count as held.
+    now = utcnow()
+    open_windows: Dict[int, List[UserRoleAssignment]] = {}
+    for a in target.role_assignments:
+        if a.effective_until is None or a.effective_until > now:
+            open_windows.setdefault(a.role_id, []).append(a)
+    current = {role_id: rows[0] for role_id, rows in open_windows.items()}
     current_roles = {
         r.id: r
         for r in db.query(Role).options(selectinload(Role.permissions)).filter(Role.id.in_(list(current))).all()
@@ -400,11 +406,13 @@ def set_user_roles(db: Session, principal: Principal, target: User, role_ids: Se
         after[target.id] = {r.id: _run_grants(role_grants(r)) for r in roles}
         _assert_keeps_payroll_approver(before, after)
 
-    now = utcnow()
     for role in to_remove:
-        assignment = current[role.id]
-        target.role_assignments.remove(assignment)
-        db.delete(assignment)
+        for assignment in open_windows[role.id]:  # every open window of the role (D-X-07)
+            if assignment.effective_from >= now:  # never started: nothing to keep
+                target.role_assignments.remove(assignment)
+                db.delete(assignment)
+            else:  # ended, not deleted: the window stays as history (BUG-AS-48)
+                assignment.effective_until = now
     for role in to_add:
         target.role_assignments.append(
             UserRoleAssignment(
@@ -527,3 +535,197 @@ def assign_role_by_key(db: Session, company_id: int, user: User, system_key: str
             effective_from=utcnow(),
         )
     )
+
+
+# --------------------------------------------------------------------------- assignment windows (X 01 §6.7, P-3)
+
+TARGET_KINDS = ("LEGAL_ENTITY", "BRANCH", "PAY_GROUP", "ASSIGNED_TEAMS")
+
+
+def _user_zone(db: Session, user: User) -> str:
+    """Windows are local dates of the user's zone: the linked employee's work zone, else the company zone."""
+    from app.models.company import Company
+    from app.models.employee import Employee
+
+    employee = db.query(Employee).filter(Employee.user_id == user.id).first()
+    if employee is not None:
+        from app.services.org_structure_service import current_assignment, placement_zone
+
+        placement = current_assignment(db, employee.id)
+        if placement is not None:
+            return placement_zone(db, placement)
+    company = db.get(Company, user.company_id)
+    return company.timezone or "UTC"
+
+
+def local_midnight(zone: str, day):
+    """00:00 of ``day`` in ``zone`` as a UTC instant (P-3; X-ROLE-14: 00:00 IST, never 05:30)."""
+    from datetime import datetime, time, timezone
+
+    import pytz
+
+    return pytz.timezone(zone).localize(datetime.combine(day, time(0, 0))).astimezone(timezone.utc)
+
+
+def _known_targets(db: Session, company_id: int) -> Dict[str, Set[int]]:
+    from app.models.org import Branch, LegalEntity
+    from app.models.pay_org import PayGroup
+    from app.models.teams import Team
+
+    return {
+        "LEGAL_ENTITY": {i for (i,) in db.query(LegalEntity.id).filter(LegalEntity.company_id == company_id)},
+        "BRANCH": {i for (i,) in db.query(Branch.id).filter(Branch.company_id == company_id)},
+        "PAY_GROUP": {i for (i,) in db.query(PayGroup.id).filter(PayGroup.company_id == company_id)},
+        # A target team must exist in this tenant and be ACTIVE on save (X 01 §4.2; X-ROLE-46).
+        "ASSIGNED_TEAMS": {i for (i,) in db.query(Team.id).filter(Team.company_id == company_id,
+                                                                   Team.status == "ACTIVE")},
+    }
+
+
+def write_targets(db: Session, principal: Principal, assignment: UserRoleAssignment, role: Role,
+                  wanted: Dict[str, Iterable[int]], known: Optional[Dict[str, Set[int]]] = None) -> dict:
+    """Replace the targets of one assignment (every kind is preserved, BUG-AS-37); returns {before, after}."""
+    from app.models.org import RoleAssignmentTarget
+
+    known = known if known is not None else _known_targets(db, principal.company_id)
+    grants: Dict[str, List[str]] = {}
+    for code, scope in role_grants(role):
+        if scope in TARGET_KINDS:
+            grants.setdefault(scope, []).append(code)
+    wanted = {kind: set(wanted.get(kind) or ()) for kind in TARGET_KINDS}
+    existing: Dict[str, Set[int]] = {kind: set() for kind in TARGET_KINDS}
+    for row in db.query(RoleAssignmentTarget).filter(RoleAssignmentTarget.user_role_assignment_id == assignment.id):
+        existing.setdefault(row.scope, set()).add(row.target_id)
+    kept_existing = {kind: existing[kind] for kind in TARGET_KINDS}
+    for kind, ids in wanted.items():
+        if (ids - kept_existing[kind]) - known[kind]:  # kept targets may name a team archived since
+            raise not_found("Legal entity, branch, pay group or team")
+        if ids and kind not in grants:
+            raise bad_request(f"This role has no {SCOPE_LABELS[Scope(kind)].lower()} permissions.", "NO_TARGETED_GRANT")
+        if ids != kept_existing[kind]:
+            for code in grants.get(kind, []):
+                if not (principal.is_company_admin or principal.has_company_scope(code)):
+                    raise forbidden("You need company-wide access to every permission of this role to change its "
+                                    "targets.")
+    db.query(RoleAssignmentTarget).filter(RoleAssignmentTarget.user_role_assignment_id == assignment.id).delete(
+        synchronize_session=False)
+    for kind, ids in wanted.items():
+        for target_id in sorted(ids):
+            db.add(RoleAssignmentTarget(company_id=principal.company_id, user_role_assignment_id=assignment.id,
+                                        scope=kind, target_id=target_id, created_by_user_id=principal.user_id))
+    return {"before": {k: sorted(v) for k, v in kept_existing.items() if v},
+            "after": {k: sorted(v) for k, v in wanted.items() if v}}
+
+
+def serialize_assignment(db: Session, assignment: UserRoleAssignment, zone: str) -> dict:
+    from datetime import timedelta
+
+    import pytz
+
+    from app.models.org import RoleAssignmentTarget
+
+    tz = pytz.timezone(zone)
+    until = assignment.effective_until
+    targets: Dict[str, List[int]] = {}
+    for row in db.query(RoleAssignmentTarget).filter(RoleAssignmentTarget.user_role_assignment_id == assignment.id):
+        targets.setdefault(row.scope, []).append(row.target_id)
+    return {
+        "assignment_id": assignment.id, "role_id": assignment.role_id,
+        "effective_from": assignment.effective_from.astimezone(tz).date().isoformat(),
+        # Stored as the start of the day after the last day (half-open): shown as the inclusive last local day.
+        "effective_until": (until.astimezone(tz) - timedelta(microseconds=1)).date().isoformat() if until else None,
+        "targets": {k: sorted(v) for k, v in targets.items()},
+    }
+
+
+def set_user_role_windows(db: Session, principal: Principal, target: User, items: Sequence) -> List[dict]:
+    """The windowed form of ``PUT /users/{id}/roles`` (P-3, SP-AS-135; D-X-07, BUG-AS-48).
+
+    Each item names a role with local first / last days (and optionally its existing ``assignment_id``) and its
+    targets. Overlapping windows of one role -> 409 ``ROLE_WINDOW_OVERLAP``. Active or future assignments missing from
+    the list are ended at the start of the actor's local tomorrow (never deleted once started)."""
+    from datetime import timedelta
+
+    from app.services.team_service import actor_today
+
+    self_change = target.id == principal.user_id
+    if self_change and not principal.is_company_admin:
+        raise forbidden("You cannot change your own roles.")
+    zone = _user_zone(db, target)
+    now = utcnow()
+    roles = {r.id: r for r in db.query(Role).options(selectinload(Role.permissions)).filter(
+        Role.company_id == principal.company_id, Role.id.in_(sorted({i.role_id for i in items}) or [0]))}
+    if len(roles) != len({i.role_id for i in items}):
+        raise not_found("Role")
+    held = db.query(UserRoleAssignment).filter(
+        UserRoleAssignment.company_id == principal.company_id, UserRoleAssignment.user_id == target.id).all()
+    by_id = {a.id: a for a in held}
+    open_rows = {a.id: a for a in held if a.effective_until is None or a.effective_until > now}
+    if any(not principal.is_company_admin and r.is_protected for r in
+           (db.get(Role, a.role_id) for a in open_rows.values())):
+        raise forbidden("Only company administrators can change an administrator's roles.")
+    known = _known_targets(db, principal.company_id)
+    touched: Set[int] = set()
+    changes: List[dict] = []
+    for item in items:
+        role = roles[item.role_id]
+        if self_change and not is_payroll_role(role) and not is_explicit_access_role(role):
+            raise forbidden("Administrators may only grant or remove their own payroll or explicit-access roles.")
+        assert_can_manage_role_membership(principal, role)
+        start = local_midnight(zone, item.effective_from)
+        until = local_midnight(zone, item.effective_until + timedelta(days=1)) if item.effective_until else None
+        if until is not None and until <= start:
+            raise bad_request("A role window ends on or after its first day.", "INVALID_DATES")
+        if item.assignment_id is not None:
+            assignment = by_id.get(item.assignment_id)
+            if assignment is None or assignment.role_id != role.id:
+                raise not_found("Role assignment")
+            before = {"from": assignment.effective_from.isoformat(),
+                      "until": assignment.effective_until.isoformat() if assignment.effective_until else None}
+            assignment.effective_from, assignment.effective_until = start, until
+        else:
+            before = None
+            assignment = UserRoleAssignment(company_id=principal.company_id, user_id=target.id, role_id=role.id,
+                                            assigned_by_user_id=principal.user_id, effective_from=start,
+                                            effective_until=until)
+            db.add(assignment)
+        _flush_windows(db)
+        touched.add(assignment.id)
+        diff = write_targets(db, principal, assignment, role, item.targets, known)
+        changes.append({"role_id": role.id, "assignment_id": assignment.id, "before": before,
+                        "after": {"from": start.isoformat(), "until": until.isoformat() if until else None},
+                        "targets": diff})
+    end_at = local_midnight(zone, actor_today(db, principal) + timedelta(days=1))
+    for assignment in open_rows.values():
+        if assignment.id in touched:
+            continue
+        role = db.get(Role, assignment.role_id)
+        assert_can_manage_role_membership(principal, role)
+        if role.is_protected:
+            assert_not_last_admin(db, principal.company_id, target.id)
+        if assignment.effective_from >= end_at:
+            db.delete(assignment)
+        elif assignment.effective_until is None or assignment.effective_until > end_at:
+            assignment.effective_until = end_at
+        changes.append({"role_id": role.id, "assignment_id": assignment.id, "ended": end_at.isoformat()})
+    _flush_windows(db)
+    target.permission_version = (target.permission_version or 1) + 1
+    AuditLogService.log(db, principal, "Users", "ROLES_CHANGED", f"Role windows for {target.email}", "user", target.id,
+                        details={"changes": changes})
+    reroute_approvals(db, principal.company_id)
+    rows = db.query(UserRoleAssignment).filter(UserRoleAssignment.company_id == principal.company_id,
+                                               UserRoleAssignment.user_id == target.id) \
+        .order_by(UserRoleAssignment.effective_from).all()
+    return [serialize_assignment(db, a, zone) for a in rows]
+
+
+def _flush_windows(db: Session) -> None:
+    try:
+        with db.begin_nested():
+            db.flush()
+    except Exception as exc:
+        from app.services.team_service import constraint_text
+
+        if "role_window_overlap" in constraint_text(exc):
+            raise conflict("This person already holds the role in an overlapping window.", "ROLE_WINDOW_OVERLAP")
+        raise

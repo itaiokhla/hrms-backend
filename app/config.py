@@ -57,6 +57,9 @@ class Settings(BaseSettings):
 
     # Set true only when every request arrives through a trusted proxy.
     trust_proxy_headers: bool = False
+    # attendance.network.trusted_proxy_hops (AS-GEO-07): the client is the X-Forwarded-For entry this many positions
+    # from the right (one per trusted proxy that appends); entries to its left can be forged and are ignored.
+    trusted_proxy_hops: int = 1
     # Multiplies every authentication rate limit. Keep 1.0 in production;
     # raise it only for load or end-to-end test environments.
     auth_rate_limit_scale: float = 1.0
@@ -134,6 +137,13 @@ class Settings(BaseSettings):
     # floor and 8 hours. Lowering it below 15 minutes is only for accelerated
     # end-to-end tests and is refused in staging and production.
     location_tracking_min_interval_minutes: int = 15
+
+    @field_validator("debug", mode="before")
+    @classmethod
+    def _parse_debug(cls, v):
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "1", "yes", "on", "debug")
+        return bool(v)
 
     @field_validator("allowed_origins", "platform_hosts", mode="after")
     @classmethod

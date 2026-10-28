@@ -493,12 +493,31 @@ class AttendanceInput:
     regularised: bool = False
     night_seconds: int = 0
     content_hash: str | None = None
+    # JC-AS-01 / JC-AS-03 (AS 05 §5.1): only STANDARD evaluations of attendance v2 tenants set these; the defaults
+    # keep every v1 and LEGACY_V1 input byte-identical. A STANDARD status is decided by attendance and never
+    # re-derived from hours (JC-AS-04); ``present_portion`` / ``other_half`` place a HALF_DAY.
+    rules_mode: str = "LEGACY_V1"
+    present_portion: Portion | None = None
+    other_half: str | None = None  # ABSENT | UNMARKED | PENDING_LEAVE
+    late_regularised: bool = False
+    early_exit_regularised: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "status", _choice(AttendanceStatus, self.status, "attendance status"))
         _source_id(self.session_id, "session_id", optional=True)
-        for name in ("closed_without_punch_out", "late", "early_exit", "regularised"):
+        for name in ("closed_without_punch_out", "late", "early_exit", "regularised", "late_regularised",
+                     "early_exit_regularised"):
             _flag(getattr(self, name), name)
+        if self.rules_mode not in ATTENDANCE_RULES_MODES:
+            raise LedgerInputError("INVALID_ATTENDANCE", f"rules_mode must be one of {ATTENDANCE_RULES_MODES}")
+        if self.present_portion is not None:
+            portion = _choice(Portion, self.present_portion, "present_portion", code="INVALID_PORTION")
+            if portion is Portion.FULL or self.status is not AttendanceStatus.HALF_DAY or not self.standard:
+                raise LedgerInputError("INCONSISTENT_ATTENDANCE",
+                                       "present_portion names the worked half of a STANDARD half day")
+            object.__setattr__(self, "present_portion", portion)
+        if self.other_half is not None and self.other_half not in OTHER_HALVES:
+            raise LedgerInputError("INVALID_ATTENDANCE", f"other_half must be one of {OTHER_HALVES}")
         if self.worked_seconds is not None:
             _seconds(self.worked_seconds, "worked_seconds")
         _seconds(self.night_seconds, "night_seconds")
@@ -509,6 +528,23 @@ class AttendanceInput:
         if self.worked_seconds is None and self.night_seconds:
             raise LedgerInputError("INCONSISTENT_ATTENDANCE", "night time needs a complete session")
         _content_hash(self.content_hash)
+
+    @property
+    def standard(self) -> bool:
+        return self.rules_mode == "STANDARD"
+
+    @property
+    def source_type(self) -> str:
+        """Lineage table (JC-AS-13): the evaluation for STANDARD inputs, else the session."""
+        return "attendance_day" if self.standard else "attendance"
+
+    @property
+    def source(self) -> "SourceRef":
+        return SourceRef(self.source_type, self.session_id, self.content_hash)
+
+
+ATTENDANCE_RULES_MODES = ("LEGACY_V1", "STANDARD")
+OTHER_HALVES = ("ABSENT", "UNMARKED", "PENDING_LEAVE")
 
 
 @dataclass(frozen=True)
@@ -1039,6 +1075,11 @@ def _no_pay(leave: LeavePortion, when: dt.date) -> tuple[Decimal, Decimal, str |
     return ONE, ZERO, None
 
 
+def _is_holiday(day: DayInput) -> bool:
+    """A non-working holiday from day facts (BUG-11, D-LH-11): every type except an optional holiday not availed."""
+    return day.holiday is not None and day.holiday.type is not HolidayType.OPTIONAL_NOT_AVAILED
+
+
 def _is_paid_holiday(day: DayInput, cfg: LedgerConfig) -> bool:
     return day.holiday is not None and day.holiday.type in cfg.paid_holiday_types
 
@@ -1088,8 +1129,9 @@ def _claims(day: DayInput, cfg: LedgerConfig, pay: LeavePay) -> _Claims:
         for slot in SLOTS:
             slots[slot] = SlotResult(slot, Classification.SUSPENDED_UNPAID, "2", ZERO, ONE, source=source)
     else:
+        holiday = _is_holiday(day)
         paid_holiday = _is_paid_holiday(day, cfg)
-        working = not (day.weekly_off or paid_holiday)
+        working = not (day.weekly_off or holiday)
         for leave in day.leaves:
             if not (working or leave.counts_non_working_days):
                 result.skipped_leaves.append(leave)
@@ -1098,14 +1140,18 @@ def _claims(day: DayInput, cfg: LedgerConfig, pay: LeavePay) -> _Claims:
                 decided = _leave_slot(slot, leave, day, cfg, pay)
                 if decided is not None:
                     slots[slot] = decided
-        if paid_holiday:
+        if holiday:
+            # Working is decided by day facts, pay here (LH 05 §5.11): a type outside paid_holiday_types is an
+            # unpaid HOLIDAY slot, never presumed present or absent (GV-09, LH-HOL-01).
             assert day.holiday is not None
             source = SourceRef("holiday", day.holiday.holiday_id, day.holiday.content_hash)
             for slot in SLOTS:
                 if slot not in slots:
                     slots[slot] = SlotResult(
-                        slot, Classification.HOLIDAY, "4", _rest_pay(cfg), ZERO, source=source,
-                        detail=day.holiday.name or day.holiday.type.value,
+                        slot, Classification.HOLIDAY, "4", _rest_pay(cfg) if paid_holiday else ZERO, ZERO,
+                        source=source,
+                        detail=(day.holiday.name or day.holiday.type.value) if paid_holiday
+                        else f"{day.holiday.name or day.holiday.type.value} (unpaid holiday type)",
                     )
         if day.weekly_off:
             source = SourceRef("work_week", day.work_week_id)
@@ -1134,12 +1180,13 @@ def _attendance_outcome(
         if cfg.unmarked_day is UnmarkedDayPolicy.PRESENT:
             return Classification.PRESENT, policy, "Unmarked day treated as present by policy"
         return Classification.UNMARKED, policy, "No attendance and no leave: awaiting review"
-    source = SourceRef("attendance", attendance.session_id, attendance.content_hash)
+    source = attendance.source
     if attendance.status is AttendanceStatus.ABSENT:
         return Classification.ABSENT, source, None
     if attendance.closed_without_punch_out:
         return _missing_punch_out(cfg, source)
-    if cfg.derive_status_from_hours and attendance.worked_seconds is not None:
+    # JC-AS-04: the thresholds are "used only before attendance STANDARD rules"; a STANDARD status is final.
+    if cfg.derive_status_from_hours and attendance.worked_seconds is not None and not attendance.standard:
         worked = Decimal(attendance.worked_seconds)
         if worked >= cfg.full_day_min_hours * SECONDS_PER_HOUR:
             return Classification.PRESENT, source, "Present from worked hours"
@@ -1231,6 +1278,23 @@ def _rules_7_and_8(
         for slot in remaining:
             decided[slot] = SlotResult(slot, outcome, "7", ZERO, ZERO, pending=True, source=source, detail=detail)
         return decided, outcome, False
+    attendance = day.attendance
+    if outcome is Classification.HALF_DAY and attendance is not None and attendance.present_portion is not None:
+        # JC-AS-01: the worked half is the slot of ``present_portion`` (not AM first); an UNMARKED or pending-leave
+        # other half follows ATTENDANCE_PAY_POLICY.unmarked_day instead of the rule-8 LOP of an ABSENT half.
+        present = attendance.present_portion.slots[0]
+        remaining.sort(key=lambda slot: slot is not present)
+        if attendance.other_half in ("UNMARKED", "PENDING_LEAVE") and len(remaining) > 1:
+            _apply_outcome(decided, [present], outcome, source, detail, cfg)
+            other = [slot for slot in remaining if slot is not present]
+            unmarked, policy, note = _attendance_outcome(None, cfg)
+            if unmarked is Classification.UNMARKED:
+                for slot in other:
+                    decided[slot] = SlotResult(slot, unmarked, "7", ZERO, ZERO, pending=True, source=policy,
+                                               detail=note)
+                return decided, unmarked, False
+            _apply_outcome(decided, other, unmarked, policy, note, cfg)
+            return decided, None, False
     _apply_outcome(decided, remaining, outcome, source, detail, cfg)
     return decided, None, False
 
@@ -1248,7 +1312,7 @@ def _input_refs(day: DayInput) -> tuple[SourceRef, ...]:
         refs.append(SourceRef("work_week", day.work_week_id))
     refs.extend(SourceRef("manual_lop", lop.source_id, lop.content_hash) for lop in day.manual_lop)
     if day.attendance is not None:
-        refs.append(SourceRef("attendance", day.attendance.session_id, day.attendance.content_hash))
+        refs.append(day.attendance.source)
     refs.extend(SourceRef("on_duty", duty.source_id, duty.content_hash) for duty in day.on_duty)
     return tuple(refs)
 
@@ -1271,7 +1335,7 @@ def _classify_day(
 ) -> tuple[DayRecord, bool]:
     claims = _claims(day, cfg, pay)
     slots = dict(claims.slots)
-    paid_holiday = _is_paid_holiday(day, cfg)
+    paid_holiday = _is_holiday(day)
     scheduled = not (day.weekly_off or paid_holiday)
     if cfg.leave_enabled or cfg.attendance_enabled:
         kind = "holiday" if paid_holiday else "weekly off"
@@ -1320,7 +1384,7 @@ def _classify_day(
                 day.date, (), _input_refs(day),
             ))
     elif attendance is not None and cfg.attendance_enabled:
-        source = SourceRef("attendance", attendance.session_id, attendance.content_hash)
+        source = attendance.source
         if attendance.status is AttendanceStatus.ABSENT:
             if attendance.worked_seconds or attendance.night_seconds:
                 issues.append(LedgerException(
@@ -1357,8 +1421,11 @@ def _classify_day(
         hours_recorded=recorded,
         late_mark=late,
         early_exit=early,
-        late_mark_regularised=late and attendance is not None and attendance.regularised,
-        early_exit_regularised=early and attendance is not None and attendance.regularised,
+        # JC-AS-03: STANDARD inputs carry the excuse per mark; legacy ``regularised`` covers both.
+        late_mark_regularised=late and attendance is not None and (
+            attendance.late_regularised if attendance.standard else attendance.regularised),
+        early_exit_regularised=early and attendance is not None and (
+            attendance.early_exit_regularised if attendance.standard else attendance.regularised),
         half_day=any(slot.classification is Classification.HALF_DAY for slot in (am, pm)),
         inputs=_input_refs(day),
     )
@@ -1427,7 +1494,9 @@ def _apply_non_salaried_holidays(
     for index, record in enumerate(records):
         if not record.employed or not any(s.classification is Classification.HOLIDAY for s in record.slots):
             continue
-        eligible = not record.weekly_off and cfg.non_salaried_holiday_pay is not NonSalariedHolidayPay.OFF
+        # A holiday type outside paid_holiday_types stays an unpaid HOLIDAY slot (GV-09, IG-LH-20): no hourly pay.
+        eligible = (not record.weekly_off and cfg.non_salaried_holiday_pay is not NonSalariedHolidayPay.OFF
+                    and record.holiday is not None and record.holiday.type in cfg.paid_holiday_types)
         assumed: list[str] = []
         if eligible:
             for step, needed, label in ((-1, (AdjacentDays.DAY_BEFORE, AdjacentDays.BOTH), "before"),
@@ -1438,7 +1507,11 @@ def _apply_non_salaried_holidays(
                 if neighbour is None:
                     assumed.append(label)
                 elif not any(s.classification in (Classification.PRESENT, Classification.HALF_DAY)
+                             or (s.classification in (Classification.LEAVE, Classification.LEAVE_EXCUSED)
+                                 and s.paid > ZERO)
                              for s in neighbour.slots):
+                    # LH 05 §5.10 (LH-HOL-03, JC-21): approved leave with a paid treatment counts as present;
+                    # unpaid leave, absence, unmarked days and LOP do not.
                     eligible = False
         if eligible and assumed:
             issues.append(LedgerException(

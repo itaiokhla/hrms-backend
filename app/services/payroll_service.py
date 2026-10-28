@@ -24,7 +24,7 @@ from app.models.attendance import Attendance
 from app.models.employee import Employee
 from app.models.holiday import Holiday
 from app.models.payroll import Payroll, SalaryStructure
-from app.services import settings_service
+from app.services import holiday_service, settings_service
 from app.services.audit_log_service import AuditLogService
 from app.services.notification_service import NotificationService
 
@@ -68,6 +68,7 @@ def working_days(db: Session, company_id: int, employee: Employee, year: int, mo
             Holiday.date <= last,
             Holiday.is_optional.is_(False),
             or_(Holiday.location.is_(None), Holiday.location == employee.location),
+            holiday_service.counting_clause(),
         )
     }
     days = 0
@@ -103,7 +104,8 @@ def calculate(db: Session, principal: Principal, employee_id: int, year: int, mo
     first, last = _month_bounds(year, month)
     statuses = [
         s for (s,) in db.query(Attendance.status).filter(
-            Attendance.employee_id == employee.id, Attendance.date >= first, Attendance.date <= last
+            Attendance.employee_id == employee.id, Attendance.date >= first, Attendance.date <= last,
+            Attendance.voided_at.is_(None),  # AS-M2 (spine §15.4)
         )
     ]
     present = statuses.count("present")

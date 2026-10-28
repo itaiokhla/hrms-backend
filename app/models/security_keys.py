@@ -5,7 +5,7 @@ from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKeyConstraint, 
 from app.models.base import BaseModel, TenantMixin
 
 DATA_KEY_STATUSES = ("ACTIVE", "RETIRED")
-DATA_KEY_PURPOSES = ("PAYROLL_PII", "MFA_SECRET")
+DATA_KEY_PURPOSES = ("PAYROLL_PII", "MFA_SECRET", "ATTENDANCE_BIOMETRIC")  # face encodings: as_m2_sites_consents
 
 
 class TenantDataKey(TenantMixin, BaseModel):

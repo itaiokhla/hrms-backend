@@ -20,12 +20,12 @@ Supported here: country/currency metadata for every ISO code. Statutory payroll
 rules per country are NOT implemented (no country packs exist yet).
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 import pycountry
 import pytz
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -362,6 +362,8 @@ def save_branch(db: Session, principal: Principal, data: dict, branch_id: Option
         db.query(Employee).filter(Employee.company_id == cid, Employee.location == old_name).update(
             {Employee.location: branch.name}, synchronize_session=False
         )
+        # Until BUG-21 stops this rewrite, it passes the published-year guard of 0044 like a legacy save.
+        db.execute(text("SET LOCAL app.holiday_amendment = 'on'"))
         db.query(Holiday).filter(Holiday.company_id == cid, Holiday.location == old_name).update(
             {Holiday.location: branch.name}, synchronize_session=False
         )
@@ -678,19 +680,67 @@ def close_on_termination(db: Session, employee: Employee, end: date) -> dict:
     return {"closed_assignment_ids": closed, "removed_assignment_ids": removed}
 
 
-def employee_local_today(db: Session, employee: Employee) -> date:
-    """Today in the timezone of the legal entity the employee is placed in (D-11)."""
-    entity = entity_for_employee_on(db, employee.company_id, employee.id, date.today())
-    zone = entity.timezone if entity is not None else None
-    if zone is None:
-        company = db.get(Company, employee.company_id)
-        zone = company.timezone if company is not None else None
+def _tz(zone: Optional[str]):
     try:
-        tz = pytz.timezone(zone or "UTC")
+        return pytz.timezone(zone or "UTC")
     except pytz.UnknownTimeZoneError:
-        tz = pytz.utc
-    # Through the module, so a test's attendance clock applies too.
-    return clock.utcnow().astimezone(tz).date()
+        return pytz.utc
+
+
+def placement_zone(db: Session, assignment: Optional[EmployeeAssignment], company_id: Optional[int] = None) -> str:
+    """The work zone of a placement (SPINE §2 "Local today"; LH 05 §3.2 ``timezone``): its ``work_timezone``, else
+    the branch's, else the legal entity's, else the company's, else UTC."""
+    if assignment is not None:
+        if getattr(assignment, "work_timezone", None):
+            return assignment.work_timezone
+        branch = db.get(Branch, assignment.branch_id) if assignment.branch_id else None
+        if branch is not None and branch.timezone:
+            return branch.timezone
+        entity = db.get(LegalEntity, assignment.legal_entity_id) if assignment.legal_entity_id else None
+        if entity is not None and entity.timezone:
+            return entity.timezone
+        company_id = assignment.company_id
+    company = db.get(Company, company_id) if company_id else None
+    return (company.timezone if company is not None else None) or "UTC"
+
+
+def _primary_rows(db: Session, employee: Employee) -> List[EmployeeAssignment]:
+    return (db.query(EmployeeAssignment)
+            .filter(EmployeeAssignment.company_id == employee.company_id, EmployeeAssignment.employee_id == employee.id,
+                    EmployeeAssignment.is_primary.is_(True))
+            .order_by(EmployeeAssignment.effective_from, EmployeeAssignment.id).all())
+
+
+def employee_local_date(db: Session, employee: Employee, instant: Optional[datetime] = None) -> date:
+    """The employee-local date of a UTC instant across placements in different zones (LH 02 §7.2, LH-TZ-07): the
+    date d whose valid placement, converted with that placement's zone, maps the instant to d; none (a gap at a
+    zone change) -> the outgoing placement's last date; several (an overlap) -> the later date."""
+    instant = instant or clock.utcnow()
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    rows = _primary_rows(db, employee)
+    if not rows:
+        return instant.astimezone(_tz(placement_zone(db, None, employee.company_id))).date()
+    candidates = []
+    for row in rows:
+        local = instant.astimezone(_tz(placement_zone(db, row))).date()
+        if row.effective_from <= local and (row.effective_to is None or local <= row.effective_to):
+            candidates.append(local)
+    if candidates:
+        return max(candidates)
+    # A gap between placements: the date stays on the outgoing placement until the new zone reaches its start.
+    for row in reversed(rows):
+        local = instant.astimezone(_tz(placement_zone(db, row))).date()
+        if row.effective_to is not None and row.effective_to < local:
+            return row.effective_to
+    first = rows[0]
+    return instant.astimezone(_tz(placement_zone(db, first))).date()
+
+
+def employee_local_today(db: Session, employee: Employee) -> date:
+    """Today for the employee: the zone of the placement valid at the current instant (work zone -> branch ->
+    legal entity -> company; BUG-07 part 2, LH 14 WI-1.8). Through ``app.core.clock``, so test clocks apply."""
+    return employee_local_date(db, employee, clock.utcnow())
 
 
 def record_rehire(db: Session, employee: Employee, user_id: Optional[int], start: date,
@@ -815,6 +865,7 @@ def history(db: Session, company_id: int, employee_id: int) -> List[dict]:
     departments = {d.id: d.name for d in db.query(Department).filter(Department.company_id == company_id)}
     codes = org_dimensions.dimension_codes_map(db, company_id)
     today = date.today()
+    from app.models.pay_org import HolidayCalendar
     from app.services.holiday_assignments import WorkWeekResolver
 
     resolver = WorkWeekResolver(db, company_id)
@@ -827,6 +878,15 @@ def history(db: Session, company_id: int, employee_id: int) -> List[dict]:
         resolved = resolver.resolve(a, a.effective_from)
         return {"work_week_inherited": True, "work_week_source": resolved.source,
                 "work_week_code": codes["work_week"].get(resolved.pattern_id)}
+
+    calendar_codes = dict(db.query(HolidayCalendar.id, HolidayCalendar.code).filter(
+        HolidayCalendar.company_id == company_id))
+
+    def holiday_calendar(a: EmployeeAssignment) -> dict:
+        """The calendar on the placement's first day: the override, else the inherited one (04-holiday/01 §4.1)."""
+        calendar_id, source = resolver.calendar_on(a, a.effective_from)
+        return {"holiday_calendar_inherited": source != "OVERRIDE", "holiday_calendar_source": source,
+                "holiday_calendar_code": calendar_codes.get(calendar_id)}
 
     return [
         {
@@ -849,6 +909,7 @@ def history(db: Session, company_id: int, employee_id: int) -> List[dict]:
             "fte": str(a.fte) if a.fte is not None else None,
             **{f"{kind}_code": codes[kind].get(getattr(a, column)) for kind, column in org_dimensions.CODE_COLUMNS},
             **work_week(a),
+            **holiday_calendar(a),
         }
         for a in rows
     ]

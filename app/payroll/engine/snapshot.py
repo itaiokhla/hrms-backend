@@ -960,7 +960,8 @@ def _simple(cls: type, id_key: str, raw: Any, path: str) -> Any:
 
 def _attendance(raw: Any, path: str) -> lg.AttendanceInput:
     data = _mapping(raw, path, ("status", "session_id", "closed_without_punch_out", "worked_seconds", "late",
-                                "early_exit", "regularised", "night_seconds", "content_hash"), ("status",))
+                                "early_exit", "regularised", "night_seconds", "content_hash") + _STANDARD_ATTENDANCE_KEYS,
+                    ("status",))
     return _guard(path, lambda: lg.AttendanceInput(
         data["status"], _source_id(data.get("session_id"), f"{path}.session_id", optional=True),
         _bool(data.get("closed_without_punch_out"), f"{path}.closed_without_punch_out", False),
@@ -968,7 +969,30 @@ def _attendance(raw: Any, path: str) -> lg.AttendanceInput:
         _bool(data.get("late"), f"{path}.late", False), _bool(data.get("early_exit"), f"{path}.early_exit", False),
         _bool(data.get("regularised"), f"{path}.regularised", False),
         _int(data.get("night_seconds"), f"{path}.night_seconds", default=0),
-        _str(data.get("content_hash"), f"{path}.content_hash", optional=True)))
+        _str(data.get("content_hash"), f"{path}.content_hash", optional=True),
+        rules_mode=_str(data.get("rules_mode"), f"{path}.rules_mode", optional=True) or "LEGACY_V1",
+        present_portion=_str(data.get("present_portion"), f"{path}.present_portion", optional=True),
+        other_half=_str(data.get("other_half"), f"{path}.other_half", optional=True),
+        late_regularised=_bool(data.get("late_regularised"), f"{path}.late_regularised", False),
+        early_exit_regularised=_bool(data.get("early_exit_regularised"), f"{path}.early_exit_regularised", False)))
+
+
+# JC-AS-01: written only for STANDARD inputs, so v1 / LEGACY_V1 snapshots stay byte-identical (golden T-3).
+_STANDARD_ATTENDANCE_KEYS = ("rules_mode", "present_portion", "other_half", "late_regularised",
+                             "early_exit_regularised")
+
+
+def _attendance_dict(att: lg.AttendanceInput) -> dict[str, Any]:
+    body = {"status": att.status.value, "session_id": att.session_id,
+            "closed_without_punch_out": att.closed_without_punch_out, "worked_seconds": att.worked_seconds,
+            "late": att.late, "early_exit": att.early_exit, "regularised": att.regularised,
+            "night_seconds": att.night_seconds, "content_hash": att.content_hash}
+    if att.standard:
+        body.update(rules_mode=att.rules_mode,
+                    present_portion=att.present_portion.value if att.present_portion is not None else None,
+                    other_half=att.other_half, late_regularised=att.late_regularised,
+                    early_exit_regularised=att.early_exit_regularised)
+    return body
 
 
 _DAY_KEYS = ("date", "employed", "suspended_unpaid", "leaves", "holiday", "weekly_off", "manual_lop", "attendance",
@@ -1014,11 +1038,7 @@ def day_to_dict(day: lg.DayInput) -> dict[str, Any]:
         "weekly_off": day.weekly_off,
         "manual_lop": [{"source_id": m.source_id, "portion": m.portion.value, "content_hash": m.content_hash}
                        for m in day.manual_lop],
-        "attendance": None if att is None else {
-            "status": att.status.value, "session_id": att.session_id,
-            "closed_without_punch_out": att.closed_without_punch_out, "worked_seconds": att.worked_seconds,
-            "late": att.late, "early_exit": att.early_exit, "regularised": att.regularised,
-            "night_seconds": att.night_seconds, "content_hash": att.content_hash},
+        "attendance": None if att is None else _attendance_dict(att),
         "on_duty": [{"source_id": o.source_id, "portion": o.portion.value, "content_hash": o.content_hash}
                     for o in day.on_duty],
         "segment": day.segment, "standard_hours": dec_str(day.standard_hours), "assignment_id": day.assignment_id,

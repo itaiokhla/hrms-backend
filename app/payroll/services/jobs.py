@@ -150,7 +150,13 @@ def register(job_type: str, *, platform: bool = False, access: Optional[AccessCh
 # app/services. Each program goal appends the modules it ships; a module that a later goal ships is listed in
 # FUTURE_HANDLER_MODULES until then and skipped while it does not exist.
 HANDLER_MODULES: Tuple[str, ...] = ("app.services.scheduler_fanout", "app.services.holiday_assignments",
-                                   "app.services.leave_jobs")
+                                   "app.services.leave_jobs",
+                                   "app.services.shift_rosters",  # AS-M5: registers the roster provider (JC-AS-31)
+                                   "app.services.team_service",  # X-M1: team.membership_activate, access.assignment_expire
+                                   "app.services.holiday_rollover",  # LH-M1 Goal 5: holiday.rollover / .reminders
+                                   "app.services.holiday_closures",  # LH-M1 Goal 5: holiday.closure_retro
+                                   "app.services.attendance_jobs",  # AS-M2: day_close, location_sweep, consent_expire
+                                   "app.services.roster_consents")  # AS-M2: roster.revalidate_employee (AS-ROS-06)
 FUTURE_HANDLER_MODULES: FrozenSet[str] = frozenset({
     "app.services.scheduler_fanout", "app.services.holiday_rollover", "app.services.holiday_assignments",
     "app.services.holiday_calendar_service", "app.services.leave_jobs", "app.services.shift_catalogue",

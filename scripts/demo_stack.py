@@ -58,6 +58,9 @@ def main() -> None:
         LOG_FILE = ROOT / "logs" / f"{DATA_DIR.name.lstrip('.')}-backend.log"
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+    from pg_tzdata import ensure_timezone_data
+
+    ensure_timezone_data()  # IANA zones for SQL AT TIME ZONE (pgserver ships without them)
     server = pgserver.get_server(str(DATA_DIR), cleanup_mode="stop")
     base = server.get_uri()
     conn = psycopg2.connect(base)
@@ -85,6 +88,7 @@ def main() -> None:
     env = dict(
         os.environ,
         ENVIRONMENT="development",
+        DEBUG="false",
         SECRET_KEY=_stable_secret(".secret_key", 48),
         MIGRATION_DATABASE_URL=owner_url,
         SYSTEM_DATABASE_URL=owner_url,
