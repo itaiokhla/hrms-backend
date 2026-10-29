@@ -57,6 +57,18 @@ READERS = {
     "app/services/holiday_closures.py::closure_impact": "holiday/test_rollover.py",
     # AS-M3: the evaluation batch loader (non-voided sessions of the range; legacy marks only for the LEGACY_V1 port)
     "app/services/attendance_days.py::load_inputs_many": "attendance/test_attendance_days.py",
+    # AS-M4 (G-13): request targets refuse voided sessions; form and muster list non-voided sessions only.
+    "app/services/attendance_requests.py::_session": "attendance/test_requests.py",
+    "app/services/attendance_requests.py::_session_for_missing": "attendance/test_requests.py",
+    "app/services/attendance_requests.py::form_context": "attendance/test_requests.py",
+    "app/services/attendance_muster.py::grid": "attendance/test_requests.py",
+    # Team attendance (IG-AS-98..100): the board lists non-voided sessions; delete refuses a voided session.
+    "app/services/attendance_team.py::team_today": "attendance/test_team_attendance.py",
+    "app/services/attendance_team.py::delete_session": "attendance/test_team_attendance.py",
+    # AS-M7 (G-17): device pairing reads and voids only its own non-voided device session (pairing_key).
+    "app/services/device_ingest.py::_pair_one": "attendance/test_device_ingest.py",
+    # AS-M9 (G-20): the live board counts non-voided sessions of the date (count = list, D-1).
+    "app/services/attendance_analytics.py::board": "attendance/test_insights.py",
 }
 
 

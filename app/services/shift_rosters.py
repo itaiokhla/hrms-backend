@@ -660,8 +660,11 @@ def _ranges(days: Sequence[date]) -> List[Tuple[date, date]]:
 def _write(db: Session, principal: Optional[Principal], company_id: int, *, kind: str, period: Optional[RosterPeriod],
            candidate: Sequence[_Cell], changed: Sequence[_Cell], scope: dict, outcome: ValidationOutcome,
            acknowledged: Sequence[str], reasons: Mapping[str, Any], exemptions: Mapping[str, Any],
-           initiated_by: str = "EMPLOYER", reason_code: Optional[str] = None) -> RosterPublication:
-    """Write one publication: entries, change rows, the append-only publication, change log, audit, outbox."""
+           initiated_by: str = "EMPLOYER", reason_code: Optional[str] = None,
+           request_id: Optional[int] = None) -> RosterPublication:
+    """Write one publication: entries, change rows, the append-only publication, change log, audit, outbox.
+    ``request_id``: the applied shift request (AS-M6) stamped on its entries and change rows; every other open request
+    on a changed entry is SUPERSEDED (03-shifts/03 §4.4)."""
     from app.services import roster_validation
 
     now = clock.utcnow()
@@ -720,7 +723,7 @@ def _write(db: Session, principal: Optional[Principal], company_id: int, *, kind
                                 roster_period_id=period.id if period is not None else None,
                                 publication_id=publication.id, version=1, published_at=now,
                                 published_by_user_id=principal.user_id if principal is not None else None,
-                                note=cell.note)
+                                note=cell.note, request_id=request_id)
             db.add(entry)
             change_kind = "CREATED"
         else:
@@ -729,6 +732,8 @@ def _write(db: Session, principal: Optional[Principal], company_id: int, *, kind
                         "custom_segments", "site_id", "planned_work_mode"):
                 setattr(entry, key, getattr(cell, key))
             entry.source, entry.note = cell.source, cell.note
+            entry.request_id = request_id
+            entry.acknowledged_at = None  # a changed shift is acknowledged again
             entry.version += 1
             entry.row_version += 1
             entry.publication_id, entry.published_at = publication.id, now
@@ -740,9 +745,13 @@ def _write(db: Session, principal: Optional[Principal], company_id: int, *, kind
         db.add(RosterEntryChange(company_id=company_id, publication_id=publication.id, entry_id=entry.id,
                                  employee_id=cell.employee_id, shift_date=cell.shift_date, entry_seq=cell.entry_seq,
                                  change_kind=change_kind, before=before, after=after, notice_hours=notice,
-                                 initiated_by=initiated_by, reason_code=reason_code))
+                                 initiated_by=initiated_by, reason_code=reason_code, request_id=request_id))
         by_employee.setdefault(cell.employee_id, []).append(cell.shift_date)
     db.flush()
+    from app.services import shift_requests
+
+    shift_requests.supersede_for_entries(db, company_id, [c.entry.id for c in changed if c.entry is not None],
+                                         keep_request_id=request_id)
     for employee_id, days in sorted(by_employee.items()):
         for first, last in _ranges(days):
             log_change(db, company_id, record_type="roster_entry", record_id=publication.id, change="UPDATED",

@@ -18,6 +18,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    Time,
     UniqueConstraint,
     text,
 )
@@ -188,9 +189,20 @@ class OnDutyRequest(TenantMixin, BaseModel):
     decided_at = Column(DateTime(timezone=True), nullable=True)
     cancelled_at = Column(DateTime(timezone=True), nullable=True)
     row_version = Column(Integer, nullable=False, default=1)
+    # AS-M4 (migration 0052; 04-attendance/04 §5.2, JC-AS-37): kind, partial window, trip batch, punch snapshot.
+    kind = Column(String(12), nullable=False, default="ON_DUTY", server_default="ON_DUTY")
+    start_time = Column(Time, nullable=True)
+    end_time = Column(Time, nullable=True)
+    batch_id = Column(String(36), nullable=True)
+    requires_punch = Column(Boolean, nullable=False, default=False, server_default="false")
+    reason_code = Column(String(40), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("company_id", "id", name="uq_on_duty_requests_company_id_id"),
+        CheckConstraint("kind IN ('ON_DUTY', 'REMOTE_WORK')", name="ck_on_duty_requests_kind"),
+        CheckConstraint("(start_time IS NULL) = (end_time IS NULL) AND (end_time IS NULL OR end_time > start_time)",
+                        name="ck_on_duty_requests_window"),
+        Index("ix_on_duty_requests_batch", "company_id", "batch_id", postgresql_where=text("batch_id IS NOT NULL")),
         _employee_fk("on_duty_requests"),
         _approval_fk("on_duty_requests"),
         CheckConstraint(f"portion IN {PORTIONS}", name="ck_on_duty_requests_portion"),

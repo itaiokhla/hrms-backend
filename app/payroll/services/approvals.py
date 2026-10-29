@@ -58,8 +58,13 @@ from app.services import leave_service, org_service
 from app.services.audit_log_service import AuditLogService
 from app.services.notification_service import NotificationService
 
-PENDING, APPROVED, REJECTED, CANCELLED = APPROVAL_REQUEST_STATUSES
-DECISIONS = ("APPROVE", "REJECT")
+PENDING, APPROVED, REJECTED, CANCELLED, RETURNED = APPROVAL_REQUEST_STATUSES
+DECISIONS = ("APPROVE", "REJECT", "RETURN")
+# RETURN sends the request back to the requester to edit and resubmit (AS-M4 interim of LH-M5a, IG-AS-81).
+RETURNABLE_MODULES = frozenset(("attendance", "timesheet", "team_inputs"))
+# Modules with routes, team_lead steps, SLA due times, skip-level for a barred requester and the SoD error codes
+# (04-attendance/04 §9; JC-AS-14, -21, -46). Other modules keep their behaviour unchanged.
+ROUTED_MODULES = frozenset(("attendance", "timesheet", "shift_request"))
 
 # Permission an approver of each module must hold (3.9 §5.1); leave keeps leave:approve in its own service.
 MODULE_PERMISSIONS: Dict[str, str] = {
@@ -75,8 +80,11 @@ MODULE_PERMISSIONS: Dict[str, str] = {
     "bank_change": "payroll:bank_details:approve",
     "payment_batch": "payroll:payment:approve",
     "lop": "attendance:regularize",
-    "attendance": "attendance:regularize",
+    "attendance": "attendance:approve",  # JC-AS-14 (AS-M4); lop keeps attendance:regularize
+    "timesheet": "attendance:approve",
     "settings": "settings:approve_changes",
+    "shift_request": "roster:approve",  # AS-M6 (migration 0058): routes, team_lead steps, SLA like attendance
+    "team_inputs": "payroll:inputs:approve",  # manager-prepared batches: payroll commits them (migration 0058)
 }
 ENGINE_MODULES = tuple(m for m in APPROVAL_MODULES if m != "leave")
 assert set(MODULE_PERMISSIONS) == set(ENGINE_MODULES), "every approval module needs an approve permission"
@@ -91,6 +99,16 @@ RESERVED_CONTEXT_KEYS = ("subject_employee_id", "pending_reason")
 MAX_SCAN = 1000
 NOTIFY_LIMIT = 25
 INBOX_URL = "/payroll/approvals"
+# Per-module inbox links (JC-AS-14): attendance items are decided in the module-neutral inbox.
+MODULE_INBOX_URLS: Dict[str, str] = {"attendance": "/approvals?module=attendance",
+                                     "timesheet": "/approvals?module=timesheet",
+                                     "shift_request": "/attendance/shift-requests",
+                                     "team_inputs": "/payroll/team-inputs?tab=approvals"}
+
+
+def inbox_url(module: str) -> str:
+    return MODULE_INBOX_URLS.get(module, INBOX_URL)
+
 
 AUDIT_MODULES: Dict[str, str] = {
     "payroll_run": payroll_audit.PAYROLL_RUNS,
@@ -101,7 +119,10 @@ AUDIT_MODULES: Dict[str, str] = {
     "overtime": payroll_audit.PAYROLL_INPUTS,
     "task": payroll_audit.PAYROLL_INPUTS,
     "lop": payroll_audit.PAYROLL_INPUTS,
-    "attendance": payroll_audit.PAYROLL_INPUTS,
+    "attendance": "Attendance",  # BUG-AS-59
+    "timesheet": "Attendance",
+    "shift_request": "Shifts",
+    "team_inputs": payroll_audit.PAYROLL_INPUTS,
     "reimbursement": payroll_audit.REIMBURSEMENTS,
     "loan": payroll_audit.LOANS,
     "bank_change": payroll_audit.BANK_ACCOUNTS,
@@ -118,7 +139,10 @@ MODULE_LABELS: Dict[str, str] = {
     "overtime": "overtime",
     "task": "task",
     "lop": "loss-of-pay adjustment",
-    "attendance": "attendance correction",
+    "attendance": "attendance request",
+    "timesheet": "timesheet",
+    "shift_request": "shift request",
+    "team_inputs": "team payroll batch",
     "reimbursement": "reimbursement claim",
     "loan": "loan",
     "bank_change": "bank details change",
@@ -131,6 +155,7 @@ APPROVER_LABELS: Dict[str, str] = {
     "finance_role": "Finance approvers",
     "specific_user": "Named approver",
     PERMISSION_HOLDERS: "Approvers",
+    "team_lead": "Team lead",
 }
 
 APPROVAL_REQUESTED = "APPROVAL_REQUESTED"
@@ -139,6 +164,7 @@ APPROVAL_REJECTED = "APPROVAL_REJECTED"
 APPROVAL_CANCELLED = "APPROVAL_CANCELLED"
 APPROVAL_WITHDRAWN = "APPROVAL_WITHDRAWN"
 APPROVAL_REROUTED = "APPROVAL_REROUTED"
+APPROVAL_RETURNED = "APPROVAL_RETURNED"
 
 DecidedCallback = Callable[[Session, Optional[Principal], ApprovalRequest], None]
 _CALLBACKS: Dict[Tuple[str, str], List[DecidedCallback]] = {}
@@ -265,6 +291,7 @@ class _Context:
         self._coverage: Dict[Tuple[int, str, int], bool] = {}
         self._names: Dict[Tuple[str, int], Optional[str]] = {}
         self._delegators: Dict[Tuple[int, str], List[int]] = {}
+        self._resolved: Dict[tuple, List[int]] = {}
 
     @property
     def company(self) -> Company:
@@ -371,7 +398,15 @@ def _hierarchy_approver(ctx: _Context, request: ApprovalRequest, step: ApprovalR
     subject = ctx.db.get(Employee, employee_id) if employee_id is not None else None
     if subject is None:
         return None
-    return leave_service.resolve_step_employee(ctx.db, subject, step)
+    approver = leave_service.resolve_step_employee(ctx.db, subject, step)
+    if (request.module in ROUTED_MODULES and approver is not None and request.requested_by_user_id is not None
+            and approver.user_id == request.requested_by_user_id):
+        # Barred as REQUESTER (a manager filing for a report): the step resolves skip-level, the same approver type
+        # applied to the requester (04-attendance/04 §9.9 rule 1, GV-AS-REG-15).
+        requester = ctx.db.query(Employee).filter(Employee.company_id == ctx.company_id,
+                                                  Employee.user_id == request.requested_by_user_id).first()
+        return leave_service.resolve_step_employee(ctx.db, requester, step) if requester is not None else None
+    return approver
 
 
 def _permission_holder_user_ids(db: Session, permission: str) -> List[int]:
@@ -398,8 +433,59 @@ def _permission_holder_user_ids(db: Session, permission: str) -> List[int]:
     return [r[0] for r in rows]
 
 
+def _work_date(request: ApprovalRequest) -> Optional[date]:
+    raw = (request.context or {}).get("work_date")
+    try:
+        return date.fromisoformat(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+
+
+def _later_steps(request: ApprovalRequest, step: ApprovalRequestStep) -> bool:
+    return any(s.step_order > step.step_order and s.status in ("waiting", "pending") for s in request.steps)
+
+
+def _team_lead_employee_ids(ctx: _Context, request: ApprovalRequest, step: ApprovalRequestStep) -> List[int]:
+    """X 01 §7.2 through team_service; with nobody resolved and no later step, the last resort is the subject's
+    primary manager (04-attendance/04 §9.3, GV-AS-REG-09)."""
+    key = ("team_lead", request.id, step.step_order)
+    if key not in ctx._resolved:
+        from app.services import team_service
+
+        employee_id = subject_employee_id(request)
+        found: List[int] = []
+        if employee_id is not None:
+            resolution = team_service.resolve_team_lead(
+                ctx.db, ctx.company_id, employee_id, _work_date(request) or ctx.today, action_date=ctx.today,
+                module=request.module)
+            found = list(resolution.approver_employee_ids)
+            if not found and not _later_steps(request, step):
+                manager = ctx.db.query(Employee.manager_id).filter(
+                    Employee.company_id == ctx.company_id, Employee.id == employee_id).scalar()
+                found = [manager] if manager else []
+        ctx._resolved[key] = [e for e in found if e != employee_id]
+    return ctx._resolved[key]
+
+
+def _escalated_user_ids(request: ApprovalRequest, step: ApprovalRequestStep) -> List[int]:
+    raw = ((request.context or {}).get("escalated_user_ids") or {}).get(str(step.step_order))
+    return _int_list(raw)
+
+
 def _candidate_user_ids(ctx: _Context, request: ApprovalRequest, step: ApprovalRequestStep) -> List[int]:
+    base = _base_candidates(ctx, request, step)
+    return base + [u for u in _escalated_user_ids(request, step) if u not in base]
+
+
+def _base_candidates(ctx: _Context, request: ApprovalRequest, step: ApprovalRequestStep) -> List[int]:
     kind = step.approver_type
+    if kind == "team_lead":
+        users = []
+        for employee_id in _team_lead_employee_ids(ctx, request, step):
+            employee = ctx.db.get(Employee, employee_id)
+            if employee is not None and employee.user_id:
+                users.append(employee.user_id)
+        return users
     if kind == "role":
         return leave_service.role_member_user_ids(ctx.db, step.role_id)
     if kind == "specific_user":
@@ -413,7 +499,13 @@ def _candidate_user_ids(ctx: _Context, request: ApprovalRequest, step: ApprovalR
 def _is_step_approver(ctx: _Context, request: ApprovalRequest, step: ApprovalRequestStep, principal: Principal) -> bool:
     if _is_barred(request, principal):
         return False
+    if principal.user_id in _escalated_user_ids(request, step):  # SLA escalation target (§9.5)
+        return ctx.covers(principal, step_permission(request, step), request)
     kind = step.approver_type
+    if kind == "team_lead":
+        if principal.employee_id not in _team_lead_employee_ids(ctx, request, step):
+            return False
+        return ctx.covers(principal, step_permission(request, step), request)
     if kind == "role" and step.role_id not in principal.role_ids:
         return False
     if kind == "specific_user" and principal.user_id != step.specific_user_id:
@@ -511,10 +603,20 @@ def _notify_step(ctx: _Context, request: ApprovalRequest, step: ApprovalRequestS
             NotificationService.create(
                 ctx.db, user_id, f"{label.capitalize()} awaiting your approval",
                 f"Approval request #{request.id} ({label}) is waiting for your decision.",
-                "approval", f"{INBOX_URL}?id={request.id}",
+                "approval", _link(request),
             )
     if "EMAIL" in channels:
         payroll_notifications.queue_approval_emails(ctx.db, request, step, user_ids)
+
+
+def _link(request: ApprovalRequest) -> str:
+    base = inbox_url(request.module)
+    return f"{base}{'&' if '?' in base else '?'}id={request.id}"
+
+
+def step_sla_hours(request: ApprovalRequest, step: ApprovalRequestStep) -> Optional[int]:
+    raw = ((request.context or {}).get("sla_hours") or {}).get(str(step.step_order))
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else None
 
 
 def _set_pending(ctx: _Context, request: ApprovalRequest, step: ApprovalRequestStep) -> None:
@@ -523,6 +625,11 @@ def _set_pending(ctx: _Context, request: ApprovalRequest, step: ApprovalRequestS
     request.current_step = step.step_order
     _set_reason(request, None)
     if was_waiting:
+        hours = step_sla_hours(request, step)
+        if hours is not None and step.due_at is None:
+            from datetime import timedelta
+
+            step.due_at = clock.utcnow() + timedelta(hours=hours)
         _notify_step(ctx, request, step)
 
 
@@ -540,7 +647,7 @@ def _finish(ctx: _Context, request: ApprovalRequest, status: str, principal: Opt
         NotificationService.create(
             ctx.db, request.requested_by_user_id, f"{label.capitalize()} {status.lower()}",
             f"Your {label} approval request #{request.id} was {status.lower()}.",
-            "approval", f"{INBOX_URL}?id={request.id}",
+            "approval", _link(request),
         )
     if callbacks:
         _run_callbacks(ctx.db, principal, request)
@@ -628,8 +735,12 @@ def submit(
     amount: Any = None,
     currency: Optional[str] = None,
     context: Optional[Mapping[str, Any]] = None,
+    attributes: Optional[Mapping[str, Any]] = None,
 ) -> ApprovalRequest:
     """Open an approval request for one subject and route it to its first approvers.
+
+    ``attributes`` (routed modules) are the subject's values matched against ``approval_routes.criteria``: the
+    ACTIVE route with the highest priority whose criteria all match is selected now and never replaced (§9.2).
 
     `principal` None means the system raises the request (no requester). At most one request per subject
     is pending (409 APPROVAL_ALREADY_PENDING). `amount` (decimal string, int or Decimal, rounded to the
@@ -668,13 +779,22 @@ def submit(
     if duplicate is not None:
         raise conflict("An approval request for this item is already pending.", "APPROVAL_ALREADY_PENDING")
 
+    route = select_route(db, company_id, module, attributes or {}) if module in ROUTED_MODULES else None
     chain = (
         db.query(ApprovalChainStep)
-        .filter(ApprovalChainStep.company_id == company_id, ApprovalChainStep.module == module)
+        .filter(ApprovalChainStep.company_id == company_id, ApprovalChainStep.module == module,
+                ApprovalChainStep.route_id == route.id if route is not None else ApprovalChainStep.route_id.is_(None))
         .order_by(ApprovalChainStep.step_order)
         .all()
     )
-    applicable = [s for s in chain if _step_applies(s, value, currency, data)]
+    applicable = [s for s in chain if _step_applies(s, value, currency, data)
+                  and (module not in ROUTED_MODULES or _condition_applies(s.condition, attributes or {}))]
+    if route is not None:
+        data["route_key"] = route.route_key
+    if module in ROUTED_MODULES:
+        default_sla = _default_sla_hours(db, company_id)
+        data["sla_hours"] = {str(order): (step.sla_hours or default_sla)
+                             for order, step in enumerate(applicable, start=1)} if applicable else {"1": default_sla}
     request = ApprovalRequest(
         company_id=company_id,
         module=module,
@@ -732,19 +852,31 @@ def _load(db: Session, company_id: int, request_id: int, lock: bool = False) -> 
     return request
 
 
+def _self_decision(request: ApprovalRequest, message: str, cause: str) -> Exception:
+    if request.module not in ROUTED_MODULES:
+        return forbidden(message)
+    from fastapi import status as http_status
+
+    from app.core.errors import AppError
+
+    return AppError(http_status.HTTP_403_FORBIDDEN, message, "SELF_DECISION_FORBIDDEN", extra={"details": {"cause": cause}})
+
+
 def _deny(ctx: _Context, request: ApprovalRequest, actor: Principal, visible: bool) -> None:
     if not visible:
         raise not_found("Approval request")
     if request.status != PENDING:
         raise conflict(f"This request is already {request.status.lower()}.", "APPROVAL_ALREADY_DECIDED")
     makers = set(_int_list((request.context or {}).get("maker_user_ids")))
-    if actor.user_id == request.requested_by_user_id or actor.user_id in makers:
-        raise forbidden("You cannot approve a request you prepared or submitted.")
     subject = subject_employee_id(request)
     if subject is not None and actor.employee_id == subject:
-        raise forbidden("You cannot approve a request about your own record.")
+        raise _self_decision(request, "You cannot approve a request about your own record.", "SUBJECT")
+    if actor.user_id == request.requested_by_user_id:
+        raise _self_decision(request, "You cannot approve a request you prepared or submitted.", "REQUESTER")
+    if actor.user_id in makers:
+        raise _self_decision(request, "You cannot approve a request you prepared or submitted.", "MAKER")
     if actor.user_id in _barred_user_ids(request):
-        raise forbidden("You already approved an earlier step of this request.")
+        raise _self_decision(request, "You already approved an earlier step of this request.", "EARLIER_APPROVER")
     raise forbidden("This request is not awaiting your approval.")
 
 
@@ -759,10 +891,12 @@ def decide(
     """Approve or reject the current step. Everything is re-checked under the request's row lock."""
     decision = str(decision).upper()
     if decision not in DECISIONS:
-        raise bad_request("Decision must be APPROVE or REJECT.", "INVALID_DECISION")
+        raise bad_request("Decision must be APPROVE, REJECT or RETURN.", "INVALID_DECISION")
     remarks = (remarks or "").strip() or None
     if decision == "REJECT" and not remarks:
         raise bad_request("Give a reason for the rejection.", "REMARKS_REQUIRED")
+    if decision == "RETURN" and not remarks:
+        raise bad_request("Say what the requester should change.", "REMARKS_REQUIRED")
 
     ctx = _Context(db, principal.company_id)
     actor = ctx.principal_for_user(principal.user_id)
@@ -780,9 +914,12 @@ def decide(
     if expected_step is not None and expected_step != request.current_step:
         raise conflict("This request moved on since you loaded it.", "APPROVAL_STEP_CHANGED")
 
+    if decision == "RETURN" and request.module not in RETURNABLE_MODULES:
+        raise bad_request("This request cannot be returned.", "INVALID_DECISION")
+
     step = _current_step(request)
     approve = decision == "APPROVE"
-    step.status = "approved" if approve else "rejected"
+    step.status = {"APPROVE": "approved", "REJECT": "rejected", "RETURN": "returned"}[decision]
     step.acted_by_user_id = actor.user_id
     step.acted_as = acting
     step.acted_at = utcnow()
@@ -790,12 +927,14 @@ def decide(
     if approve:
         _advance(ctx, request, actor)
     else:
-        _finish(ctx, request, REJECTED, actor)
+        _finish(ctx, request, REJECTED if decision == "REJECT" else RETURNED, actor)
     db.flush()
     label = MODULE_LABELS[request.module]
+    verb = {"APPROVE": "Approved", "REJECT": "Rejected", "RETURN": "Returned"}[decision]
     _audit(
-        db, actor, request, APPROVAL_APPROVED if approve else APPROVAL_REJECTED,
-        f"{'Approved' if approve else 'Rejected'} step {step.step_order} of {label} request #{request.id}"
+        db, actor, request,
+        {"APPROVE": APPROVAL_APPROVED, "REJECT": APPROVAL_REJECTED, "RETURN": APPROVAL_RETURNED}[decision],
+        f"{verb} step {step.step_order} of {label} request #{request.id}"
         + (" (delegated)" if acting == "delegate" else ""),
         step=step.step_order, approver_type=step.approver_type, acted_as=acting, decision=decision,
         remarks=remarks, final=request.status != PENDING,
@@ -947,6 +1086,7 @@ def _step_view(ctx: _Context, request: ApprovalRequest, step: ApprovalRequestSte
         "acted_as": step.acted_as,
         "acted_at": step.acted_at.isoformat() if step.acted_at else None,
         "remarks": step.remarks,
+        "due_at": step.due_at.isoformat() if step.due_at else None,
     }
 
 
@@ -1141,3 +1281,201 @@ def list_chains(db: Session, principal: Principal, *, module: Optional[str] = No
                 "approver": definition.label if definition else permission},
         })
     return result
+
+
+# ---------------------------------------------------------------------------
+# Routes (AS-M4 interim store of LH-M5a, IG-AS-81; 04-attendance/04 §9.2, §9.4)
+# ---------------------------------------------------------------------------
+ROUTE_LIST_KEYS = {"team_ids": "team_ids", "legal_entity_ids": "legal_entity_id", "branch_ids": "branch_id",
+                   "request_kinds": "request_kind", "on_duty_kinds": "on_duty_kind", "reason_codes": "reason_code",
+                   "affects_payroll_state": "payroll_state", "subject_kinds": "subject_kind",
+                   "employee_ids": "employee_id"}
+ROUTE_MAX_KEYS = {"days_back_max": "days_back", "minutes_changed_max": "minutes"}
+ROUTE_KEYS = frozenset(ROUTE_LIST_KEYS) | frozenset(ROUTE_MAX_KEYS) | {"everyone"}
+
+
+def validate_criteria(criteria: Mapping[str, Any]) -> Dict[str, Any]:
+    """Known keys only (``ROUTE_INVALID`` otherwise); lists of values or integer maxima."""
+    if not isinstance(criteria, Mapping):
+        raise bad_request("Route criteria must be an object.", "ROUTE_INVALID")
+    unknown = sorted(set(criteria) - ROUTE_KEYS)
+    if unknown:
+        raise bad_request(f"Unknown route criteria: {', '.join(unknown)}.", "ROUTE_INVALID")
+    cleaned: Dict[str, Any] = {}
+    for key, value in criteria.items():
+        if key == "everyone":
+            continue
+        if key in ROUTE_MAX_KEYS:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise bad_request(f"{key} must be a whole number of at least 0.", "ROUTE_INVALID")
+        elif not isinstance(value, list) or not value:
+            raise bad_request(f"{key} must be a non-empty list.", "ROUTE_INVALID")
+        cleaned[key] = value
+    return cleaned
+
+
+def _condition_applies(condition: Optional[Mapping[str, Any]], attributes: Mapping[str, Any]) -> bool:
+    """Step or route criteria against the subject's attributes; a missing value fails closed (§9.4)."""
+    for key, expected in (condition or {}).items():
+        if key == "everyone":
+            continue
+        if key in ROUTE_MAX_KEYS:
+            actual = attributes.get(ROUTE_MAX_KEYS[key])
+            if not isinstance(actual, int) or actual > expected:
+                return False
+            continue
+        attribute = ROUTE_LIST_KEYS.get(key)
+        if attribute is None:
+            return False
+        actual = attributes.get(attribute)
+        values = set(actual) if isinstance(actual, (list, tuple, set, frozenset)) else {actual}
+        values.discard(None)
+        if not values or not values & set(expected or ()):
+            return False
+    return True
+
+
+def select_route(db: Session, company_id: int, module: str, attributes: Mapping[str, Any]):
+    from app.models.attendance_requests import ApprovalRoute
+
+    routes = (db.query(ApprovalRoute)
+              .filter(ApprovalRoute.company_id == company_id, ApprovalRoute.module == module,
+                      ApprovalRoute.status == "ACTIVE")
+              .order_by(ApprovalRoute.priority.desc(), ApprovalRoute.id).all())
+    return next((r for r in routes if _condition_applies(r.criteria, attributes)), None)
+
+
+def _default_sla_hours(db: Session, company_id: int) -> int:
+    from app.payroll.services import settings as settings_engine
+
+    try:
+        value = settings_engine.resolve(db, company_id, "attendance.approval.sla_hours",
+                                         on=clock.company_today(db, company_id)).value
+    except Exception:  # noqa: BLE001 - registry without the key (older test registries)
+        value = None
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 48
+
+
+def preview_route(db: Session, company_id: int, module: str, subject_employee_id: Optional[int],
+                  attributes: Mapping[str, Any], *, requester_user_id: Optional[int] = None) -> dict:
+    """The route and step approvers a request would get now, without writing (``preview`` of the request form)."""
+    route = select_route(db, company_id, module, attributes)
+    chain = (db.query(ApprovalChainStep)
+             .filter(ApprovalChainStep.company_id == company_id, ApprovalChainStep.module == module,
+                     ApprovalChainStep.route_id == route.id if route is not None else ApprovalChainStep.route_id.is_(None))
+             .order_by(ApprovalChainStep.step_order).all())
+    applicable = [s for s in chain if _condition_applies(s.condition, attributes)]
+    probe = ApprovalRequest(id=0, company_id=company_id, module=module, subject_type="preview", subject_id=0,
+                            requested_by_user_id=requester_user_id, status=PENDING,
+                            context={"subject_employee_id": subject_employee_id,
+                                     "work_date": attributes.get("work_date")})
+    probe.steps = [ApprovalRequestStep(company_id=company_id, step_order=i, approver_type=s.approver_type,
+                                       role_id=s.role_id, specific_user_id=s.specific_user_id, status="waiting")
+                   for i, s in enumerate(applicable, start=1)] or [
+        ApprovalRequestStep(company_id=company_id, step_order=1, approver_type=PERMISSION_HOLDERS, status="waiting")]
+    ctx = _Context(db, company_id)
+    steps = []
+    for step in probe.steps:
+        users = _eligible_user_ids(ctx, probe, step, limit=5)
+        steps.append({"step_order": step.step_order, "approver_type": step.approver_type,
+                      "label": APPROVER_LABELS.get(step.approver_type, step.approver_type),
+                      "approvers": [ctx.user_name(u) for u in users]})
+    return {"route_key": route.route_key if route is not None else None, "steps": steps,
+            "sla_hours": _default_sla_hours(db, company_id)}
+
+
+# ---------------------------------------------------------------------------
+# SLA scan (job attendance.sla_scan, HOURLY; 04-attendance/04 §9.5). Never approves anything (D-AS-72).
+# ---------------------------------------------------------------------------
+def _setting_value(db: Session, company_id: int, key: str, default: Any) -> Any:
+    from app.payroll.services import settings as settings_engine
+
+    try:
+        value = settings_engine.resolve(db, company_id, key, on=clock.company_today(db, company_id)).value
+    except Exception:  # noqa: BLE001
+        return default
+    return default if value is None else value
+
+
+def sla_scan(db: Session, company_id: int, *, now: Optional[datetime] = None) -> dict:
+    """Pending steps of routed modules past ``due_at``: REMIND sends a reminder to the step's eligible users (at most
+    ``attendance.approval.max_reminders``, one per SLA period); ESCALATE also adds the escalation target (the
+    approver's own manager, else the subject's manager) as an eligible approver of the step, at most
+    ``attendance.approval.max_escalations`` levels."""
+    from datetime import timedelta
+
+    now = now or clock.utcnow()
+    action = _setting_value(db, company_id, "attendance.approval.sla_action", "REMIND")
+    max_reminders = int(_setting_value(db, company_id, "attendance.approval.max_reminders", 3))
+    max_escalations = int(_setting_value(db, company_id, "attendance.approval.max_escalations", 1))
+    result = {"reminded": 0, "escalated": 0, "action": action}
+    if action == "NONE":
+        return result
+    rows = (db.query(ApprovalRequestStep)
+            .join(ApprovalRequest, ApprovalRequest.id == ApprovalRequestStep.request_id)
+            .filter(ApprovalRequestStep.company_id == company_id, ApprovalRequestStep.status == "pending",
+                    ApprovalRequestStep.due_at.isnot(None), ApprovalRequestStep.due_at <= now,
+                    ApprovalRequest.status == PENDING, ApprovalRequest.module.in_(sorted(ROUTED_MODULES)))
+            .order_by(ApprovalRequestStep.due_at).limit(MAX_SCAN).all())
+    ctx = _Context(db, company_id)
+    for step in rows:
+        request = step.request
+        hours = step_sla_hours(request, step) or _default_sla_hours(db, company_id)
+        label = MODULE_LABELS[request.module]
+        users = _eligible_user_ids(ctx, request, step, limit=NOTIFY_LIMIT)
+        if step.reminders_sent < max_reminders:
+            for user_id in users:
+                NotificationService.create(
+                    db, user_id, f"Reminder: {label} awaiting your approval",
+                    f"Approval request #{request.id} ({label}) is past its due time.", "approval", _link(request))
+            step.reminders_sent += 1
+            result["reminded"] += 1
+        if action == "ESCALATE" and step.escalation_level < max_escalations:
+            target = _escalation_target(ctx, request, step, users)
+            if target is not None:
+                context = dict(request.context or {})
+                escalated = dict(context.get("escalated_user_ids") or {})
+                key = str(step.step_order)
+                escalated[key] = sorted(set(_int_list(escalated.get(key))) | {target})
+                context["escalated_user_ids"] = escalated
+                request.context = context
+                step.escalation_level += 1
+                NotificationService.create(
+                    db, target, f"Escalated: {label} awaiting approval",
+                    f"Approval request #{request.id} ({label}) passed its due time and was escalated to you.",
+                    "approval", _link(request))
+                _audit(db, None, request, "APPROVAL_ESCALATED",
+                       f"Escalated step {step.step_order} of {label} request #{request.id}",
+                       step=step.step_order, level=step.escalation_level, escalated_to_user_id=target)
+                result["escalated"] += 1
+        step.due_at = now + timedelta(hours=hours)
+    db.flush()
+    return result
+
+
+def _escalation_target(ctx: _Context, request: ApprovalRequest, step: ApprovalRequestStep,
+                       approvers: List[int]) -> Optional[int]:
+    """``next_manager``: the manager of the step's (first) approver, else the subject's manager; never barred."""
+    candidates: List[int] = []
+    for user_id in approvers:
+        employee = ctx.db.query(Employee).filter(Employee.company_id == ctx.company_id,
+                                                 Employee.user_id == user_id).first()
+        if employee is not None and employee.manager_id:
+            candidates.append(employee.manager_id)
+    subject = subject_employee_id(request)
+    if subject is not None:
+        manager = ctx.db.query(Employee.manager_id).filter(Employee.company_id == ctx.company_id,
+                                                           Employee.id == subject).scalar()
+        if manager:
+            candidates.append(manager)
+    barred = _barred_user_ids(request) | set(approvers)
+    for employee_id in candidates:
+        if employee_id == subject:
+            continue
+        manager = ctx.db.get(Employee, employee_id)
+        if manager is None or not manager.user_id or manager.user_id in barred:
+            continue
+        principal = ctx.principal_for_user(manager.user_id)
+        if principal is not None and ctx.covers(principal, step_permission(request, step), request):
+            return manager.user_id
+    return None

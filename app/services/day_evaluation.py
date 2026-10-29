@@ -1237,7 +1237,10 @@ class _Run:
                 self.open_after_close = [session]
                 self.gross = self.net = None
             self.late_mark = session.legacy_status == "late"
-            self.late_seconds = (session.late_minutes or 0) * 60 if session.late_minutes is not None else None
+            # A v1 "late" status without stored minutes (no shift window when it was punched) keeps the mark with 0
+            # known minutes: ck_attendance_days_late_minutes requires minutes whenever the mark is set.
+            self.late_seconds = ((session.late_minutes or 0) * 60 if session.late_minutes is not None
+                                 else (0 if self.late_mark else None))
             self.early_mark = bool(session.early_exit) and (session.early_exit_minutes or 0) > lp.early_exit_grace_minutes
             self.early_seconds = ((session.early_exit_minutes or 0) * 60
                                   if session.early_exit or session.early_exit_minutes else None)
@@ -1402,9 +1405,12 @@ def inputs_hash(inputs: DayInputs) -> str:
         "expectation": {"expected_portion": exp.expected_portion, "expected_minutes": exp.expected_minutes,
                         "reasons": sorted(exp.reasons), "calendar_version": exp.calendar_version,
                         "work_source": exp.work_source},
+        # A version pins its breaks; a custom-time entry's come from the rules policy (break_defaults), so they are
+        # hashed, only when present (existing hashes unchanged).
         "instances": [{"shift_version_id": x.shift_version_id, "roster_entry_id": x.roster_entry_id,
-                       "roster_version": x.roster_version, "start": x.start_at, "end": x.end_at,
-                       "kind": x.kind} for x in inputs.instances],
+                       "roster_version": x.roster_version, "start": x.start_at, "end": x.end_at, "kind": x.kind,
+                       **({"breaks": [_plain(dict(b.__dict__)) for b in x.breaks]}
+                          if x.shift_version_id is None and x.breaks else {})} for x in inputs.instances],
         "shift_source": inputs.shift_source,
         "grace": [inputs.shift_grace_in_minutes, inputs.shift_grace_out_minutes],
         "scheduled_minutes": inputs.scheduled_minutes,

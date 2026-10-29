@@ -31,14 +31,8 @@ from app.services import shift_engine as engine
 from app.services import shift_resolution
 
 SEVERITY_RANK = {rules.WARN: 0, rules.REQUIRE_REASON: 1, rules.BLOCK: 2}
-# WORKING_TIME pack values used by roster_rules (appendix-a §8, 03-shifts/02 §6.3; all DRAFT = not verified).
-PACKS: Dict[str, Dict[str, Any]] = {
-    "IN": {"weekly_max_hours": Decimal(48), "max_days_per_week": 6, "max_consecutive_days": 10,
-           "weekly_rest_min_hours": Decimal(24), "verified": False,
-           "night_work_groups": {"WOMEN": ("19:00", "06:00")}},  # OSH Code s.43 (DRAFT: REQUIRE_REASON)
-    "AE": {"weekly_max_hours": Decimal(48), "daily_max_hours": Decimal(10), "verified": False},
-    "US": {"verified": False},
-}
+# WORKING_TIME pack values used by roster_rules: the shared country registry (G-22; appendix-a §8, 03-shifts/02 §6.3).
+from app.services.working_time_packs import PACKS, daily_max_on  # noqa: E402
 
 
 def _zone_name(value: Optional[str]) -> Optional[str]:
@@ -199,7 +193,7 @@ def limits_for(db: Session, company_id: int, employee_ids: Sequence[int], on: da
                                      policy["min_rest_severity"], lower_is_stricter=False, source=source),
             weekly_max_hours=_stricter(pack.get("weekly_max_hours"), verified, policy["max_hours_per_week"],
                                        policy["weekly_hours_severity"], lower_is_stricter=True, source=source),
-            daily_max_hours=_stricter(pack.get("daily_max_hours"), verified, None, rules.WARN,
+            daily_max_hours=_stricter(daily_max_on(pack, on) if pack else None, verified, None, rules.WARN,
                                       lower_is_stricter=True, source=""),
             max_days_per_week=rules.Limit(days, rules.WARN, "WORKING_TIME pack", verified) if days else None,
             max_consecutive_days=rules.Limit(consecutive, rules.WARN, "WORKING_TIME pack", verified)

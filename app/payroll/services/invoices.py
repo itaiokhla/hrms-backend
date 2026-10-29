@@ -211,22 +211,89 @@ def _tax_lines(raw: Sequence[Mapping[str, Any]], subtotal: Decimal, currency: st
     return taxes, total
 
 
+TEAM_SUBMIT = "team_pay:submit"
+MAX_TIMESHEETS = 26
+
+
+def _timesheet_lines(db: Session, company_id: int, payee_id: int, timesheet_ids: Sequence[int], hourly_rate: Any,
+                     currency: Optional[str]) -> tuple[list[dict], str, Decimal]:
+    """Lines from APPROVED weekly timesheets × an entered hourly rate (owner decision 2026-10-29): the hours are the
+    net worked minutes of the evaluated days of each approved week; a week is billed by at most one live invoice."""
+    from app.models.attendance import AttendanceDay
+    from app.models.attendance_requests import AttendanceTimesheetApproval
+
+    if not timesheet_ids:
+        raise bad_request("Choose at least one approved timesheet.", "TIMESHEETS_REQUIRED")
+    if len(set(timesheet_ids)) != len(timesheet_ids) or len(timesheet_ids) > MAX_TIMESHEETS:
+        raise bad_request(f"Choose up to {MAX_TIMESHEETS} distinct timesheets.", "TIMESHEETS_INVALID")
+    rate = _decimal(hourly_rate, "hourly_rate")
+    if rate <= 0:
+        raise bad_request("The hourly rate is above zero.", "RATE_INVALID")
+    if not currency:
+        raise bad_request("Give the currency of the rate.", "CURRENCY_REQUIRED")
+    sheets = {t.id: t for t in db.query(AttendanceTimesheetApproval).filter(
+        AttendanceTimesheetApproval.company_id == company_id, AttendanceTimesheetApproval.id.in_(list(timesheet_ids)))}
+    live = {s for (s,) in db.query(InvoiceSource.source_id).filter(
+        InvoiceSource.company_id == company_id, InvoiceSource.source_type == "TIMESHEET",
+        InvoiceSource.source_id.in_(list(timesheet_ids)), InvoiceSource.active.is_(True))}
+    lines, subtotal = [], Decimal(0)
+    for sheet_id in timesheet_ids:
+        sheet = sheets.get(sheet_id)
+        if sheet is None or sheet.employee_id != payee_id:
+            raise not_found("Timesheet")
+        if sheet.status != "APPROVED":
+            raise conflict(f"Timesheet {sheet_id} is not approved.", "TIMESHEET_NOT_APPROVED")
+        if sheet_id in live:
+            raise conflict(f"Timesheet {sheet_id} is already on a live invoice.", "TIMESHEET_ALREADY_INVOICED")
+        minutes = sum(int(m or 0) for (m,) in db.query(AttendanceDay.net_minutes).filter(
+            AttendanceDay.company_id == company_id, AttendanceDay.employee_id == payee_id,
+            AttendanceDay.shift_date >= sheet.period_start, AttendanceDay.shift_date <= sheet.period_end))
+        hours = (Decimal(minutes) / Decimal(60)).quantize(Decimal("0.01"))
+        if hours <= 0:
+            raise conflict(f"Timesheet {sheet_id} has no worked hours.", "TIMESHEET_EMPTY")
+        amount = quantize_amount(hours * rate, currency)
+        subtotal += amount
+        lines.append({"timesheet_id": sheet.id,
+                      "description": f"Hours worked {sheet.period_start.isoformat()} – {sheet.period_end.isoformat()}",
+                      "quantity": format(hours.normalize(), "f"), "unit": "HOUR",
+                      "rate": format(rate.normalize(), "f"), "amount": amount_str(amount, currency)})
+    return lines, currency, subtotal
+
+
+def _may_prepare(db: Session, principal: Principal, payee_id: int, legal_entity_id: int) -> bool:
+    """Payroll staff (payment prepare over the entity) or the payee's manager / team lead (team_pay:submit)."""
+    from app.core import authz
+
+    if documents.has_staff_scope(principal, PREPARE) and _covers(principal, PREPARE, legal_entity_id):
+        return True
+    return principal.has(TEAM_SUBMIT) and principal.employee_id != payee_id and authz.can_access_employee(
+        db, principal, TEAM_SUBMIT, payee_id)
+
+
 def create_invoice(db: Session, principal: Principal, data: Mapping[str, Any]) -> Invoice:
-    """A DRAFT invoice for a contractor from approved tasks (EC-DOC-07)."""
+    """A DRAFT invoice for a contractor from approved tasks or approved timesheets (EC-DOC-07). Payroll staff or the
+    contractor's manager prepare it; issuing and approving stay with payroll / finance (maker-checker)."""
     mode = data.get("mode")
     if mode not in ("INVOICE", "SELF_BILLED"):
         raise bad_request("mode is INVOICE or SELF_BILLED.", "MODE_INVALID")
     payee_id = int(data["payee_employee_id"])
     today = _today(db, principal.company_id)
-    documents.require_staff(principal, PREPARE)
+    if not (principal.has(TEAM_SUBMIT) or documents.has_staff_scope(principal, PREPARE)):
+        raise forbidden()
     payee = db.query(Employee).filter(Employee.company_id == principal.company_id, Employee.id == payee_id).one_or_none()
     placement = _placement(db, principal.company_id, payee_id, today) if payee is not None else None
-    if payee is None or placement is None or not _covers(principal, PREPARE, placement.legal_entity_id):
+    if payee is None or placement is None or not _may_prepare(db, principal, payee_id, placement.legal_entity_id):
         raise not_found("Payee")
     _require_contractor(db, principal.company_id, payee_id, today)
     if mode == "INVOICE" and not (data.get("external_number") or "").strip():
         raise bad_request("A contractor invoice records the contractor's own invoice number.", "EXTERNAL_NUMBER_REQUIRED")
-    lines, currency, subtotal = _task_lines(db, principal.company_id, payee_id, list(data.get("task_ids") or []))
+    source_type = "TIMESHEET" if data.get("timesheet_ids") else "TASK"
+    if source_type == "TIMESHEET":
+        lines, currency, subtotal = _timesheet_lines(db, principal.company_id, payee_id,
+                                                     list(data.get("timesheet_ids") or []), data.get("hourly_rate"),
+                                                     (data.get("currency") or "").upper() or None)
+    else:
+        lines, currency, subtotal = _task_lines(db, principal.company_id, payee_id, list(data.get("task_ids") or []))
     currencies.require_payroll_currency(currency)
     taxes, tax_total = _tax_lines(data.get("taxes") or [], subtotal, currency)
     entity = db.query(LegalEntity).filter(LegalEntity.company_id == principal.company_id,
@@ -246,13 +313,53 @@ def create_invoice(db: Session, principal: Principal, data: Mapping[str, Any]) -
     )
     db.add(row)
     db.flush()
+    key = "timesheet_id" if source_type == "TIMESHEET" else "task_id"
     for line in lines:
-        db.add(InvoiceSource(company_id=row.company_id, invoice_id=row.id, source_type="TASK", source_id=line["task_id"],
-                             active=True))
+        db.add(InvoiceSource(company_id=row.company_id, invoice_id=row.id, source_type=source_type,
+                             source_id=line[key], active=True))
     db.flush()
     _audit(db, principal, "INVOICE_CREATED", row, f"Draft {mode.lower()} invoice for {payee.full_name}",
-           tasks=[line["task_id"] for line in lines])
+           source=source_type, sources=[line[key] for line in lines])
     return row
+
+
+def list_for_team(db: Session, principal: Principal) -> list[dict]:
+    """Contractor invoices of people in the caller's team_pay:read scope (managers follow their drafts through
+    issue and approval) — never other people's."""
+    from app.core import authz
+
+    if not principal.has("team_pay:read") and not principal.has(TEAM_SUBMIT):
+        raise forbidden()
+    code = "team_pay:read" if principal.has("team_pay:read") else TEAM_SUBMIT
+    scope = authz.employee_scope(db, principal, code)
+    query = db.query(Invoice).filter(Invoice.company_id == principal.company_id)
+    if not principal.has_company_scope(code):
+        query = query.filter(or_(Invoice.created_by_user_id == principal.user_id,
+                                 scope.clause(Invoice.payee_employee_id)))
+    rows = query.order_by(Invoice.id.desc()).limit(200).all()
+    names = {e.id: e.full_name for e in db.query(Employee).filter(
+        Employee.company_id == principal.company_id, Employee.id.in_([r.payee_employee_id for r in rows] or [0]))}
+    return [{**invoice_json(r), "payee_name": names.get(r.payee_employee_id)} for r in rows]
+
+
+def approved_timesheets(db: Session, principal: Principal, payee_id: int) -> list[dict]:
+    """The payee's APPROVED weeks not yet on a live invoice (picker of the timesheet source)."""
+    from app.core import authz
+    from app.models.attendance_requests import AttendanceTimesheetApproval
+
+    if not (principal.has(TEAM_SUBMIT) and authz.can_access_employee(db, principal, TEAM_SUBMIT, payee_id)) and not (
+            documents.has_staff_scope(principal, PREPARE)):
+        raise not_found("Payee")
+    live = {s for (s,) in db.query(InvoiceSource.source_id).filter(
+        InvoiceSource.company_id == principal.company_id, InvoiceSource.source_type == "TIMESHEET",
+        InvoiceSource.active.is_(True))}
+    rows = (db.query(AttendanceTimesheetApproval)
+            .filter(AttendanceTimesheetApproval.company_id == principal.company_id,
+                    AttendanceTimesheetApproval.employee_id == payee_id,
+                    AttendanceTimesheetApproval.status == "APPROVED")
+            .order_by(AttendanceTimesheetApproval.period_start.desc()).limit(52).all())
+    return [{"id": r.id, "period_start": r.period_start.isoformat(), "period_end": r.period_end.isoformat()}
+            for r in rows if r.id not in live]
 
 
 # --------------------------------------------------------------------------- the transition function
@@ -421,12 +528,19 @@ def transition(db: Session, principal: Optional[Principal], invoice: Invoice | i
 def _recheck_sources(db: Session, row: Invoice) -> None:
     from app.models.work_items import Task
 
-    ids = [s.source_id for s in db.query(InvoiceSource).filter(InvoiceSource.company_id == row.company_id,
-                                                               InvoiceSource.invoice_id == row.id,
-                                                               InvoiceSource.active.is_(True))]
-    for task in db.query(Task).filter(Task.company_id == row.company_id, Task.id.in_(ids)):
+    from app.models.attendance_requests import AttendanceTimesheetApproval
+
+    sources = db.query(InvoiceSource).filter(InvoiceSource.company_id == row.company_id,
+                                             InvoiceSource.invoice_id == row.id, InvoiceSource.active.is_(True)).all()
+    ids = [s.source_id for s in sources if s.source_type == "TASK"]
+    for task in db.query(Task).filter(Task.company_id == row.company_id, Task.id.in_(ids or [0])):
         if not sm.task_is_payable(task.status) or task.paid_in_run_id is not None:
             raise conflict(f"Task {task.id} is no longer an approved, unpaid task.", "TASK_NOT_BILLABLE")
+    sheets = [s.source_id for s in sources if s.source_type == "TIMESHEET"]
+    for sheet in db.query(AttendanceTimesheetApproval).filter(AttendanceTimesheetApproval.company_id == row.company_id,
+                                                              AttendanceTimesheetApproval.id.in_(sheets or [0])):
+        if sheet.status != "APPROVED":  # reopened after drafting: the hours may have changed
+            raise conflict(f"Timesheet {sheet.id} is no longer approved.", "TIMESHEET_NOT_APPROVED")
 
 
 def _issue_credit_note(db: Session, principal: Principal, original: Invoice, reason: str) -> Invoice:

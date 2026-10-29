@@ -45,10 +45,57 @@ class DeviceIn(StrictModel):
     site_id: Optional[int] = None  # the kiosk's fixed site (kiosk punches are never geofenced, 01 §9.2)
     timezone: Optional[str] = Field(None, max_length=64)
     settings: Dict[str, Any] = Field(default_factory=dict)
+    # TERMINAL / AGENT (AS-M7)
+    vendor: Optional[Literal["ZKTECO", "ESSL", "SUPREMA", "HIKVISION", "MATRIX", "MANTRA", "REALTIME", "OTHER"]] = None
+    serial_number: Optional[str] = Field(None, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    direction_mode: Optional[Literal["DEVICE_STATE", "ALTERNATE", "FIRST_LAST", "DEVICE_ROLE"]] = None
+    device_role: Optional[Literal["IN_OUT", "IN_ONLY", "OUT_ONLY"]] = None
 
 
 class DeviceAction(StrictModel):
     reason: Optional[str] = Field(None, max_length=500)
+
+
+# ------------------------------------------------------------------------------------- devices AS-M7 (01 §7, §8)
+class DeviceActivateIn(StrictModel):
+    claim_code: str = Field(..., min_length=4, max_length=20)
+    serial_number: Optional[str] = Field(None, max_length=64)
+
+
+class DevicePatch(StrictModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    timezone: Optional[str] = Field(None, max_length=64)
+    direction_mode: Optional[Literal["DEVICE_STATE", "ALTERNATE", "FIRST_LAST", "DEVICE_ROLE"]] = None
+    device_role: Optional[Literal["IN_OUT", "IN_ONLY", "OUT_ONLY"]] = None
+    settings: Optional[Dict[str, Any]] = None
+
+
+class DeviceMappingIn(StrictModel):
+    device_id: Optional[int] = None
+    device_user_id: str = Field(..., min_length=1, max_length=32)
+    employee_id: int
+    effective_from: Optional[date] = None
+    effective_to: Optional[date] = None
+
+
+class DeviceMappingsIn(StrictModel):
+    items: List[DeviceMappingIn] = Field(..., min_length=1)
+
+
+class DeviceMappingEnd(StrictModel):
+    effective_to: date
+
+
+class DeviceAutoMatchIn(StrictModel):
+    device_id: Optional[int] = None
+    effective_from: Optional[date] = None
+    dry_run: bool = False
+
+
+class DeviceCommandIn(StrictModel):
+    command: Literal["SYNC_TIME", "UPLOAD_USER", "DISABLE_USER", "DELETE_USER", "QUERY_USERS", "RESEND_LOGS",
+                     "REFRESH_SETTINGS"]
+    payload: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ReviewDecideIn(StrictModel):

@@ -75,6 +75,11 @@ class Capture:
     attendance_policy: object = field(default=None, repr=False)
     punch_id: Optional[int] = None
     shift_instance: object = field(default=None, repr=False)
+    # Team punch (a manager punching for a team member): who acted and why, on the raw punch (internal, SR-AS-19).
+    actor_user_id: Optional[int] = None
+    reason: Optional[str] = None
+    # Team punch: the location outcome of the punch event (the event row is append-only, so it is set at insert).
+    event_location_status: Optional[str] = None
 
     @classmethod
     def legacy(cls, source: str, ip: Optional[str] = None) -> "Capture":
@@ -368,7 +373,7 @@ def _write_punch(db: Session, record: Attendance, employee: Employee, capture: "
         occurred_at=now, session=record, shift_date=record.date, idempotency_key=meta.idempotency_key,
         client_sent_at=meta.client_sent_at, verify_mode=verify, face_match_score=score, device_id=capture.device_id,
         site_id=capture.site_id, geofence_result=capture.geofence_result, evidence_flags=capture.evidence_flags,
-        ip=capture.ip,
+        ip=capture.ip, actor_user_id=capture.actor_user_id, reason=capture.reason,
     )
     attendance_sessions.apply_interactive(db, record.company_id, punch, capture.shift_instance, record)
     capture.punch_id = punch.id
@@ -406,7 +411,7 @@ def _punch_in(db, principal, company, employee, policy, meta: EventMeta, score, 
             record.tracking_stop_reason = "KIOSK_SESSION"
     punch_id = _write_punch(db, record, employee, capture, "IN", now, meta, score)
     event = _event(db, record, "PUNCH_IN", now, source, principal.user_id, key=meta.idempotency_key, score=score,
-                   location_status=location.event_status, details=location_service.event_details(location),
+                   location_status=capture.event_location_status or location.event_status, details=location_service.event_details(location),
                    punch_id=punch_id)
     location_service.record_event_sample(db, record, event, location, policy, now, meta.client_sent_at)
     return record
@@ -432,7 +437,7 @@ def _lunch_in(db, principal, company, employee, policy, meta: EventMeta, score, 
     ))
     db.flush()
     event = _event(db, live, "LUNCH_IN", now, source, principal.user_id, key=meta.idempotency_key, score=score,
-                   location_status=location.event_status, details=location_service.event_details(location),
+                   location_status=capture.event_location_status or location.event_status, details=location_service.event_details(location),
                    punch_id=punch_id)
     location_service.record_event_sample(db, live, event, location, policy, now, meta.client_sent_at)
     if policy.pause_on_lunch:
@@ -458,7 +463,7 @@ def _lunch_out(db, principal, company, employee, policy, meta: EventMeta, score,
     db.flush()
     location_service.resume_tracking(live, policy, now)
     event = _event(db, live, "LUNCH_OUT", now, source, principal.user_id, key=meta.idempotency_key, score=score,
-                   location_status=location.event_status, details=location_service.event_details(location),
+                   location_status=capture.event_location_status or location.event_status, details=location_service.event_details(location),
                    punch_id=punch_id)
     location_service.record_event_sample(db, live, event, location, policy, now, meta.client_sent_at)
     return live
@@ -496,7 +501,7 @@ def _punch_out(db, principal, company, employee, policy, meta: EventMeta, score,
     if meta.no_break_taken:  # step 5 (d): read by the evaluation when the rules ask for the attestation
         details = {**(details or {}), "no_break_taken": True}
     event = _event(db, live, "PUNCH_OUT", now, source, principal.user_id, key=meta.idempotency_key, score=score,
-                   location_status=location.event_status, note=note, details=details, punch_id=punch_id)
+                   location_status=capture.event_location_status or location.event_status, note=note, details=details, punch_id=punch_id)
     location_service.record_event_sample(db, live, event, location, policy, now, meta.client_sent_at)
     return live
 
@@ -938,6 +943,16 @@ def my_today(db: Session, principal: Principal) -> dict:
     policy = attendance_policy.load(db, company.id)
     now = _now()
     record = _current_record(db, employee, company, policy, now)
+    # The browser schedules location checks from this policy: the employee's capture policy (interval, grace, pause)
+    # of the live session's shift date, else of today, over the company settings.
+    from app.services import attendance_capture_policy, org_structure_service
+
+    if record is not None and is_live(record):
+        policy = attendance_capture_policy.for_session(db, record)
+    else:
+        policy = attendance_capture_policy.as_attendance_policy(
+            attendance_capture_policy.effective(db, company.id, employee.id,
+                                                org_structure_service.employee_local_today(db, employee)), policy)
     breaks = breaks_by_session(db, [record.id])[record.id] if record is not None else []
     state = session_state(record, breaks)
     events = []
@@ -1031,6 +1046,7 @@ def list_records(
             Attendance.company_id == principal.company_id,
             Attendance.date >= start,
             Attendance.date <= end,
+            Attendance.voided_at.is_(None),  # spine §15.4: deleted (voided) sessions are kept for audit only
             scope.clause(Attendance.employee_id),
         )
     )

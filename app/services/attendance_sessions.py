@@ -95,7 +95,9 @@ def next_session_seq(db: Session, company_id: int, employee_id: int, day: date, 
     if not existing:
         return 1
     if not multiple_allowed:
-        raise conflict("Attendance for today is complete.", "ALREADY_CHECKED_IN")
+        # Name the shift date: after midnight an IN can still belong to yesterday's shift (D-AS-06, FU-AS-43).
+        raise conflict(f"Attendance for {day.strftime('%a %d %b')} is already complete (one session per day).",
+                       "ALREADY_CHECKED_IN")
     seq = max(s.session_seq for s in existing) + 1
     if seq > MAX_SESSIONS_PER_DATE:
         raise conflict("No more sessions can be recorded on this date.", "ALREADY_CHECKED_IN")
@@ -144,8 +146,8 @@ def record_punch(db: Session, *, company_id: int, employee_id: int, source: str,
                  verify_mode: Optional[str] = None, face_match_score: Optional[float] = None,
                  device_id: Optional[int] = None, site_id: Optional[int] = None,
                  geofence_result: str = "NOT_CHECKED", evidence_flags=(), location_sample_id: Optional[int] = None,
-                 ip: Optional[str] = None, actor_user_id: Optional[int] = None, reason: Optional[str] = None
-                 ) -> AttendancePunch:
+                 ip: Optional[str] = None, actor_user_id: Optional[int] = None, reason: Optional[str] = None,
+                 request_id: Optional[int] = None) -> AttendancePunch:
     """Insert one USED raw punch (ON CONFLICT on the natural key returns the first row, P-1)."""
     key = natural_key(company_id, source, employee_id, idempotency_key, occurred_at, direction)
     values = dict(
@@ -156,7 +158,7 @@ def record_punch(db: Session, *, company_id: int, employee_id: int, source: str,
         location_sample_id=location_sample_id, ip_hash=ip_hash(company_id, ip),
         evidence_flags=list(evidence_flags), natural_key=key, idempotency_key=idempotency_key,
         mapping_status="MAPPED", disposition="USED", session_id=session.id if session is not None else None,
-        shift_date=shift_date, actor_user_id=actor_user_id, reason=reason,
+        shift_date=shift_date, actor_user_id=actor_user_id, reason=reason, request_id=request_id,
         created_at=func.now(), updated_at=func.now(),
     )
     with db_errors.mapped():

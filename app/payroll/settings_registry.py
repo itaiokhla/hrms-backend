@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING, Any, Final
 if TYPE_CHECKING:
     from app.payroll.policy_types import AssignmentRule, EmployeeAttributes
 
-REGISTRY_VERSION: Final = "2026.10.9"
+REGISTRY_VERSION: Final = "2026.10.12"
 STARTER_REASON: Final = "Starter configuration"
 LEGACY_REASON: Final = "Legacy payroll migration"
 
@@ -948,6 +948,83 @@ def _catalogue() -> list[SettingDef]:
             "Night window",
             "Local start and end (HH:MM) of the night: worked time inside it is the day's night minutes.",
             legacy_v1=False, resolution_grain="DAY",
+        ),
+        # AS-M4 approvals of attendance requests (04-attendance/04 §9.5; SP-AS-027, SP-AS-227). No AUTO_APPROVE.
+        _setting(
+            "attendance.approval.sla_hours", "int", 48, (T, LE), S_ATTENDANCE, "Approval due within",
+            "Hours an approver has to decide an attendance request before reminders start.",
+            constraints={"min": 1, "max": 336}, legacy_v1=False, ui={"unit": "hours"},
+        ),
+        _enum(
+            "attendance.approval.sla_action", ("NONE", "REMIND", "ESCALATE"), "REMIND", (T, LE), S_ATTENDANCE,
+            "When an approval is overdue",
+            "Do nothing, remind the approvers, or remind them and escalate to the next manager. Requests are "
+            "never approved automatically.", legacy_v1=False,
+        ),
+        _setting(
+            "attendance.approval.max_reminders", "int", 3, (T, LE), S_ATTENDANCE, "Reminders per step",
+            "How many reminders an overdue approval step sends at most.",
+            constraints={"min": 0, "max": 5}, legacy_v1=False,
+        ),
+        _setting(
+            "attendance.approval.max_escalations", "int", 1, (T, LE), S_ATTENDANCE, "Escalation levels",
+            "How many levels an overdue approval step escalates at most.",
+            constraints={"min": 1, "max": 3}, legacy_v1=False,
+        ),
+        # Team attendance (managers acting for their team; IG-AS-98). Written on Settings > Attendance > Team.
+        _flag(
+            "attendance.team.proxy_punch.enabled", "Managers punch for their team",
+            on="Managers and supervisors can punch team members in and out (recorded as their action, with location).",
+            off="Only employees punch for themselves; managers correct attendance afterwards.",
+            default=False, levels=(T, LE), section=S_ATTENDANCE, legacy_v1=False,
+        ),
+        _enum(
+            "attendance.team.proxy_punch.location", ("REQUIRED", "OPTIONAL", "OFF"), "REQUIRED", (T, LE),
+            S_ATTENDANCE, "Location for team punches",
+            "Whether a team punch needs a location: the manager's device position or a location entered by hand.",
+            legacy_v1=False,
+        ),
+        _flag(
+            "attendance.team.proxy_punch.allow_manual_location", "Location entered by hand",
+            on="When the device cannot give a position, the manager can enter coordinates or an address.",
+            off="Only the device position is accepted.",
+            default=True, levels=(T, LE), section=S_ATTENDANCE, legacy_v1=False,
+        ),
+        _flag(
+            "attendance.team.proxy_punch.reason_required", "Reason for team punches",
+            on="Every team punch needs a reason (kept in the audit trail).",
+            off="A reason is optional.",
+            default=True, levels=(T, LE), section=S_ATTENDANCE, legacy_v1=False,
+        ),
+        _flag(
+            "attendance.team.edit_enabled", "Managers correct and delete team attendance",
+            on="Managers with the correct-attendance permission can edit and delete their team's sessions.",
+            off="Only HR corrects or deletes attendance.",
+            default=True, levels=(T, LE), section=S_ATTENDANCE, legacy_v1=False,
+        ),
+        # AS-M6 (G-15; 03-shifts/03 §3.1): employee shift requests and open shifts. Which kinds are allowed, cutoffs and
+        # approval come from SCHEDULING_POLICY.requests; these switches turn the features on per tenant / entity.
+        _flag(
+            "shift.requests.enabled", "Shift swaps and changes",
+            on="Employees can swap, give away, release or change their published shifts (as the scheduling policy "
+               "allows).",
+            off="Only planners change rosters.",
+            default=False, levels=(T, LE), section=S_ATTENDANCE, legacy_v1=False,
+        ),
+        _flag(
+            "shift.open_shifts.enabled", "Open shifts",
+            on="Planners post open shifts and eligible employees claim them; released shifts go to the open pool.",
+            off="No open shifts.",
+            default=False, levels=(T, LE), section=S_ATTENDANCE, legacy_v1=False,
+        ),
+        # G-22 (owner request 2026-10-29): adopt the legal entity's country WORKING_TIME pack (IN / AE / US):
+        # statutory breaks, rest, overtime consent and caps, privacy caps and scheduling notice start to apply.
+        _flag(
+            "attendance.packs.enabled", "Apply the country working-time pack",
+            on="The legal entity's country rules (breaks, rest, overtime consent and caps, privacy limits, schedule "
+               "notice) apply to attendance and schedules.",
+            off="Only your own policies apply; country rules are shown as guidance.",
+            default=False, levels=(T, LE), section=S_ATTENDANCE, legacy_v1=False,
         ),
         # 3.1 §5.8 — Shifts and allowances
         _switch(

@@ -170,7 +170,7 @@ def test_default_roles_are_valid_and_only_payroll_roles_hold_confidential_payrol
             assert confidential == {("payroll:reports:read", _C)}
         else:
             assert not confidential, (role.system_key, confidential)
-    assert reg.REGISTRY_VERSION >= "2026.10.4"  # pinned per version in tests/payroll_unit/registry_versions.json
+    assert tuple(map(int, reg.REGISTRY_VERSION.split("."))) >= (2026, 10, 4)  # pinned per version in tests/payroll_unit/registry_versions.json
 
 
 def test_default_role_contents_follow_3_9_5_3():
@@ -515,7 +515,8 @@ def test_payroll_approver_can_go_when_nobody_creates_runs(app):
 # Data migration 0010 (EC-MIG-07, EC-MIG-08)
 # ---------------------------------------------------------------------------
 LATER_GRANT_REVISIONS = ("0033_tax_profiles_unclaimed", "0042_as_m1_permissions", "0048_x_m1_permissions",
-                         "0050_as_m2_sites_consents")
+                         "0050_as_m2_sites_consents", "0053_as_m4_permissions",
+                         "0054_attendance_team", "0056_as_m8_m9", "0058_remaining_goals")
 
 
 def _later_grants(key):

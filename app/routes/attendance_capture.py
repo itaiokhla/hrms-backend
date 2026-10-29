@@ -11,13 +11,14 @@ punch natural key, P-1: a replay returns the first result with ``replayed: true`
 ``_commit`` (map constraint errors, one commit) instead of ``idempotency.execute``, which needs a user principal.
 """
 
-from typing import Callable, Optional
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -78,6 +79,43 @@ async def me_punch(request: Request, file: Optional[UploadFile] = File(None), me
     if file is not None:
         image, _ = await storage.read_image_upload(file)
     return _commit(db, lambda: attendance_capture.punch(db, principal, data, image, client_ip(request)))
+
+
+class _OfflineItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    direction: Literal["IN", "OUT", "BREAK_START", "BREAK_END"]
+    break_kind: Optional[Literal["LUNCH", "REST", "PERSONAL", "OTHER"]] = None
+    capture_source: Literal["WEB", "MOBILE"] = "MOBILE"
+    work_location_choice: Optional[Literal["ON_SITE", "REMOTE", "FIELD"]] = None
+    client_captured_at: Optional[datetime] = None
+    monotonic_elapsed_ms: Optional[int] = Field(None, ge=0)
+    server_time_at_sync: Optional[datetime] = None
+    device_wall_clock_at_capture: Optional[datetime] = None
+    location: Optional[Dict[str, Any]] = None
+    location_consent: bool = True
+    exception_reason: Optional[str] = Field(None, min_length=5, max_length=500)
+
+
+class _OfflineUpload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: List[_OfflineItem] = Field(..., min_length=1)
+    client_sent_at: Optional[datetime] = None
+
+
+@router.post("/attendance/me/offline-punches")
+def me_offline_punches(data: _OfflineUpload, request: Request,
+                       principal: Principal = Depends(require("attendance:mark")), db: Session = Depends(get_db)):
+    """AS-M12 offline queue (04-attendance/01 §6.2): per-item results; a re-upload replays by idempotency key."""
+    from app.services import attendance_offline
+
+    limiter.check(f"punch:{principal.company_id}:{principal.user_id}", attendance_capture.PUNCH_PER_MINUTE, 60)
+    if len(data.items) > attendance_offline.MAX_ITEMS:
+        raise bad_request(f"Send at most {attendance_offline.MAX_ITEMS} queued punches at once.", "TOO_MANY_ITEMS")
+    items = [i.model_dump() for i in data.items]
+    return _commit(db, lambda: attendance_offline.upload(db, principal, items, data.client_sent_at, client_ip(request)))
 
 
 def _pair_company(request: Request, device_code: str, claim_code: str) -> Optional[int]:

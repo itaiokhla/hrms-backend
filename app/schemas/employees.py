@@ -1,8 +1,8 @@
 from datetime import date
 from decimal import Decimal
-from typing import Annotated, Optional
+from typing import Annotated, List, Optional
 
-from pydantic import EmailStr, Field
+from pydantic import EmailStr, Field, field_validator
 
 from app.schemas.auth import Money, StrictModel
 
@@ -91,6 +91,18 @@ class ShiftWrite(StrictModel):
 
 class ManagerAssignment(StrictModel):
     manager_id: Optional[int] = None
+
+
+class BulkAssignReports(StrictModel):
+    manager_id: Optional[int] = None
+    employee_ids: List[int] = Field(..., min_length=1, max_length=100)
+
+    @field_validator("employee_ids")
+    @classmethod
+    def employee_ids_are_unique(cls, value: List[int]) -> List[int]:
+        if len(value) != len(set(value)):
+            raise ValueError("Choose each employee only once.")
+        return value
 
 
 class SecondaryLineCreate(StrictModel):

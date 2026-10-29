@@ -408,6 +408,11 @@ def apply(db: Session, principal: Principal, data) -> Leave:
     )
     db.add(leave)
     db.flush()
+    # AS-M6 (03-shifts/03 §4.2 "Leave applied afterwards"): pending swaps / releases of these dates are withdrawn and
+    # an unfilled released shift goes back, so a pickup never silently refunds this leave (EC AS-SWP-05).
+    from app.services import shift_requests
+
+    shift_requests.cancel_for_leave(db, principal.company_id, employee.id, data.start_date, data.end_date)
     chain = (
         db.query(ApprovalChainStep)
         .filter(ApprovalChainStep.company_id == principal.company_id, ApprovalChainStep.module == "leave")

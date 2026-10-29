@@ -70,6 +70,10 @@ class CapturePolicy:
     acceptable_accuracy_m: int = 100
     max_fix_age_seconds: int = 120
     tracking_enabled: bool = False
+    tracking_interval_minutes: int = 120
+    tracking_grace_minutes: int = 15
+    tracking_pause_on_break: bool = True
+    tracking_movement_threshold_m: int = 1000
     dpia_reference: Optional[str] = None
     policy_id: Optional[int] = field(default=None, compare=False)
     policy_version: Optional[int] = field(default=None, compare=False)
@@ -105,6 +109,10 @@ def legacy_v1(policy: attendance_policy.AttendancePolicy) -> CapturePolicy:
         acceptable_accuracy_m=policy.acceptable_accuracy_m,
         max_fix_age_seconds=policy.max_fix_age_seconds,
         tracking_enabled=policy.tracking_enabled,
+        tracking_interval_minutes=policy.tracking_interval_minutes,
+        tracking_grace_minutes=policy.tracking_grace_minutes,
+        tracking_pause_on_break=policy.pause_on_lunch,
+        tracking_movement_threshold_m=policy.movement_threshold_m,
         explain=("LEGACY_V1 from company attendance settings",),
     )
 
@@ -170,6 +178,10 @@ def from_fields(fields: Mapping[str, Any], *, policy_id: Optional[int] = None,
         acceptable_accuracy_m=int(gps.get("acceptable_accuracy_m", 100)),
         max_fix_age_seconds=int(gps.get("max_fix_age_seconds", 120)),
         tracking_enabled=bool(tracking.get("enabled", False)),
+        tracking_interval_minutes=int(tracking.get("interval_minutes", 120)),
+        tracking_grace_minutes=int(tracking.get("grace_minutes", 15)),
+        tracking_pause_on_break=bool(tracking.get("pause_on_break", True)),
+        tracking_movement_threshold_m=int(tracking.get("movement_threshold_m", 1000)),
         dpia_reference=fields.get("dpia_reference"),
         policy_id=policy_id, policy_version=version,
         explain=(f"STANDARD capture policy {policy_id} version {version}",),
@@ -225,7 +237,29 @@ def as_attendance_policy(capture: CapturePolicy,
         location_lunch=capture.location_on_breaks, location_exception=capture.location_failure_action,
         reject_low_accuracy=capture.reject_low_accuracy, preferred_accuracy_m=capture.preferred_accuracy_m,
         acceptable_accuracy_m=capture.acceptable_accuracy_m, max_fix_age_seconds=capture.max_fix_age_seconds,
-        tracking_enabled=capture.tracking_enabled)
+        tracking_enabled=capture.tracking_enabled, tracking_interval_minutes=capture.tracking_interval_minutes,
+        tracking_grace_minutes=capture.tracking_grace_minutes, pause_on_lunch=capture.tracking_pause_on_break,
+        movement_threshold_m=capture.tracking_movement_threshold_m)
+
+
+def tracking_refused(db: Session, company_id: int, employee_id: int, d: date) -> bool:
+    """07 §4 C-5 / L-2: a DECLINED, WITHDRAWN or EXPIRED ``LOCATION_TRACKING`` consent in force on ``d`` — tracking
+    does not start (or stops); punching still works."""
+    from app.services import attendance_consents
+
+    row = attendance_consents.state_on(db, company_id, employee_id, "LOCATION_TRACKING", d)
+    return row is not None and row.status != "GRANTED"
+
+
+def for_session(db: Session, att) -> attendance_policy.AttendancePolicy:
+    """The pipeline policy a live session is tracked under: the employee's capture policy on the session's shift date
+    over the company settings (periodic location sampling, spine §6.2.1 ``tracking``), with tracking off when the
+    employee refused ``LOCATION_TRACKING``."""
+    base = attendance_policy.load(db, att.company_id)
+    policy = as_attendance_policy(effective(db, att.company_id, att.employee_id, att.date), base)
+    if policy.tracking_enabled and tracking_refused(db, att.company_id, att.employee_id, att.date):
+        policy = replace(policy, tracking_enabled=False)
+    return policy
 
 
 def client_view(policy: CapturePolicy) -> dict:
@@ -242,5 +276,8 @@ def client_view(policy: CapturePolicy) -> dict:
         "gps": {"preferred_accuracy_m": policy.preferred_accuracy_m,
                 "acceptable_accuracy_m": policy.acceptable_accuracy_m,
                 "max_fix_age_seconds": policy.max_fix_age_seconds},
+        "tracking": {"enabled": policy.tracking_enabled, "interval_minutes": policy.tracking_interval_minutes,
+                     "grace_minutes": policy.tracking_grace_minutes, "pause_on_break": policy.tracking_pause_on_break},
+        "offline_punches": policy.offline_punches, "offline_max_age_hours": policy.offline_max_age_hours,
         "policy_id": policy.policy_id, "policy_version": policy.policy_version,
     }

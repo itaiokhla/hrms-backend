@@ -98,6 +98,7 @@ PAYMENT_HOLD_RELEASED_TOPIC = "payroll.payment_hold_released"
 ALLOW_MULTIPLE_KEY = "payroll.run.allow_multiple_regular_runs"
 LEGACY_ACK_KEY = "payroll.migration.legacy_review_acknowledged"
 LEAVE_PENDING_KEY = "payroll.leave.unapproved_at_cutoff"
+ATTENDANCE_PENDING_KEY = "payroll.attendance.pending_at_cutoff"  # JC-AS-12
 
 RUN_CREATED = "RUN_CREATED"
 EXCEPTION_WAIVED = "EXCEPTION_WAIVED"
@@ -1100,6 +1101,46 @@ def _leave_recalc_findings(ctx: _Ctx) -> List[Finding]:
                     "they finish.", "leave_recalc", details={"jobs": pending})]
 
 
+def _pending_attendance(ctx: _Ctx, ids: List[int], start: date, end: date) -> Tuple[str, Dict[int, List[dict]]]:
+    """JC-AS-12 (AS 04-attendance/04 §14.4): attendance requests PENDING / RETURNED for dates of the attendance window
+    (``attendance_request``) and, on v2 tenants, days still PROVISIONAL (``attendance_day_pending``). Severity:
+    ``payroll.attendance.pending_at_cutoff`` (EXCEPTION = blocking and waivable, WARNING = warning)."""
+    from app.models.attendance import AttendanceDay
+    from app.models.attendance_requests import AttendanceRequest
+    from app.services import attendance_access
+
+    db, cid = ctx.db, ctx.run.company_id
+    try:
+        mode = settings_engine.resolve(db, cid, ATTENDANCE_PENDING_KEY, pay_group_id=ctx.group.id,
+                                       on=ctx.period.period_end).value
+    except settings_engine.SettingConfigError:
+        mode = "EXCEPTION"
+    mode = mode if mode in ("EXCEPTION", "WARNING") else "EXCEPTION"
+    items: Dict[int, List[dict]] = {}
+    if not ids:
+        return mode, items
+    for req in db.query(AttendanceRequest).filter(
+            AttendanceRequest.company_id == cid, AttendanceRequest.employee_id.in_(ids),
+            AttendanceRequest.shift_date >= start, AttendanceRequest.shift_date <= end,
+            AttendanceRequest.status.in_(("PENDING", "RETURNED"))).order_by(AttendanceRequest.shift_date,
+                                                                            AttendanceRequest.id):
+        items.setdefault(req.employee_id, []).append({
+            "type": "attendance_request", "id": req.id, "date": req.shift_date.isoformat(), "kind": req.kind,
+            "status": req.status})
+    if attendance_access.v2_enabled(db, cid):
+        for day in db.query(AttendanceDay).filter(
+                AttendanceDay.company_id == cid, AttendanceDay.employee_id.in_(ids), AttendanceDay.shift_date >= start,
+                AttendanceDay.shift_date <= end, AttendanceDay.evaluation_state == "PROVISIONAL"
+        ).order_by(AttendanceDay.shift_date):
+            reasons = [r for r in (day.pending_reasons or ()) if r != "LEAVE_PENDING"]
+            if not reasons:
+                continue
+            items.setdefault(day.employee_id, []).append({
+                "type": "attendance_day_pending", "id": day.id, "date": day.shift_date.isoformat(),
+                "pending_reasons": reasons})
+    return mode, items
+
+
 def _pending_findings(ctx: _Ctx) -> List[Finding]:
     """PENDING_INPUTS: leave, overtime, tasks and wage inputs still awaiting a decision (3.4 §16, EC-CAL-13)."""
     db, cid = ctx.db, ctx.run.company_id
@@ -1123,6 +1164,7 @@ def _pending_findings(ctx: _Ctx) -> List[Finding]:
     pending_wage = Counter(e for (e,) in db.query(WageInput.employee_id).filter(
         WageInput.company_id == cid, WageInput.employee_id.in_(ids or [0]), WageInput.status == "PENDING_APPROVAL",
         WageInput.target_period_start >= ctx.period.period_start, WageInput.target_period_end <= ctx.period.period_end))
+    attendance_mode, pending_attendance = _pending_attendance(ctx, ids, start, end)
     for employee_id in sorted(ids):
         row = by_employee[employee_id]
         leave = time_inputs.pending_inputs(db, cid, employee_id, start, end)
@@ -1136,6 +1178,17 @@ def _pending_findings(ctx: _Ctx) -> List[Finding]:
                 details={"kind": "LEAVE", "items": leave[:50], "policy": leave_mode}, waivable=blocking,
                 # A page that exists today (LH BUG-10 part 1; /leaves/approvals arrives with LH-M5a).
                 resolutions=("FIX", "WAIVE", "DEFER"), fix_link="/leaves?tab=approvals"))
+        attendance_items = pending_attendance.get(employee_id)
+        if attendance_items:
+            blocking = attendance_mode == "EXCEPTION"
+            findings.append(Finding(
+                "PENDING_INPUTS", "BLOCKING" if blocking else "WARNING",
+                f"{len(attendance_items)} attendance item(s) still pending at the cutoff"
+                + (" (payroll.attendance.pending_at_cutoff = EXCEPTION)." if blocking else "; check before paying."),
+                f"PENDING_INPUTS:ATTENDANCE:{row.id}", run_employee_id=row.id, employee_id=employee_id,
+                details={"kind": "ATTENDANCE", "items": attendance_items[:50], "policy": attendance_mode},
+                waivable=blocking, resolutions=("FIX", "WAIVE", "DEFER"),
+                fix_link="/approvals?module=attendance"))
         others = {"OVERTIME": pending_ot.get(employee_id, 0), "TASK": pending_tasks.get(employee_id, 0),
                   "WAGE_INPUT": pending_wage.get(employee_id, 0)}
         for kind, count in others.items():

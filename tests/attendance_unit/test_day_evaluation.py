@@ -555,3 +555,54 @@ def test_vocabularies_are_closed():
     assert de.DAY_RESULTS == ("PRESENT", "HALF_DAY", "ABSENT", "MISSING_PUNCH", "UNMARKED", "PENDING", "OFF")
     assert len(de.EXCEPTION_CODES) == len(set(de.EXCEPTION_CODES))
     assert "content_hash" in de.OUTPUT_COLUMNS and "inputs_hash" not in de.OUTPUT_COLUMNS
+
+
+# --------------------------------------------------------------------------- break_defaults (03-shifts/01 §5.4)
+LUNCH_DEFAULT = {"kind": "LUNCH", "mode": "AUTO_DEDUCT", "minutes": 30, "paid": False, "auto_deduct_after_minutes": 300}
+
+
+def custom(start, end, defaults=()):
+    """The instance of a roster entry with custom times and no shift (shift_resolution gives it as a FIXED version)."""
+    entry = se.custom_entry(V(start_time=start, end_time=end), roster_entry_id=55, break_defaults=defaults)
+    return se.build_instance(None, D(2026, 11, 9), IST, entry)
+
+
+def test_break_defaults_apply_to_custom_entries():
+    t = lambda h, m: at(IST, 2026, 11, 9, h, m)
+    sessions = [sess(1, t(9, 0), t(18, 0))]
+    bare = custom("09:00", "18:00")
+    assert bare.breaks == () and bare.roster_entry_id == 55
+    assert day(None, D(2026, 11, 9), sessions, extra=(bare,)).net_minutes == 540
+    with_lunch = custom("09:00", "18:00", [LUNCH_DEFAULT])
+    assert [(b.kind, b.mode, b.minutes) for b in with_lunch.breaks] == [("LUNCH", "AUTO_DEDUCT", 30)]
+    ev = day(None, D(2026, 11, 9), sessions, extra=(with_lunch,))
+    assert ev.net_minutes == 510 and ev.auto_deducted_minutes == 30
+    inputs = lambda inst: de.DayInputs(employee_id=7, shift_date=D(2026, 11, 9), work_timezone=IST, now=FAR,
+                                       expectation=FULL, instances=(inst,), sessions=tuple(sessions), rules=P_GEN)
+    assert de.inputs_hash(inputs(bare)) != de.inputs_hash(inputs(with_lunch))  # new defaults re-evaluate the day
+
+
+def test_break_default_window_outside_the_custom_block_is_expected_as_punched():
+    fixed = {"kind": "LUNCH", "mode": "FIXED_WINDOW", "minutes": 60, "paid": False, "start": "13:00", "end": "14:00"}
+    built = custom("06:00", "12:00", [fixed])
+    assert [(b.mode, b.start_at) for b in built.breaks] == [("PUNCHED", None)]
+    assert any(note.startswith(se.BREAK_AS_PUNCHED) for note in built.explain)
+
+
+def test_break_defaults_are_validated_like_shift_break_rules():
+    from app.payroll.policy_types import AttendanceRulesPolicy
+
+    assert se.validate_break_defaults([{"kind": "LUNCH", "mode": "AUTO_DEDUCT", "minutes": 30, "paid": False,
+                                        "auto_deduct_after_minutes": 300}]) == ()
+    codes = {i.code for i in se.validate_break_defaults([{"kind": "LUNCH", "mode": "AUTO_DEDUCT", "minutes": 30,
+                                                           "paid": False}])}
+    assert codes == {"REQUIRED"}
+    wrong = se.validate_break_defaults([{"kind": "LUNCH", "mode": "FIXED_WINDOW", "minutes": 60, "paid": False,
+                                         "start": "13:00", "end": "13:30"}])
+    assert [i.code for i in wrong] == ["WINDOW_LENGTH"]
+    assert len(se.validate_break_defaults([{"kind": "REST", "mode": "PUNCHED", "minutes": 10, "paid": True}] * 5)) >= 1
+    policy = AttendanceRulesPolicy.model_validate({"break_defaults": [{"mode": "AUTO_DEDUCT", "minutes": 45,
+                                                                       "auto_deduct_after_minutes": 360}]})
+    assert policy.break_defaults[0].kind == "LUNCH"
+    with pytest.raises(ValueError, match="break_defaults\[0\].auto_deduct_after_minutes"):
+        AttendanceRulesPolicy.model_validate({"break_defaults": [{"mode": "AUTO_DEDUCT", "minutes": 45}]})

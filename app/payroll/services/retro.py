@@ -356,10 +356,19 @@ def _day_sections(db: Session, t: Target, trigger: str) -> Dict[str, Any]:
     """Only the attendance (or leave) fields of each day are replaced by their current values."""
     from app.payroll.services import time_inputs
 
+    from app.payroll.services import cycle_ledger
+
     first, last = t.day_range()
     hours = (t.base.get("employee") or {}).get("standard_hours_per_day")
-    current = time_inputs.ledger_inputs(db, t.company_id, t.employee_id, first, last,
-                                        standard_hours_per_day=Decimal(str(hours)) if hours else None)
+    standard = Decimal(str(hours)) if hours else None
+    window = cycle_ledger.split_window(db, t.company_id, t.period)
+    if window is not None:  # JC-AS-10: the run's own window mapping (cycle_ledger), so only real changes differ
+        current = list(cycle_ledger.window_ledger(db, t.company_id, t.employee_id, (t.period.period_start,
+                                                  t.period.period_end), window,
+                                                  standard_hours_per_day=standard).days)
+    else:
+        current = time_inputs.ledger_inputs(db, t.company_id, t.employee_id, first, last,
+                                            standard_hours_per_day=standard)
     by_date = {d.date.isoformat(): snap.day_to_dict(d) for d in current}
     fields = DAY_FIELDS[trigger]
     days = []

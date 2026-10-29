@@ -25,7 +25,10 @@ from sqlalchemy.orm import relationship
 from app.models.base import BaseModel, TenantMixin
 from app.models.leave import APPROVAL_MODULES, APPROVER_TYPES, STEP_STATUSES
 
-APPROVAL_REQUEST_STATUSES = ("PENDING", "APPROVED", "REJECTED", "CANCELLED")
+APPROVAL_REQUEST_STATUSES = ("PENDING", "APPROVED", "REJECTED", "CANCELLED", "RETURNED")
+# RETURN (AS-M4 interim of LH-M5a, migration 0052): the step that returned the request; modules in
+# approvals.RETURNABLE_MODULES only. Leave keeps STEP_STATUSES.
+REQUEST_STEP_STATUSES = STEP_STATUSES + ("returned",)
 ACTED_AS = ("approver", "delegate", "override")
 # Request steps also accept the engine's default "holders of the approve permission" step (migration 0014).
 REQUEST_APPROVER_TYPES = APPROVER_TYPES + ("permission_holders",)
@@ -91,6 +94,11 @@ class ApprovalRequestStep(TenantMixin, BaseModel):
     acted_as = Column(String(20), nullable=True)
     acted_at = Column(DateTime(timezone=True), nullable=True)
     remarks = Column(Text, nullable=True)
+    # SLA of the step (AS-M4, migration 0052): due when it became pending + sla_hours; reminders / escalations sent
+    # by the job attendance.sla_scan (04-attendance/04 §9.5). NULL due_at = no SLA (modules without one).
+    due_at = Column(DateTime(timezone=True), nullable=True)
+    reminders_sent = Column(Integer, nullable=False, default=0, server_default="0")
+    escalation_level = Column(Integer, nullable=False, default=0, server_default="0")
 
     request = relationship(
         "ApprovalRequest",
@@ -123,7 +131,9 @@ class ApprovalRequestStep(TenantMixin, BaseModel):
             "(approver_type = 'specific_user') = (specific_user_id IS NOT NULL)",
             name="ck_approval_request_steps_user_required",
         ),
-        CheckConstraint(f"status IN {STEP_STATUSES}", name="ck_approval_request_steps_status"),
+        CheckConstraint(f"status IN {REQUEST_STEP_STATUSES}", name="ck_approval_request_steps_status"),
+        Index("ix_approval_request_steps_due", "company_id", "due_at",
+              postgresql_where=text("status = 'pending' AND due_at IS NOT NULL")),
         CheckConstraint(f"acted_as IN {ACTED_AS}", name="ck_approval_request_steps_acted_as"),
         Index("ix_approval_request_steps_pending", "company_id", postgresql_where=text("status = 'pending'")),
     )

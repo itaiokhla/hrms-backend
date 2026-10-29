@@ -280,6 +280,17 @@ def _rules_mode(versions: Mapping[str, object], v2: bool):
     return (de.STANDARD if standard else de.LEGACY_V1), params, ids, tie
 
 
+def _instance(resolved, day: date, rules_fields: Mapping) -> engine.ShiftInstance:
+    """The instance of a resolved shift. A roster entry with custom times and no shift (``shift_id`` 0) takes the
+    breaks of ``ATTENDANCE_RULES_POLICY.break_defaults`` on STANDARD days (03-shifts/01 §5.4; a window outside the
+    block is expected as punched); LEGACY_V1 days keep today's custom block without breaks (zero diff)."""
+    defaults = tuple(rules_fields.get("break_defaults") or ())
+    if resolved.shift_id or not defaults:
+        return engine.build_instance(resolved.version, day, resolved.work_timezone)
+    entry = engine.custom_entry(resolved.version, roster_entry_id=resolved.roster_entry_id, break_defaults=defaults)
+    return engine.build_instance(None, day, resolved.work_timezone, entry)
+
+
 def _company_zone(db: Session, company_id: int) -> str:
     from app.models.company import Company
 
@@ -411,7 +422,29 @@ def load_inputs_many(db: Session, company_id: int, employee_ids: Sequence[int], 
                 .filter(OnDutyRequest.company_id == company_id, OnDutyRequest.employee_id.in_(ids),
                         OnDutyRequest.date >= start, OnDutyRequest.date <= end, OnDutyRequest.status == "APPROVED")):
         on_duty[(row.employee_id, row.date)].append(de.OnDutyData(
-            row.id, getattr(row, "kind", None) or "ON_DUTY", row.portion or "FULL", row_version=row.row_version or 1))
+            row.id, getattr(row, "kind", None) or "ON_DUTY", row.portion or "FULL",
+            requires_punch=bool(getattr(row, "requires_punch", False)), row_version=row.row_version or 1))
+    # AS-M4 requests (04-attendance/04 §4.2): open requests keep the day PROVISIONAL (REQUEST_PENDING); approved
+    # MARK_EXCUSE and STATUS_OVERRIDE are inputs of steps 7 and 11 (the latest applied override wins).
+    from app.models.attendance_requests import AttendanceRequest
+
+    pending_days: set = set()
+    excuses: Dict[Tuple[int, date], List[de.ExcuseData]] = defaultdict(list)
+    overrides: Dict[Tuple[int, date], List[de.OverrideData]] = defaultdict(list)
+    for req in (db.query(AttendanceRequest)
+                .filter(AttendanceRequest.company_id == company_id, AttendanceRequest.employee_id.in_(ids),
+                        AttendanceRequest.shift_date >= start, AttendanceRequest.shift_date <= end,
+                        AttendanceRequest.status.in_(("PENDING", "RETURNED", "APPROVED")))
+                .order_by(AttendanceRequest.applied_at.nullsfirst(), AttendanceRequest.id)):
+        key = (req.employee_id, req.shift_date)
+        if req.status != "APPROVED":
+            pending_days.add(key)
+        elif req.kind == "MARK_EXCUSE":
+            excuses[key].append(de.ExcuseData(req.id, (req.payload or {}).get("mark") or "LATE",
+                                              int((req.payload or {}).get("minutes") or 0), version=req.version))
+        elif req.kind == "STATUS_OVERRIDE":
+            overrides[key] = [de.OverrideData(req.id, req.version, (req.payload or {}).get("first_half"),
+                                              (req.payload or {}).get("second_half"))]
 
     fact_index = {(employee_id, f.date): f for employee_id, rows in facts.items() for f in rows}
 
@@ -446,17 +479,17 @@ def load_inputs_many(db: Session, company_id: int, employee_ids: Sequence[int], 
             resolved = shifts.get((employee_id, day))
             zone = (resolved.work_timezone if resolved is not None else None) or (fact.timezone if fact else None) \
                 or company_zone
+            values = resolver.settings(employee_id, day)
+            versions = {t: resolver.version(t, employee_id, day) for t in MODE_TYPES}
+            mode, params, policy_ids, tie = _rules_mode(versions, v2)
             instances: Tuple[engine.ShiftInstance, ...] = ()
             if resolved is not None:
                 try:
-                    built = engine.build_instance(resolved.version, day, resolved.work_timezone)
+                    built = _instance(resolved, day, _fields(versions.get(RULES)) if mode == de.STANDARD else {})
                     instances = (replace(built, shift_id=resolved.shift_id, shift_version_id=resolved.shift_version_id,
                                          roster_entry_id=resolved.roster_entry_id),)
                 except engine.ShiftEngineError:
                     instances = ()
-            values = resolver.settings(employee_id, day)
-            versions = {t: resolver.version(t, employee_id, day) for t in MODE_TYPES}
-            mode, params, policy_ids, tie = _rules_mode(versions, v2)
             window = _night_window(values.get("attendance.night_window"))
             capture_required, shift_required = _capture(resolver.version(CAPTURE, employee_id, day))
             overtime = (_fields(resolver.version("OVERTIME_POLICY", employee_id, day))
@@ -477,6 +510,9 @@ def load_inputs_many(db: Session, company_id: int, employee_ids: Sequence[int], 
                 branch_id=fact.branch_id if fact else None,
                 sessions=tuple(sessions.get((employee_id, day), ())),
                 on_duty=tuple(on_duty.get((employee_id, day), ())),
+                excuses=tuple(excuses.get((employee_id, day), ())),
+                overrides=tuple(overrides.get((employee_id, day), ())),
+                request_pending=(employee_id, day) in pending_days,
                 rules_mode=mode, rules=params,
                 legacy=_legacy_from(_fields(resolver.version("ATTENDANCE_PAY_POLICY", employee_id, day)),
                                     _fields(resolver.version("LATE_PENALTY_POLICY", employee_id, day))),
@@ -491,6 +527,32 @@ def load_inputs_many(db: Session, company_id: int, employee_ids: Sequence[int], 
                 statutory_breaks=statutory, rest_min_between_shifts_hours=rest_hours,
                 previous_last_out_at=last_out.get((employee_id, day - timedelta(days=1))),
             )
+    return _with_device_lag(db, company_id, ids, start, end, result, now)
+
+
+def _with_device_lag(db: Session, company_id: int, ids: Sequence[int], start: date, end: date,
+                     result: Dict[Tuple[int, date], de.DayInputs], now: datetime) -> Dict[Tuple[int, date], de.DayInputs]:
+    """AS-M7 watermarks (01 §8.8 W-2 / W-3): relevant devices behind the end of the day keep it PROVISIONAL."""
+    import pytz
+
+    from app.services import device_ingest
+
+    if not result or not device_ingest.has_ingest_devices(db, company_id):
+        return result
+    day_end: Dict[Tuple[int, date], datetime] = {}
+    branch_of: Dict[Tuple[int, date], Optional[int]] = {}
+    for key, inputs in result.items():
+        ends = [i.end_at for i in inputs.instances if getattr(i, "end_at", None) is not None]
+        if ends:
+            day_end[key] = max(ends)
+        else:
+            zone = pytz.timezone(inputs.work_timezone or "UTC")
+            day_end[key] = zone.localize(datetime.combine(key[1] + timedelta(days=1), datetime.min.time())) \
+                .astimezone(timezone.utc)
+        branch_of[key] = inputs.branch_id
+    lag = device_ingest.device_lag(db, company_id, ids, start, end, day_end, branch_of, now)
+    for key, (behind, elapsed) in lag.items():
+        result[key] = replace(result[key], device_ids_behind=behind, late_log_grace_elapsed=elapsed)
     return result
 
 
@@ -672,6 +734,10 @@ def _log(db: Session, company_id: int, row: AttendanceDay, change: str, mode: st
                   employee_id=row.employee_id, date_from=row.shift_date, date_to=row.shift_date,
                   details={"version": row.version, "content_hash": row.content_hash})
     result.changes_logged += 1
+    # AS-M4 (§12): a new version inside a submitted / approved timesheet week reopens it.
+    from app.services import attendance_timesheets
+
+    attendance_timesheets.reopen_on_change(db, company_id, row.employee_id, row.shift_date)
 
 
 # --------------------------------------------------------------------------- triggers
@@ -834,11 +900,12 @@ def days_for(db: Session, company_id: int, employee_ids: Sequence[int], start: d
 
 
 MAX_EXCEPTION_DAYS = 62
+LH_CONFLICT_KINDS = de.EXCEPTION_CODES[:6]  # the six leave-holiday kinds, verbatim (LH 05 §4.3; 03 §12.1)
 
 
 def exceptions(db: Session, company_id: int, scope_clause, start: date, end: date, *,
                code: Optional[str] = None, employee_id: Optional[int] = None, skip: int = 0,
-               limit: int = 50) -> dict:
+               limit: int = 50, kinds: Optional[Sequence[str]] = None) -> dict:
     """Decided days with exception codes (04-attendance/03 §12; ``GET /attendance/exceptions``): OPEN days are still
     in progress and never listed. ``scope_clause`` is the caller's employee scope on ``AttendanceDay.employee_id``."""
     if end < start:
@@ -854,24 +921,52 @@ def exceptions(db: Session, company_id: int, scope_clause, start: date, end: dat
                      func.cardinality(AttendanceDay.exception_codes) > 0, scope_clause))
     if code is not None:
         query = query.filter(AttendanceDay.exception_codes.any(code))
+    if kinds is not None:  # the LH conflicts alias: only these kinds, and only they are listed per day
+        query = query.filter(AttendanceDay.exception_codes.overlap(list(kinds)))
     if employee_id is not None:
         query = query.filter(AttendanceDay.employee_id == employee_id)
     total = query.count()
     rows = (query.order_by(AttendanceDay.shift_date.desc(), Employee.first_name, AttendanceDay.employee_id)
             .offset(skip).limit(limit).all())
+    label_of = labels(db, company_id, [day for day, _ in rows])
     return {"total": total, "items": [
         {"day_id": day.id, "employee_id": day.employee_id,
          "employee_name": f"{emp.first_name} {emp.last_name or ''}".strip(), "shift_date": day.shift_date.isoformat(),
          "day_result": day.day_result, "evaluation_state": day.evaluation_state,
-         "exception_codes": list(day.exception_codes), "late_minutes": day.late_minutes,
-         "early_minutes": day.early_minutes, "net_minutes": day.net_minutes} for day, emp in rows]}
+         "exception_codes": [c for c in day.exception_codes if kinds is None or c in kinds],
+         "late_minutes": day.late_minutes,
+         "early_minutes": day.early_minutes, "net_minutes": day.net_minutes, "day_label": label_of[day.id]}
+        for day, emp in rows]}
 
 
-def as_json(row: AttendanceDay, *, versions: Sequence[AttendanceDayVersion] = ()) -> dict:
+def labels(db: Session, company_id: int, rows: Iterable[AttendanceDay]) -> Dict[int, dict]:
+    """``{row.id: day label}`` (04-attendance/03 §11, never stored). The expectation reasons matter only where a
+    portion is not expected (leave, holiday, weekly off, not employed): one light ``expected_presence`` pass over those
+    rows' employees and dates; a FULL day needs none."""
+    from app.services.attendance_day_label import day_label
+
+    rows = list(rows)
+    partial = [r for r in rows if r.expected_portion != "FULL"]
+    reasons: Dict[Tuple[int, date], tuple] = {}
+    if partial:
+        start, end = min(r.shift_date for r in partial), max(r.shift_date for r in partial)
+        found = ti.expected_presence(db, company_id, sorted({r.employee_id for r in partial}), start, end, light=True)
+        reasons = {(e, x.date): tuple(x.reasons) for e, items in found.items() for x in items}
+    return {r.id: day_label(r, reasons.get((r.employee_id, r.shift_date), ())) for r in rows}
+
+
+def day_label(db: Session, company_id: int, row: AttendanceDay) -> dict:
+    """The computed label of one stored day (spine §5.8)."""
+    return labels(db, company_id, [row])[row.id]
+
+
+def as_json(row: AttendanceDay, *, versions: Sequence[AttendanceDayVersion] = (), label: Optional[dict] = None) -> dict:
     body = {"id": row.id, "employee_id": row.employee_id, "shift_date": row.shift_date.isoformat(),
             "version": row.version, "row_version": row.row_version, "inputs_hash": row.inputs_hash,
             "evaluated_at": de._plain(row.evaluated_at), "evaluated_by": row.evaluated_by, "trigger": row.trigger,
             **_row_outputs(row)}
+    if label is not None:
+        body["day_label"] = label
     if versions:
         body["history"] = [{"version": v.version, "trigger": v.trigger, "created_at": de._plain(v.created_at),
                             "actor_user_id": v.actor_user_id, "changed": sorted(v.outputs)} for v in versions]

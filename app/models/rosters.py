@@ -279,6 +279,9 @@ class RosterEntry(TenantMixin, BaseModel):
         _fk("roster_entries", "planned_shift_id", "shifts", "planned_shift"),
         _fk("roster_entries", "roster_period_id", "roster_periods", "period"),
         _fk("roster_entries", "publication_id", "roster_publications", "publication"),
+        # AS-M6 (0057). use_alter: roster_entries -> shift_requests -> open_shifts -> roster_entries is a cycle.
+        ForeignKeyConstraint(["company_id", "request_id"], ["shift_requests.company_id", "shift_requests.id"],
+                             name="fk_roster_entries_request", use_alter=True),
         CheckConstraint("entry_seq BETWEEN 1 AND 3", name="ck_roster_entries_seq"),
         CheckConstraint(f"kind IN {ROSTER_ENTRY_KINDS}", name="ck_roster_entries_kind"),
         CheckConstraint("kind = 'WORK' OR (shift_id IS NULL AND custom_start_time IS NULL)",

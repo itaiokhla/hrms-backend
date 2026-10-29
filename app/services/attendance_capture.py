@@ -78,9 +78,16 @@ def _now() -> datetime:
 EVENT_OF = {"IN": "PUNCH_IN", "OUT": "PUNCH_OUT", "BREAK_START": "LUNCH_IN", "BREAK_END": "LUNCH_OUT"}
 
 
-def punch(db: Session, principal: Principal, data, image: Optional[bytes], ip: Optional[str]) -> dict:
+def punch(db: Session, principal: Principal, data, image: Optional[bytes], ip: Optional[str],
+          offline_flags: Optional[tuple] = None) -> dict:
     """One interactive punch (``data`` = ``PunchMeta``); returns the acted-on session, ``my_today``, ``punch_id`` and
-    ``location_check`` (the site result the employee may see: result, band, site name — never coordinates)."""
+    ``location_check`` (the site result the employee may see: result, band, site name — never coordinates).
+
+    ``offline_flags`` (AS-M12 offline queue, §6.2 O-6): the item is replayed at its capture instant (``clock.at``);
+    the face, QR and photo steps are skipped (a queue holds none of them) and the punch carries the flags, plus
+    ``OFFLINE_UNVERIFIED`` when the policy asked for that evidence."""
+    from dataclasses import replace as _replace
+
     if not principal.has("attendance:mark"):
         raise forbidden()
     employee = authz.own_employee(db, principal)
@@ -88,6 +95,11 @@ def punch(db: Session, principal: Principal, data, image: Optional[bytes], ip: O
         raise forbidden("Your employment record is inactive.")
     day = org_structure_service.employee_local_today(db, employee)
     policy = attendance_capture_policy.effective(db, principal.company_id, employee.id, day)
+    if offline_flags is not None:
+        if policy.face_on_punch or policy.face_on_break or policy.qr_mode == "REQUIRED" or policy.punch_photo:
+            offline_flags = tuple(offline_flags) + ("OFFLINE_UNVERIFIED",)
+        policy = _replace(policy, face_on_punch=False, face_on_break=False, qr_mode="OFF", punch_photo=False)
+        image = None
     if not policy.allows(data.capture_source):
         raise AppError(422, "Punching from here is not enabled for you.", "FEATURE_DISABLED")
     if data.direction in BREAK_ACTIONS and (data.break_kind or "LUNCH") != "LUNCH":
@@ -106,6 +118,17 @@ def punch(db: Session, principal: Principal, data, image: Optional[bytes], ip: O
                                                                      profile=policy.profile)
     work_mode = data.work_location_choice or "ON_SITE"  # P-6
     pipeline = attendance_capture_policy.as_attendance_policy(policy, attendance_policy.load(db, principal.company_id))
+    if pipeline.tracking_enabled and data.direction == "IN":
+        # Periodic location during the shift has its own notice (07 L-2): a refusal keeps tracking off; the punch
+        # screen's location notice, once acknowledged, is recorded as the tracking consent.
+        if attendance_capture_policy.tracking_refused(db, principal.company_id, employee.id, day):
+            from dataclasses import replace as _replace
+
+            pipeline = _replace(pipeline, tracking_enabled=False)
+        elif data.location_consent and not attendance_consents.has_consent(
+                db, principal.company_id, employee.id, "LOCATION_TRACKING", day):
+            attendance_consents.record(db, principal.company_id, employee.id, "LOCATION_TRACKING", "GRANTED",
+                                       channel="SELF_SERVICE", on=day, principal=principal)
     # Step 15 before the site check (AS-GEO-03): freshness, accuracy and REQUIRED refusals of today's pipeline.
     location = location_service.evaluate_event(pipeline, EVENT_OF[data.direction], data.location,
                                                data.exception_reason, _now(), data.client_sent_at, "self")
@@ -120,8 +143,9 @@ def punch(db: Session, principal: Principal, data, image: Optional[bytes], ip: O
         policy, day)
     capture = attendance_service.Capture(
         source=data.capture_source, multiple_sessions_allowed=policy.multiple_sessions_allowed,
-        verify_mode="NONE" if skip_face else None, site_id=outcome.site_id, geofence_result=outcome.result,
-        evidence_flags=outcome.flags, ip=ip, work_mode=work_mode, skip_face=skip_face, attendance_policy=pipeline)
+        verify_mode="NONE" if skip_face or offline_flags is not None else None, site_id=outcome.site_id,
+        geofence_result=outcome.result, evidence_flags=tuple(outcome.flags) + tuple(offline_flags or ()), ip=ip,
+        work_mode=work_mode, skip_face=skip_face or offline_flags is not None, attendance_policy=pipeline)
     meta = EventMeta(**{**data.model_dump(include=set(EventMeta.model_fields)), "location_consent": acknowledged})
     result = attendance_service.perform(db, principal, attendance_service.ACTION_OF[data.direction], image, meta, ip,
                                         capture=capture)

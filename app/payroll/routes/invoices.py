@@ -48,7 +48,11 @@ class SellerIn(StrictModel):
 class InvoiceIn(StrictModel):
     mode: Mode
     payee_employee_id: int = Field(ge=1)
-    task_ids: List[int] = Field(min_length=1, max_length=service.MAX_TASKS)
+    # One source: approved tasks, or approved weekly timesheets × an entered hourly rate (migration 0058).
+    task_ids: List[int] = Field(default_factory=list, max_length=service.MAX_TASKS)
+    timesheet_ids: List[int] = Field(default_factory=list, max_length=service.MAX_TIMESHEETS)
+    hourly_rate: Optional[str] = Field(None, pattern=r"^\d{1,8}(\.\d{1,4})?$")
+    currency: Optional[str] = Field(None, pattern=r"^[A-Z]{3}$")
     external_number: Optional[str] = Field(None, max_length=80)
     seller: Optional[SellerIn] = None
     taxes: List[TaxIn] = Field(default_factory=list, max_length=10)
@@ -191,6 +195,19 @@ def revoke_agreement(agreement_id: int, data: RevokeIn, request: Request,
         return 200, service.agreement_json(service.revoke_agreement(db, principal, agreement_id, data.reason))
 
     return idempotency.execute(db, principal, request, handler, body=data.model_dump(mode="json"))
+
+
+@router.get("/payroll/team/invoices")
+def team_invoices(principal: Principal = Depends(get_principal), db: Session = Depends(get_db)):
+    """Contractor invoices of the manager's team (drafts they prepared and the team's issued ones)."""
+    return {"items": service.list_for_team(db, principal)}
+
+
+@router.get("/payroll/team/contractors/{employee_id}/timesheets")
+def contractor_timesheets(employee_id: int, principal: Principal = Depends(get_principal),
+                          db: Session = Depends(get_db)):
+    """Approved weeks of a contractor not yet invoiced (the timesheet source picker)."""
+    return {"items": service.approved_timesheets(db, principal, employee_id)}
 
 
 @router.get("/me/payroll/invoices")

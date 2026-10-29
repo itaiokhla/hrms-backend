@@ -1031,6 +1031,25 @@ def _validate_core(version: ShiftVersionData, band: _Span, add: Any) -> None:
         add("core_end_time", "CORE_TOO_SHORT", f"the core window is at least {MIN_CORE_MINUTES} minutes")
 
 
+def custom_entry(version: ShiftVersionData, *, roster_entry_id: int | None = None,
+                 break_defaults: Sequence[Any] = ()) -> RosterEntryData:
+    """The roster entry behind a resolved custom-time block without a shift (``shift_resolution`` gives it as a FIXED
+    version), with the resolved ``break_defaults`` (§5.4)."""
+    return RosterEntryData(roster_entry_id=roster_entry_id, custom_start_time=version.start_time,
+                           custom_end_time=version.end_time, custom_segments=version.segments,
+                           break_defaults=_rules_tuple(break_defaults))
+
+
+def validate_break_defaults(rules: Sequence[Any]) -> tuple[VersionIssue, ...]:
+    """Field errors of ``ATTENDANCE_RULES_POLICY.break_defaults`` (§5.1 rule checks). There is no shift to hold the
+    windows, so any clock window is accepted; one outside a custom-time block becomes punched (§5.4)."""
+    issues: list[VersionIssue] = []
+    data = ShiftVersionData(break_rules=_rules_tuple(rules))
+    _validate_breaks(data, [_Span(WORK, 0, 2 * DAY_MINUTES)],
+                     lambda field, code, message: issues.append(VersionIssue(field, code, message)))
+    return tuple(issues)
+
+
 def _validate_breaks(version: ShiftVersionData, containers: Sequence[_Span],
                      add: Any) -> list[tuple[_Span, BreakRuleData]]:
     rules = version.break_rules

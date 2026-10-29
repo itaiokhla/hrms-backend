@@ -285,6 +285,8 @@ def test_cutover_prepare_reconcile_refusals_and_activation(tenant, fake_clock, a
 
 
 def test_exceptions_list_decided_days_in_scope(tenant, fake_clock):
+    from app.services import attendance_days
+
     admin, emp_id, cid = tenant["admin"], tenant["emp_id"], tenant["cid"]
     enable_v2(cid)
     work_day(tenant, fake_clock)  # Tue 3 Nov worked; Wed 4 and Thu 5 Nov not worked
@@ -293,12 +295,25 @@ def test_exceptions_list_decided_days_in_scope(tenant, fake_clock):
     body = admin.get("/api/v1/attendance/exceptions", params={"start": "2026-11-01", "end": "2026-11-05"}).json()
     by_date = {item["shift_date"]: item for item in body["items"] if item["employee_id"] == emp_id}
     assert "2026-11-04" in by_date and "UNMARKED_DAY" in by_date["2026-11-04"]["exception_codes"], body
+    # §11 computed label on every read model: exceptions, the day list and the day page; a Sunday is a weekly off.
+    assert by_date["2026-11-04"]["day_label"]["label"] in ("Absent", "Not marked")
+    days = admin.get("/api/v1/attendance/days", params={"employee_id": emp_id, "start": "2026-11-01",
+                                                        "end": "2026-11-05"}).json()["items"]
+    labels = {d["shift_date"]: d["day_label"]["label"] for d in days}
+    assert labels["2026-11-03"] == "Present" and labels.get("2026-11-01") in (None, "Weekly off"), labels
+    one = admin.get(f"/api/v1/attendance/days/{emp_id}/2026-11-03").json()["day"]
+    assert one["day_label"]["label"] == "Present" and one["day_label"]["code"] == "P"
     only = admin.get("/api/v1/attendance/exceptions", params={"start": "2026-11-01", "end": "2026-11-05",
                                                               "code": "UNMARKED_DAY"}).json()
     assert only["total"] >= 1 and all("UNMARKED_DAY" in item["exception_codes"] for item in only["items"])
     bad = admin.get("/api/v1/attendance/exceptions", params={"start": "2026-11-01", "end": "2026-11-05",
                                                              "code": "NOPE"})
     assert bad.status_code == 400 and bad.json()["code"] == "INVALID_EXCEPTION_CODE"
+    # LH's conflicts view is an alias: the six leave-holiday kinds only (03 §12).
+    conflicts = admin.get("/api/v1/attendance/conflicts", params={"start": "2026-11-01", "end": "2026-11-05"}).json()
+    lh = set(attendance_days.LH_CONFLICT_KINDS)
+    assert conflicts["total"] >= 1 and all(set(i["exception_codes"]) <= lh and i["exception_codes"]
+                                           for i in conflicts["items"]), conflicts
     mine = tenant["emp"].get("/api/v1/attendance/exceptions", params={"start": "2026-11-01", "end": "2026-11-05"})
     assert mine.status_code in (200, 403)
     if mine.status_code == 200:
@@ -438,3 +453,62 @@ def test_rosters_read_the_scheduling_policy_limits(tenant, fake_clock):
         after = roster_validation.limits_for(db, cid, [emp_id], DAY).per_employee[emp_id]
     assert (after.min_rest_hours.value, after.weekly_max_hours.value) == (12, 40)
     assert after.min_rest_hours.source_ref == "SCHEDULING_POLICY"
+
+
+def test_custom_roster_block_takes_the_rules_break_defaults(tenant, fake_clock, monkeypatch):
+    """03-shifts/01 §5.4: a roster entry with custom times and no shift deducts ATTENDANCE_RULES_POLICY.break_defaults
+    on STANDARD days (shift_resolution gives it as shift_id 0); without the policy the block has no breaks."""
+    from app.services import attendance_days, shift_resolution
+    from app.services import day_evaluation as de
+    from app.services import shift_engine as engine
+
+    cid, emp_id = tenant["cid"], tenant["emp_id"]
+    enable_v2(cid)
+    work_day(tenant, fake_clock)  # 09:20 - 18:05
+
+    def custom_block(db, company_id, employee_ids, start, end, **kw):
+        return {(e, d): shift_resolution.ResolvedShift(d, "ROSTER", 0, None, engine.ShiftVersionData(
+            start_time="09:00", end_time="18:00"), "Asia/Kolkata", roster_entry_id=None)
+            for e in employee_ids for d in shift_resolution._dates(start, end)}
+
+    monkeypatch.setattr(shift_resolution, "shifts_for_many", custom_block)
+    now = datetime(2026, 11, 6, 6, tzinfo=timezone.utc)
+
+    def evaluated():
+        with tenant_db(cid) as db:
+            inputs = attendance_days.load_inputs_many(db, cid, [emp_id], DAY, DAY, now=now, v2=True)[(emp_id, DAY)]
+        return inputs, de.evaluate_day(inputs)
+
+    before, plain = evaluated()
+    assert [b for i in before.instances for b in i.breaks] == [] and plain.auto_deducted_minutes == 0
+    activate_rules(tenant["admin"], {"threshold_mode": "ABSOLUTE", "full_day_min_minutes": "450",
+                                     "half_day_min_minutes": "240",
+                                     "break_defaults": [{"kind": "LUNCH", "mode": "AUTO_DEDUCT", "minutes": 30,
+                                                         "paid": False, "auto_deduct_after_minutes": 300}]})
+    after, deducted = evaluated()
+    assert after.rules_mode == de.STANDARD
+    assert [(b.mode, b.minutes) for i in after.instances for b in i.breaks] == [("AUTO_DEDUCT", 30)]
+    assert deducted.auto_deducted_minutes == 30 and deducted.net_minutes == plain.net_minutes - 30
+    assert de.inputs_hash(after) != de.inputs_hash(before)
+    bad = tenant["admin"].post("/api/v1/attendance/policies", json={
+        "type": "ATTENDANCE_RULES_POLICY", "name": "Bad breaks",
+        "fields": {"break_defaults": [{"kind": "LUNCH", "mode": "AUTO_DEDUCT", "minutes": 30, "paid": False}]}})
+    assert bad.status_code in (400, 422) and "auto_deduct_after_minutes" in bad.text
+
+
+def test_capture_preview_counts_punches_that_would_be_blocked(tenant, fake_clock):
+    """02 §5.4 / V-AS-13: a capture draft's preview re-checks the last 7 days of punches ("would be blocked: n")."""
+    admin, cid = tenant["admin"], tenant["cid"]
+    enable_v2(cid)
+    work_day(tenant, fake_clock)  # two WEB punches on Tue 3 Nov
+    fake_clock.at_ist("2026-11-05", "10:00")
+    r = admin.post("/api/v1/attendance/policies", json={"type": "ATTENDANCE_CAPTURE_POLICY", "name": "Phones only",
+                                                        "fields": {"allowed_sources": ["MOBILE"]}})
+    assert r.status_code == 201, r.text
+    preview = admin.post(f"/api/v1/attendance/policies/{r.json()['id']}/versions/1/simulate",
+                         json={"effective_from": "2026-11-05", "assignments": [{"criteria": {"everyone": True},
+                                                                                 "priority": 10}]})
+    assert preview.status_code == 200, preview.text
+    changes = preview.json()["changes"]
+    assert changes["punches_checked"] >= 2 and changes["punches_blocked"] >= 2, changes
+    assert changes["blocked_by"].get("SOURCE_NOT_ALLOWED", 0) >= 2 and changes["lookback_days"] == 7

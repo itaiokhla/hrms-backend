@@ -110,6 +110,7 @@ from app.payroll import settings_registry as reg
 from app.payroll import state_machines as sm
 from app.payroll.engine import snapshot as snap
 from app.payroll.money import CALC_CONTEXT
+from app.payroll.services import cycle_ledger
 from app.payroll.services import compensation as compensation_service
 from app.payroll.services import components as component_service
 from app.payroll.services import fx as fx_service
@@ -591,10 +592,21 @@ class _Builder:
         standard = _dec(self.settings.get("payroll.standard_hours_per_day"))
         # BUG-AS-31: the flag's consumer (JC-AS-02); a missing value keeps the default (true).
         use_shift = self.settings.get("payroll.standard_hours.use_shift_duration")
-        days = time_inputs.ledger_inputs(self.db, self.cid, self.eid, self.start, self.end,
-                                         lock_at=None if self.probe else self.lock_time,
-                                         early_exit_grace_minutes=grace, standard_hours_per_day=standard,
-                                         use_shift_duration=use_shift is not False)
+        kwargs = dict(lock_at=None if self.probe else self.lock_time, early_exit_grace_minutes=grace,
+                      standard_hours_per_day=standard, use_shift_duration=use_shift is not False)
+        window = cycle_ledger.split_window(self.db, self.cid, self.period)
+        if window is not None:
+            # JC-AS-10 (IG-AS-94): time facts from the attendance window, pay dates from the period.
+            mapping = cycle_ledger.window_ledger(self.db, self.cid, self.eid, (self.start, self.end), window, **kwargs)
+            days = list(mapping.days)
+            if mapping.overflow:
+                self.issue("ATTENDANCE_CYCLE_OVERFLOW", "WARNING",
+                           "The attendance window starts more days before the period than the period runs after the "
+                           "window; these window dates are not in this run: "
+                           + ", ".join(d.isoformat() for d in mapping.overflow) + ". Enter any LOP for them manually.",
+                           dates=[d.isoformat() for d in mapping.overflow])
+        else:
+            days = time_inputs.ledger_inputs(self.db, self.cid, self.eid, self.start, self.end, **kwargs)
         result = []
         suspensions: set = set()
         for day in days:
@@ -858,6 +870,8 @@ class _Builder:
     def check_attendance_cycle(self) -> None:
         if (self.period.attendance_start, self.period.attendance_end) == (self.start, self.end):
             return
+        if cycle_ledger.split_window(self.db, self.cid, self.period) is not None:
+            return  # JC-AS-10: attendance v2 tenants map the window onto the period (cycle_ledger)
         if any(self.switch_any(key) for key in TIME_SWITCHES):
             self.issue("ATTENDANCE_CYCLE_UNSUPPORTED", "BLOCKING",
                        f"The pay group's attendance cycle ({self.period.attendance_start.isoformat()} to "

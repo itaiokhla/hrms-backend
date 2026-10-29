@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session, aliased, joinedload
 
 from app.core import authz, hierarchy
 from app.core.errors import bad_request, conflict, forbidden, not_found
@@ -147,25 +147,383 @@ def org_nodes(db: Session, principal: Principal, parent_id: Optional[int], q: Op
     nodes = query.order_by(Employee.first_name, Employee.last_name).limit(500).all()
 
     ids = [n.id for n in nodes]
+    manager_ids = {n.manager_id for n in nodes if n.manager_id is not None}
+    visible_manager_ids = set()
+    if manager_ids:
+        visible_manager_ids = {
+            row[0]
+            for row in db.query(Employee.id).filter(
+                Employee.company_id == principal.company_id,
+                Employee.id.in_(manager_ids),
+                scope.clause(Employee.id),
+            ).all()
+        }
     counts = dict(
         db.query(Employee.manager_id, func.count(Employee.id))
         .filter(Employee.manager_id.in_(ids), Employee.is_active.is_(True), scope.clause(Employee.id))
         .group_by(Employee.manager_id)
         .all()
     ) if ids else {}
+    sec_info = _compute_security_info(db, principal.company_id, nodes, counts)
     return [
         {
             "id": n.id,
+            "employee_code": n.employee_code,
             "full_name": n.full_name,
+            "email": n.email,
             "position": n.position,
+            "department_id": n.department_id,
             "department": n.department.name if n.department else None,
             "location": n.location,
             "manager_id": n.manager_id,
+            "manager_name": n.manager.full_name if n.manager_id in visible_manager_ids and n.manager else None,
             "report_count": counts.get(n.id, 0),
             "has_photo": bool(n.photo_path),
+            "security_level": sec_info.get(n.id, {}).get("security_level", "L5 - Contributor"),
+            "security_tier": sec_info.get(n.id, {}).get("security_tier", 5),
+            "role_name": sec_info.get(n.id, {}).get("role_name", "Employee"),
+            "teams": sec_info.get(n.id, {}).get("teams", []),
         }
         for n in nodes
     ]
+
+
+def _compute_security_info(db: Session, company_id: int, nodes: List[Employee], counts: dict) -> dict:
+    from app.models.rbac import Role, UserRoleAssignment
+    from app.models.teams import Team, TeamMembership
+    from app.models.employee import Department
+    from app.core.security import utcnow
+
+    user_ids = [n.user_id for n in nodes if n.user_id]
+    emp_ids = [n.id for n in nodes]
+    now = utcnow()
+    today = now.date()
+
+    roles_by_user = {}
+    if user_ids:
+        rows = (
+            db.query(UserRoleAssignment.user_id, Role.name, Role.system_key, Role.is_full_access)
+            .join(Role, Role.id == UserRoleAssignment.role_id)
+            .filter(
+                Role.company_id == company_id,
+                UserRoleAssignment.company_id == company_id,
+                UserRoleAssignment.user_id.in_(user_ids),
+                UserRoleAssignment.effective_from <= now,
+                or_(UserRoleAssignment.effective_until.is_(None), UserRoleAssignment.effective_until > now),
+            )
+            .all()
+        )
+        for uid, rname, skey, is_full in rows:
+            roles_by_user.setdefault(uid, []).append({
+                "name": rname,
+                "system_key": skey,
+                "is_full_access": is_full,
+            })
+
+    dept_heads = set(
+        r[0] for r in db.query(Department.head_employee_id).filter(
+            Department.company_id == company_id,
+            Department.head_employee_id.in_(emp_ids),
+        ).all() if r[0] is not None
+    )
+
+    teams_by_emp = {}
+    lead_emps = set()
+    if emp_ids:
+        memberships = (
+            db.query(TeamMembership.employee_id, Team.name, TeamMembership.member_role)
+            .join(Team, Team.id == TeamMembership.team_id)
+            .filter(
+                Team.company_id == company_id,
+                Team.status == "ACTIVE",
+                TeamMembership.employee_id.in_(emp_ids),
+                TeamMembership.effective_from <= today,
+                or_(TeamMembership.effective_to.is_(None), TeamMembership.effective_to >= today),
+            )
+            .all()
+        )
+        for eid, tname, mrole in memberships:
+            teams_by_emp.setdefault(eid, []).append(tname)
+            if mrole in ("LEAD", "DEPUTY_LEAD"):
+                lead_emps.add(eid)
+
+    result = {}
+    for n in nodes:
+        u_roles = roles_by_user.get(n.user_id, [])
+        role_priority = {
+            "company_admin": 0, "hr_admin": 1, "payroll_manager": 2, "manager": 3, "employee": 9,
+        }
+        primary = min(u_roles, key=lambda r: role_priority.get(r.get("system_key"), 5)) if u_roles else None
+        primary_role = primary["name"] if primary else ("Manager" if counts.get(n.id, 0) > 0 else "Employee")
+        is_admin = any(r.get("is_full_access") or r.get("system_key") == "company_admin" for r in u_roles)
+        is_hr_or_payroll = any(r.get("system_key") in ("hr_admin", "payroll_manager") for r in u_roles)
+        is_mgr = any(r.get("system_key") == "manager" for r in u_roles) or (counts.get(n.id, 0) > 0)
+        is_lead = n.id in lead_emps or n.id in dept_heads
+
+        if is_admin or (n.manager_id is None and counts.get(n.id, 0) > 0):
+            sec_level = "L1 - Executive / Admin"
+            sec_tier = 1
+        elif is_hr_or_payroll or n.id in dept_heads:
+            sec_level = "L2 - Operations Admin"
+            sec_tier = 2
+        elif is_mgr:
+            sec_level = "L3 - People Manager"
+            sec_tier = 3
+        elif is_lead:
+            sec_level = "L4 - Team Lead"
+            sec_tier = 4
+        else:
+            sec_level = "L5 - Contributor"
+            sec_tier = 5
+
+        result[n.id] = {
+            "role_name": primary_role,
+            "security_level": sec_level,
+            "security_tier": sec_tier,
+            "teams": teams_by_emp.get(n.id, []),
+        }
+    return result
+
+
+def full_hierarchy(
+    db: Session,
+    principal: Principal,
+    department_id: Optional[int] = None,
+    team_id: Optional[int] = None,
+    q: Optional[str] = None,
+) -> dict:
+    scope = authz.employee_scope(db, principal, "employee:read")
+    if scope.is_empty:
+        return {
+            "nodes": [],
+            "roots": [],
+            "departments": [],
+            "teams": [],
+            "summary": {"total_employees": 0, "total_managers": 0, "max_depth": 0},
+            "can_manage": principal.has("org:manage_hierarchy"),
+        }
+
+    from app.models.employee import Department
+    from app.models.teams import Team, TeamMembership
+    from app.core.security import utcnow
+    today = utcnow().date()
+
+    base_query = (
+        db.query(Employee)
+        .options(joinedload(Employee.department), joinedload(Employee.manager))
+        .filter(
+            Employee.company_id == principal.company_id,
+            Employee.is_active.is_(True),
+            scope.clause(Employee.id),
+        )
+    )
+
+    # Filter choices are derived only from the caller's employee scope.  This is
+    # deliberately not a company-wide department/team directory: a self- or
+    # reporting-tree scoped user must not learn names outside their subtree.
+    scope_rows = base_query.all()
+    scope_ids = {employee.id for employee in scope_rows}
+    query = base_query
+
+    if department_id:
+        query = query.filter(Employee.department_id == department_id)
+    if team_id:
+        member_ids = db.query(TeamMembership.employee_id).filter(
+            TeamMembership.company_id == principal.company_id,
+            TeamMembership.team_id == team_id,
+            TeamMembership.effective_from <= today,
+            or_(TeamMembership.effective_to.is_(None), TeamMembership.effective_to >= today)
+        )
+        query = query.filter(Employee.id.in_(member_ids))
+    if q:
+        term = f"%{q.strip()}%"
+        query = query.filter(
+            or_(
+                Employee.first_name.ilike(term),
+                Employee.last_name.ilike(term),
+                Employee.position.ilike(term),
+                Employee.employee_code.ilike(term),
+                Employee.email.ilike(term),
+            )
+        )
+
+    all_nodes = query.order_by(Employee.first_name, Employee.last_name).all()
+    filtered_ids = {n.id for n in all_nodes}
+
+    counts = dict(
+        db.query(Employee.manager_id, func.count(Employee.id))
+        .filter(Employee.manager_id.in_(scope_ids), Employee.is_active.is_(True), scope.clause(Employee.id))
+        .group_by(Employee.manager_id)
+        .all()
+    ) if scope_ids else {}
+
+    sec_info = _compute_security_info(db, principal.company_id, all_nodes, counts)
+
+    children_map = {}
+    for n in all_nodes:
+        if n.manager_id in filtered_ids:
+            children_map.setdefault(n.manager_id, []).append(n.id)
+
+    root_ids = [n.id for n in all_nodes if n.manager_id is None or n.manager_id not in filtered_ids]
+
+    level_map = {}
+    max_depth = 0
+
+    def assign_depth(nid: int, current_depth: int, visited: set):
+        nonlocal max_depth
+        if nid in visited:
+            return
+        visited.add(nid)
+        level_map[nid] = current_depth
+        if current_depth > max_depth:
+            max_depth = current_depth
+        for cid in children_map.get(nid, []):
+            assign_depth(cid, current_depth + 1, visited)
+
+    visited_set = set()
+    for r_id in root_ids:
+        assign_depth(r_id, 0, visited_set)
+    for n in all_nodes:
+        if n.id not in visited_set:
+            assign_depth(n.id, 0, visited_set)
+
+    scoped_department_ids = {n.department_id for n in scope_rows if n.department_id is not None}
+    depts = [
+        {"id": d.id, "name": d.name, "count": sum(1 for n in scope_rows if n.department_id == d.id)}
+        for d in db.query(Department).filter(
+            Department.company_id == principal.company_id,
+            Department.id.in_(scoped_department_ids or [-1]),
+        ).order_by(Department.name).all()
+    ]
+
+    team_counts = dict(
+        db.query(TeamMembership.team_id, func.count(TeamMembership.employee_id))
+        .filter(
+            TeamMembership.company_id == principal.company_id,
+            TeamMembership.employee_id.in_(scope_ids or [-1]),
+            TeamMembership.effective_from <= today,
+            or_(TeamMembership.effective_to.is_(None), TeamMembership.effective_to >= today)
+        )
+        .group_by(TeamMembership.team_id)
+        .all()
+    ) if scope_ids else {}
+
+    teams_query = db.query(Team).filter(
+        Team.company_id == principal.company_id,
+        Team.status == "ACTIVE",
+        Team.id.in_(set(team_counts) or [-1]),
+    ).order_by(Team.name).all()
+
+    teams_list = [
+        {"id": t.id, "name": t.name, "code": t.code, "count": team_counts.get(t.id, 0)}
+        for t in teams_query
+    ]
+
+    manage_scope = authz.employee_scope(db, principal, "org:manage_hierarchy")
+    manageable_ids = set()
+    if not manage_scope.is_empty and filtered_ids:
+        manageable_ids = {
+            row[0] for row in db.query(Employee.id).filter(
+                Employee.company_id == principal.company_id,
+                Employee.id.in_(filtered_ids),
+                manage_scope.clause(Employee.id),
+            ).all()
+        }
+    if principal.has("org:manage_hierarchy") and principal.employee_id in filtered_ids:
+        # A manager may attach reports to themselves, but assign_manager still
+        # forbids changing their own upward reporting line.
+        manageable_ids.add(principal.employee_id)
+
+    serialized_nodes = []
+    for n in all_nodes:
+        info = sec_info.get(n.id, {})
+        serialized_nodes.append({
+            "id": n.id,
+            "employee_code": n.employee_code,
+            "full_name": n.full_name,
+            "first_name": n.first_name,
+            "last_name": n.last_name,
+            "email": n.email,
+            "position": n.position,
+            "department_id": n.department_id,
+            "department": n.department.name if n.department else None,
+            "location": n.location,
+            "manager_id": n.manager_id,
+            "manager_name": n.manager.full_name if n.manager and n.manager_id in scope_ids else None,
+            "report_count": counts.get(n.id, 0),
+            "children_ids": children_map.get(n.id, []),
+            "has_photo": bool(n.photo_path),
+            "level": level_map.get(n.id, 0),
+            "security_level": info.get("security_level", "L5 - Contributor"),
+            "security_tier": info.get("security_tier", 5),
+            "role_name": info.get("role_name", "Employee"),
+            "teams": info.get("teams", []),
+            "can_manage": n.id in manageable_ids,
+        })
+
+    return {
+        "nodes": serialized_nodes,
+        "roots": root_ids,
+        "departments": depts,
+        "teams": teams_list,
+        "summary": {
+            "total_employees": len(all_nodes),
+            "total_managers": sum(1 for n in all_nodes if counts.get(n.id, 0) > 0),
+            "max_depth": max_depth,
+        },
+        "can_manage": bool(manageable_ids),
+    }
+
+
+def bulk_assign_reports(
+    db: Session,
+    principal: Principal,
+    manager_id: Optional[int],
+    employee_ids: List[int],
+) -> dict:
+    if not principal.has("org:manage_hierarchy"):
+        raise forbidden()
+
+    if manager_id is not None and manager_id in employee_ids:
+        raise bad_request("A manager cannot be included in their own report list.", "SELF_REPORTING")
+
+    manager = None
+    if manager_id is not None:
+        manager = _employee_in_company(db, principal.company_id, manager_id)
+        if not manager.is_active:
+            raise bad_request("The new manager must be an active employee.")
+        if not (
+            authz.is_self(principal, manager.id)
+            or authz.can_access_employee(db, principal, "org:manage_hierarchy", manager.id)
+        ):
+            raise not_found("Manager")
+
+    # Resolve and validate the whole batch before changing a row.  A typo or a
+    # cycle therefore cannot leave half of a bulk operation applied.
+    employees = [
+        authz.ensure_employee_access(db, principal, "org:manage_hierarchy", emp_id)
+        for emp_id in employee_ids
+    ]
+    if any(authz.is_self(principal, employee.id) for employee in employees):
+        raise forbidden("You cannot change your own reporting line.")
+    if manager is not None:
+        for employee in employees:
+            if hierarchy.would_create_cycle(db, principal.company_id, employee.id, manager.id):
+                raise bad_request(CYCLE_MESSAGE, "HIERARCHY_CYCLE")
+
+    updated = []
+    for employee in employees:
+        assign_manager(db, principal, employee, manager_id, audit=True)
+        updated.append(employee.id)
+
+    db.commit()
+    return {
+        "success": True,
+        "assigned_count": len(updated),
+        "manager_id": manager_id,
+        "updated_ids": updated,
+        "errors": [],
+    }
 
 
 def management_chain(db: Session, principal: Principal, employee_id: int) -> List[dict]:
@@ -173,7 +531,14 @@ def management_chain(db: Session, principal: Principal, employee_id: int) -> Lis
     chain_ids = hierarchy.management_chain(db, principal.company_id, employee_id)
     if not chain_ids:
         return []
-    people = {e.id: e for e in db.query(Employee).filter(Employee.id.in_(chain_ids)).all()}
+    scope = authz.employee_scope(db, principal, "employee:read")
+    people = {
+        e.id: e for e in db.query(Employee).filter(
+            Employee.company_id == principal.company_id,
+            Employee.id.in_(chain_ids),
+            scope.clause(Employee.id),
+        ).all()
+    }
     return [
         {"id": i, "full_name": people[i].full_name, "position": people[i].position}
         for i in chain_ids
@@ -190,6 +555,15 @@ def manager_history(db: Session, principal: Principal, employee_id: int) -> List
         .order_by(ManagerHistory.effective_from.desc())
         .all()
     )
+    manager_ids = {h.manager_id for h, _ in rows if h.manager_id is not None}
+    scope = authz.employee_scope(db, principal, "employee:read")
+    visible_manager_ids = {
+        row[0] for row in db.query(Employee.id).filter(
+            Employee.company_id == principal.company_id,
+            Employee.id.in_(manager_ids or [-1]),
+            scope.clause(Employee.id),
+        ).all()
+    }
     return [
         {
             "manager_id": h.manager_id,
@@ -198,6 +572,7 @@ def manager_history(db: Session, principal: Principal, employee_id: int) -> List
             "effective_until": h.effective_until.isoformat() if h.effective_until else None,
         }
         for h, m in rows
+        if h.manager_id is None or h.manager_id in visible_manager_ids
     ]
 
 
@@ -211,7 +586,11 @@ def list_secondary_lines(db: Session, principal: Principal, employee_id: Optiona
         db.query(SecondaryReportingLine, emp, mgr)
         .join(emp, emp.id == SecondaryReportingLine.employee_id)
         .join(mgr, mgr.id == SecondaryReportingLine.manager_id)
-        .filter(SecondaryReportingLine.company_id == principal.company_id, scope.clause(emp.id))
+        .filter(
+            SecondaryReportingLine.company_id == principal.company_id,
+            scope.clause(emp.id),
+            scope.clause(mgr.id),
+        )
     )
     if employee_id:
         query = query.filter(SecondaryReportingLine.employee_id == employee_id)

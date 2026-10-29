@@ -9,6 +9,11 @@ the most changed days. The draft is substituted into the inputs the real path lo
 
 Window: ``max(effective_from, today - 62)`` to yesterday (``bounded`` when capped); future dates have no evaluation
 yet. At most 500 covered employees are evaluated (``bounded`` again). Services never commit.
+
+A capture version never switches a day (02 §4.1): its preview is the population plus "punches that would be blocked
+today" — the covered people's punches of the last 7 days re-checked against the draft's sources, location and geofence
+by the live pure check (``attendance_sites.evaluate_location``). Only an IP hash is stored, so a draft with
+``ip_mode BLOCK`` cannot re-check the network: those punches are counted in ``ip_not_rechecked``.
 """
 
 from __future__ import annotations
@@ -33,6 +38,9 @@ MAX_BACK_DAYS = attendance_days.RECOMPUTE_MAX_BACK_DAYS
 MAX_EMPLOYEES = attendance_days.MAX_EMPLOYEES
 SAMPLE_SIZE = 20
 EVALUATED_TYPES = attendance_days.MODE_TYPES  # rules, request, scheduling (capture never switches a day)
+CAPTURE_TYPE = "ATTENDANCE_CAPTURE_POLICY"
+BLOCKED_LOOKBACK_DAYS = 7
+INTERACTIVE_SOURCES = ("WEB", "MOBILE")
 
 
 def _rules(raw: Sequence[Mapping], policy_id: int) -> List[pt.AssignmentRule]:
@@ -63,8 +71,8 @@ def simulate(db: Session, principal: Principal, policy_id: int, version_no: int,
              apply_to_locked_periods: bool = False) -> dict:
     company_id = principal.company_id
     policy = policies._load(db, company_id, policy_id)
-    if policy.type not in EVALUATED_TYPES:
-        raise bad_request("The impact preview covers attendance rules, request and scheduling policies.",
+    if policy.type not in EVALUATED_TYPES and policy.type != CAPTURE_TYPE:
+        raise bad_request("The impact preview covers attendance rules, capture, request and scheduling policies.",
                           "SIMULATE_NOT_SUPPORTED")
     version = policies._version(db, company_id, policy_id, version_no)
     draft = dict(version.fields or {})
@@ -96,6 +104,10 @@ def simulate(db: Session, principal: Principal, policy_id: int, version_no: int,
     result = {"policy_id": policy_id, "version": version_no, "type": policy.type, "window": None,
               "population": population, "dates": {"OPEN": 0, "INPUT_LOCKED": 0, "FINALIZED": 0},
               "changes": {}, "sample": [], "bounded": bounded, "v2_active": v2}
+    if policy.type == CAPTURE_TYPE:
+        result["changes"] = blocked_punches(db, company_id, sorted(covered_after)[:MAX_EMPLOYEES], draft, today)
+        result["bounded"] = bounded or len(covered_after) > MAX_EMPLOYEES
+        return result
     if end < start or not covered_after:
         return result
     result["window"] = {"start": start.isoformat(), "end": end.isoformat()}
@@ -162,3 +174,61 @@ def _view(row, evaluation: Optional[de.DayEvaluation]) -> dict:
             "early_mark": bool(source.early_mark), "net_minutes": source.net_minutes,
             "ot_candidate_minutes": int(source.ot_candidate_minutes or 0),
             "night_minutes": int(source.night_minutes or 0)}
+
+
+def would_block(punch_source: str, fix, sites: Sequence, policy) -> Optional[str]:
+    """Pure: why the draft capture ``policy`` would refuse this punch now, or None. ``fix`` is the stored location
+    (``attendance_sites.LocationFix``; None = no reading); IP is never re-checked here (hash only)."""
+    from app.services import attendance_sites
+
+    if punch_source not in policy.allowed_sources:
+        return "SOURCE_NOT_ALLOWED"
+    if punch_source not in INTERACTIVE_SOURCES:
+        return None  # devices and kiosks are not located by the employee's phone
+    if fix is None and policy.location_mode == "REQUIRED" and policy.location_failure_action == "BLOCK":
+        return "LOCATION_REQUIRED"
+    if policy.geofence_mode == "OFF" and policy.qr_mode == "OFF":
+        return None
+    outcome = attendance_sites.evaluate_location(list(sites), fix or attendance_sites.LocationFix(),
+                                                 replace(policy, ip_mode="OFF"))
+    return outcome.refusal[0] if outcome.refusal is not None else None
+
+
+def blocked_punches(db: Session, company_id: int, employee_ids: Sequence[int], draft: Mapping, today: date) -> dict:
+    """"Punches that would be blocked today: n" for a capture draft (02 §5.4, V-AS-13): the last 7 days of the covered
+    people's used punches, re-checked."""
+    from app.models.attendance import AttendancePunch, LocationSample
+    from app.services import attendance_capture_policy, attendance_sites
+
+    policy = attendance_capture_policy.from_fields(draft)
+    since = today - timedelta(days=BLOCKED_LOOKBACK_DAYS)
+    punches = (db.query(AttendancePunch)
+               .filter(AttendancePunch.company_id == company_id,
+                       AttendancePunch.employee_id.in_(list(employee_ids) or [-1]),
+                       AttendancePunch.shift_date >= since, AttendancePunch.shift_date <= today,
+                       AttendancePunch.disposition.in_(("PENDING", "USED")))
+               .order_by(AttendancePunch.id).all())
+    sample_ids = {p.location_sample_id for p in punches if p.location_sample_id}
+    samples = {x.id: x for x in db.query(LocationSample).filter(LocationSample.company_id == company_id,
+                                                                LocationSample.id.in_(sample_ids or {-1}))}
+    sites: Dict[int, list] = {}
+    reasons: Counter = Counter()
+    ip_unchecked = 0
+    for punch in punches:
+        if punch.employee_id not in sites:
+            rows = attendance_sites.sites_for(db, company_id, punch.employee_id, policy, today)
+            sites[punch.employee_id] = [attendance_sites.SiteShape.of(r) for r in rows]
+        sample = samples.get(punch.location_sample_id)
+        fix = None
+        if sample is not None and sample.latitude is not None:
+            fix = attendance_sites.LocationFix(latitude=sample.latitude, longitude=sample.longitude,
+                                               accuracy_m=sample.accuracy_m, fix_age_seconds=sample.fix_age_seconds,
+                                               exception_reason=punch.reason)
+        why = would_block(punch.source, fix, sites[punch.employee_id], policy)
+        if why is not None:
+            reasons[why] += 1
+        elif policy.ip_mode == "BLOCK" and punch.source in INTERACTIVE_SOURCES:
+            ip_unchecked += 1
+    return {"punches_checked": len(punches), "punches_blocked": sum(reasons.values()),
+            "blocked_by": dict(sorted(reasons.items())), "ip_not_rechecked": ip_unchecked,
+            "lookback_days": BLOCKED_LOOKBACK_DAYS}

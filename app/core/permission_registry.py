@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, FrozenSet, Iterable, List, Optional, Tuple
 
-REGISTRY_VERSION = "2026.10.8"
+REGISTRY_VERSION = "2026.10.12"
 
 
 class Scope(str, Enum):
@@ -195,6 +195,26 @@ PERMISSIONS: List[PermissionDef] = [
                   "Register, pair, suspend and retire kiosks and devices.", _ORG_UNITS, "restricted"),
     PermissionDef("attendance:manage_sites", "Attendance", "Manage work sites",
                   "Manage sites, geofences, office networks and QR posters.", _ORG_UNITS),
+    # Requests and approvals (AS-M4; spine §7.1, AS 04-attendance/04 §4.1, §10.1, §11, §14.3; migration 0053).
+    PermissionDef("attendance:request", "Attendance", "Request attendance changes",
+                  "Ask for missed punches, corrections, excuses, on-duty and remote work for yourself.", _SELF),
+    PermissionDef("attendance:request_on_behalf", "Attendance", "Request on behalf",
+                  "File attendance requests for people in scope; they go through approval.", _TEAM_T),
+    PermissionDef("attendance:approve", "Attendance", "Approve attendance requests",
+                  "Decide attendance, on-duty and timesheet requests routed to you.", _TEAM_T),
+    PermissionDef("attendance:override", "Attendance", "Mark the day",
+                  "Set a day present or absent directly (status override, muster), with a reason.", _TEAM_T),
+    PermissionDef("attendance:muster", "Attendance", "Supervisor muster",
+                  "Mark a crew or site for a shift date (punch times or a day mark).", _TEAM_T),
+    PermissionDef("attendance:proxy_punch", "Attendance", "Punch for team members",
+                  "Punch people in scope in and out when they cannot (with a reason and location, per settings).",
+                  _TEAM_T),
+    PermissionDef("attendance:close_period", "Attendance", "Close attendance periods",
+                  "Close and reopen an attendance cycle for self-service.", _ORG_UNITS),
+    # Registers and individual reports (AS-M9; spine §7.1, 10-analytics §6.1 R-1, §8.2; migration 0056).
+    PermissionDef("attendance:export", "Attendance", "Export attendance registers",
+                  "Generate statutory registers (muster roll, attendance register) and per-person attendance "
+                  "reports for people in scope. Every export is sealed and recorded.", _TEAM_T, "restricted"),
     # Leave
     PermissionDef("leave:read", "Leave", "View leave", "View leave requests and balances.", _ALL_T),
     PermissionDef("leave:apply", "Leave", "Apply for leave", "Submit and cancel own leave requests.", _SELF),
@@ -242,6 +262,21 @@ PERMISSIONS: List[PermissionDef] = [
     PermissionDef("task:read", "Tasks", "View tasks", "View tasks, assignees and completed units.", _SELF_OR_TEAM_APPROVAL),
     PermissionDef("task:manage", "Tasks", "Manage tasks", "Create, assign and update tasks.", _SELF_OR_TEAM_APPROVAL),
     PermissionDef("task:approve", "Tasks", "Approve tasks", "Approve completed tasks for task pay.", _TEAM_APPROVAL),
+    # Team payroll (owner request 2026-10-29): managers / team leads prepare and submit their team's payroll inputs
+    # and contractor invoice drafts; HR / payroll approve and commit. Not a Payroll-module code: payroll's own
+    # confidential codes stay with payroll roles (EC-SEC-09); exact amounts need the explicit-only read_amounts.
+    PermissionDef("team_pay:read", "Team payroll", "View team payroll status",
+                  "See the team's payroll inputs, batches, invoice drafts and payslip status (no amounts).", _TEAM_T),
+    PermissionDef("team_pay:submit", "Team payroll", "Prepare team payroll inputs",
+                  "Prepare and submit payroll input batches (bonus, deductions, overtime, adjustments with files) "
+                  "and contractor invoice drafts for people in scope; HR or payroll approves and commits them.",
+                  _TEAM_T),
+    PermissionDef("team_pay:read_amounts", "Team payroll", "View team pay amounts",
+                  "See the exact gross and net pay of people in scope. Never implied by full access.", _TEAM_T,
+                  "restricted", _NEVER),
+    PermissionDef("integrations:manage", "Settings", "Manage integrations",
+                  "Connect Slack, Microsoft Teams and signed webhooks, and manage notification channels.", _COMPANY,
+                  "restricted"),
     # Payroll (3.9 §5.1). Restricted codes are never implied by full access (except own records).
     _pay("payroll:configuration:read", "View payroll configuration",
          "View payroll settings, policies, calendars and pay groups.", _PAY_GROUPS, "confidential", None),
@@ -530,6 +565,7 @@ SELF_SERVICE = [
     ("profile:update", _S),
     ("attendance:read", _S),
     ("attendance:mark", _S),
+    ("attendance:request", _S),  # AS-M4
     ("location:read", _S),
     ("leave:read", _S),
     ("leave:apply", _S),
@@ -610,6 +646,13 @@ DEFAULT_ROLES: List[DefaultRole] = [
             "roster:approve", "team:read", "team:manage", "team:membership:manage",
             # AS-M2 (migration 0050): the capture-side codes; attendance:evidence:read has no default grant.
             "attendance:review", "attendance:manage_devices", "attendance:manage_sites", "attendance:manage_policy",
+            # AS-M4 (migration 0053): requests, approvals, overrides, muster and period close.
+            "attendance:approve", "attendance:request_on_behalf", "attendance:override", "attendance:muster",
+            "attendance:close_period", "attendance:proxy_punch",
+            # AS-M9 (migration 0056): statutory registers.
+            "attendance:export",
+            # Migration 0058: team payroll oversight (no amounts) and integrations.
+            "team_pay:read", "team_pay:submit", "integrations:manage",
         ),
     ),
     DefaultRole(
@@ -667,6 +710,9 @@ DEFAULT_ROLES: List[DefaultRole] = [
             ("employee:read", _RT),
             ("attendance:read", _RT),
             ("attendance:regularize", _DR),
+            ("attendance:approve", _DR),  # AS-M4 grant copy of attendance:regularize (spine §7.1)
+            ("attendance:request_on_behalf", _DR),
+            ("attendance:proxy_punch", _DR),  # migration 0054 (team punches)
             ("location:read", _DR),
             ("location:review", _DR),
             ("leave:read", _RT),
@@ -680,6 +726,10 @@ DEFAULT_ROLES: List[DefaultRole] = [
             ("roster:read", _RT),
             ("roster:approve", _RT),
             ("team:read", _RT),
+            ("org:manage_hierarchy", _RT),
+            # Team payroll (migration 0058): prepare and submit, never approve; amounts need an explicit grant.
+            ("team_pay:read", _RT),
+            ("team_pay:submit", _DR),
         ),
     ),
     DefaultRole(
@@ -687,6 +737,19 @@ DEFAULT_ROLES: List[DefaultRole] = [
         "Employee",
         "Self-service access to own profile, attendance, leave, payslips and assets.",
         tuple(SELF_SERVICE),
+    ),
+    # Contractors are people with this role and a CONTRACTOR employment type (owner decision 2026-10-29: no separate
+    # contractor entity). They punch, file timesheets and tasks, and see their own invoices; no payslip, no leave.
+    DefaultRole(
+        "contractor",
+        "Contractor",
+        "Punches in and out, records timesheets and tasks, and sees own invoices. No payslips or leave.",
+        (
+            ("employee:read", _S), ("attendance:mark", _S), ("attendance:read", _S), ("attendance:request", _S),
+            ("task:read", _S), ("shift:read", _S), ("roster:read", _S), ("roster:request", _S), ("team:read", _S),
+            ("payroll:bank_details:read_masked", _S), ("payroll:bank_details:edit", _S),
+            ("payroll:tax_profile:read", _S), ("payroll:tax_profile:edit", _S),
+        ),
     ),
     DefaultRole(
         "auditor",
@@ -696,6 +759,7 @@ DEFAULT_ROLES: List[DefaultRole] = [
             "audit:read", "employee:read", "attendance:read", "leave:read", "holiday:read",
             "report:read", "report:export", "role:read", "user:read", "payroll:audit:read", "payroll:reports:read",
             "shift:read", "roster:read",
+            "attendance:export",  # AS-M9 (migration 0056): registers for inspection
         ),
     ),
 ]

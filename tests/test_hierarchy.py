@@ -168,8 +168,69 @@ def test_org_chart_is_scoped_and_lazy(org):
     assert roots[0]["report_count"] == 2
     children = {n["id"] for n in u["m1"].get(f"/api/v1/org/nodes?parent_id={e['m1']['id']}").json()}
     assert children == {e["m2"]["id"], e["e3"]["id"]}
-    chain = u["e1"].get(f"/api/v1/org/employees/{e['e1']['id']}/chain").json()
+    # Upward names are not a directory escape: self-only users cannot enumerate
+    # their supervisors, while a senior manager can see the chain inside their scope.
+    assert u["e1"].get(f"/api/v1/org/employees/{e['e1']['id']}/chain").json() == []
+    chain = u["m1"].get(f"/api/v1/org/employees/{e['e1']['id']}/chain").json()
     assert [c["id"] for c in chain] == [e["m2"]["id"], e["m1"]["id"]]
+
+
+def test_full_hierarchy_is_scoped_and_filter_metadata_does_not_leak(org):
+    u, e = org["users"], org["emp"]
+    admin = u["admin_a"]
+    finance = admin.post("/api/v1/departments", json={"name": "Finance"}).json()["id"]
+    secret = admin.post("/api/v1/departments", json={"name": "Executive Office"}).json()["id"]
+    admin.put(f"/api/v1/employees/{e['e1']['id']}", json={"department_id": finance})
+    admin.put(f"/api/v1/employees/{e['e4']['id']}", json={"department_id": secret})
+
+    employee_view = u["e1"].get("/api/v1/org/hierarchy")
+    assert employee_view.status_code == 200, employee_view.text
+    body = employee_view.json()
+    assert [node["id"] for node in body["nodes"]] == [e["e1"]["id"]]
+    assert body["nodes"][0]["manager_name"] is None
+    assert {row["name"] for row in body["departments"]} == {"Finance"}
+    assert "Executive Office" not in {row["name"] for row in body["departments"]}
+    assert body["can_manage"] is False
+
+    manager_view = u["m1"].get("/api/v1/org/hierarchy").json()
+    assert {node["id"] for node in manager_view["nodes"]} == {
+        e["m1"]["id"], e["m2"]["id"], e["e1"]["id"], e["e2"]["id"], e["e3"]["id"],
+    }
+    assert e["m1"]["id"] in manager_view["roots"]
+    assert next(node for node in manager_view["nodes"] if node["id"] == e["m1"]["id"])["can_manage"] is True
+    assert e["e4"]["id"] not in {node["id"] for node in manager_view["nodes"]}
+
+
+def test_bulk_report_assignment_is_atomic_and_validated(org):
+    u, e = org["users"], org["emp"]
+    admin = u["admin_a"]
+    one = create_employee(admin, "BulkOne")
+    two = create_employee(admin, "BulkTwo")
+
+    assigned = admin.post("/api/v1/org/assign-reports", json={
+        "manager_id": e["m3"]["id"], "employee_ids": [one["id"], two["id"]],
+    })
+    assert assigned.status_code == 200, assigned.text
+    assert assigned.json()["assigned_count"] == 2
+    assert admin.get(f"/api/v1/employees/{one['id']}").json()["manager_id"] == e["m3"]["id"]
+    assert admin.get(f"/api/v1/employees/{two['id']}").json()["manager_id"] == e["m3"]["id"]
+
+    duplicate = admin.post("/api/v1/org/assign-reports", json={
+        "manager_id": e["m3"]["id"], "employee_ids": [one["id"], one["id"]],
+    })
+    assert duplicate.status_code == 422
+
+    # The foreign id invalidates the whole request before the valid first row is changed.
+    invalid = admin.post("/api/v1/org/assign-reports", json={
+        "manager_id": e["m3"]["id"], "employee_ids": [e["e3"]["id"], e["b1"]["id"]],
+    })
+    assert invalid.status_code == 404
+    assert admin.get(f"/api/v1/employees/{e['e3']['id']}").json()["manager_id"] == e["m1"]["id"]
+
+    self_report = admin.post("/api/v1/org/assign-reports", json={
+        "manager_id": e["m3"]["id"], "employee_ids": [e["m3"]["id"]],
+    })
+    assert self_report.status_code == 400 and self_report.json()["code"] == "SELF_REPORTING"
 
 
 def test_deactivation_keeps_history_and_protects_reports(org):

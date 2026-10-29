@@ -465,6 +465,9 @@ def create_entry(
     start_at, end_at = _span(start_at, end_at)
     if comp_off:
         _check_comp_off(resolve_policy(db, principal.company_id, employee_id, day))
+    from app.services import attendance_overtime
+
+    attendance_overtime.ensure_exclusive(db, principal.company_id, employee_id, day, bool(comp_off))
     entry = OvertimeEntry(
         company_id=principal.company_id, employee_id=employee_id, date=day, start_at=start_at, end_at=end_at,
         minutes_requested=minutes, source=REQUESTS, status=PENDING, comp_off=bool(comp_off),
@@ -588,6 +591,15 @@ def decide_entry(
     if entry.status != PENDING or entry.approval_request_id is None:
         raise conflict("This overtime entry is not awaiting approval.", "OVERTIME_NOT_PENDING")
     approve = str(decision).upper() == "APPROVE"
+    if approve:
+        # AS-M8 (attendance_overtime): consent under an enforcing pack (AS-OT-09) and one outcome per worked hour
+        # (paid or comp-off, never both; 04-attendance/05 §10 E2).
+        from app.services import attendance_overtime
+
+        attendance_overtime.check_approval(db, entry)
+        attendance_overtime.ensure_exclusive(db, entry.company_id, entry.employee_id, entry.date,
+                                             bool(entry.comp_off if comp_off is None else comp_off),
+                                             exclude_ids=[entry.id, entry.supersedes_id])
     edits: dict[str, Any] = {}
     if approve and minutes_approved is not None:
         _check_minutes(minutes_approved, "minutes_approved")

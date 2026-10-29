@@ -103,6 +103,10 @@ def log_change(
     from app.services import attendance_days
 
     attendance_days.schedule_recompute(db, company_id, row)
+    # G-16 (X 03 §3, JC-AS-11): changes reaching an input-locked or finalized period go to stale detection / retro.
+    from app.services import payroll_sync
+
+    payroll_sync.on_change(db, company_id, row)
     return row
 
 
@@ -1560,17 +1564,20 @@ def create_on_duty(db: Session, principal: Principal, *, employee_id: Optional[i
 
 @approvals.on_decided(ON_DUTY_MODULE, ON_DUTY_SUBJECT)
 def _on_duty_decided(db: Session, principal: Optional[Principal], request) -> None:
-    row = db.query(OnDutyRequest).filter(OnDutyRequest.company_id == request.company_id,
-                                         OnDutyRequest.id == request.subject_id).first()
-    if row is None or row.status != "PENDING":
-        return
-    row.status = {"APPROVED": "APPROVED", "REJECTED": "REJECTED"}.get(request.status, "CANCELLED")
-    row.decided_at = utcnow()
-    row.row_version += 1
-    db.flush()
-    log_change(db, row.company_id, record_type="on_duty", record_id=row.id, change="UPDATED",
-               content=on_duty_content(row), employee_id=row.employee_id, date_from=row.date,
-               actor_user_id=principal.user_id if principal else None)
+    # One approval for a whole trip (AS-M4 batch, OD-5): every row of the batch carries the approval request id.
+    rows = db.query(OnDutyRequest).filter(
+        OnDutyRequest.company_id == request.company_id,
+        or_(OnDutyRequest.id == request.subject_id, OnDutyRequest.approval_request_id == request.id)).all()
+    for row in rows:
+        if row.status != "PENDING":
+            continue
+        row.status = {"APPROVED": "APPROVED", "REJECTED": "REJECTED"}.get(request.status, "CANCELLED")
+        row.decided_at = utcnow()
+        row.row_version += 1
+        db.flush()
+        log_change(db, row.company_id, record_type="on_duty", record_id=row.id, change="UPDATED",
+                   content=on_duty_content(row), employee_id=row.employee_id, date_from=row.date,
+                   actor_user_id=principal.user_id if principal else None)
 
 
 def cancel_on_duty(db: Session, principal: Principal, request_id: int, *, row_version: Optional[int] = None) -> dict:

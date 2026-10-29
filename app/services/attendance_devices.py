@@ -153,12 +153,20 @@ def serialize(device: AttendanceDevice) -> dict:
     }
 
 
-def _get(db: Session, company_id: int, device_id: int) -> AttendanceDevice:
+def _get(db: Session, company_id: int, device_id: int, *, any_kind: bool = False) -> AttendanceDevice:
     device = db.query(AttendanceDevice).filter(AttendanceDevice.company_id == company_id,
                                                AttendanceDevice.id == device_id).first()
-    if device is None or device.kind != "KIOSK":
+    if device is None or (device.kind != "KIOSK" and not any_kind):
         raise not_found("Device")
     return device
+
+
+def _serialize_any(device: AttendanceDevice) -> dict:
+    if device.kind == "KIOSK":
+        return serialize(device)
+    from app.services import device_admin
+
+    return device_admin.serialize(device)
 
 
 def _issue_claim(device: AttendanceDevice, now: datetime) -> dict:
@@ -170,9 +178,12 @@ def _issue_claim(device: AttendanceDevice, now: datetime) -> dict:
 
 
 def list_devices(db: Session, principal: Principal, *, status: Optional[str] = None, q: Optional[str] = None,
-                 skip: int = 0, limit: int = 25) -> dict:
-    query = db.query(AttendanceDevice).filter(AttendanceDevice.company_id == principal.company_id,
-                                              AttendanceDevice.kind == "KIOSK")
+                 skip: int = 0, limit: int = 25, kind: Optional[str] = None) -> dict:
+    query = db.query(AttendanceDevice).filter(AttendanceDevice.company_id == principal.company_id)
+    if kind:
+        if kind not in ("KIOSK", "TERMINAL", "AGENT"):
+            raise AppError(400, "Unknown device kind.", "BAD_REQUEST")
+        query = query.filter(AttendanceDevice.kind == kind)
     if status:
         if status not in DEVICE_STATUSES:
             raise AppError(400, "Unknown device status.", "BAD_REQUEST")
@@ -182,19 +193,22 @@ def list_devices(db: Session, principal: Principal, *, status: Optional[str] = N
         query = query.filter((AttendanceDevice.code.ilike(like)) | (AttendanceDevice.name.ilike(like)))
     total = query.count()
     rows = query.order_by(AttendanceDevice.code, AttendanceDevice.id).offset(skip).limit(limit).all()
-    return {"items": [serialize(d) for d in rows], "total": total, "skip": skip, "limit": limit}
+    return {"items": [_serialize_any(d) for d in rows], "total": total, "skip": skip, "limit": limit}
 
 
 def get_device(db: Session, principal: Principal, device_id: int) -> dict:
-    return serialize(_get(db, principal.company_id, device_id))
+    return _serialize_any(_get(db, principal.company_id, device_id, any_kind=True))
 
 
 def create_device(db: Session, principal: Principal, data) -> dict:
-    """KIOSK only in AS-M2 (TERMINAL / AGENT arrive with ingest in AS-M7)."""
+    """KIOSK here; TERMINAL / AGENT (AS-M7) go to ``device_admin.create_device`` after the shared checks."""
     from app.core import db_errors
 
     if data.kind != "KIOSK":
-        raise AppError(422, "Only kiosk devices can be registered yet.", "FEATURE_DISABLED")
+        from app.services import attendance_access
+
+        if not attendance_access.v2_enabled(db, principal.company_id):
+            raise AppError(422, "Biometric terminals need the new attendance engine.", "FEATURE_DISABLED")
     zone = data.timezone
     if data.branch_id is not None:
         branch = db.query(Branch).filter(Branch.company_id == principal.company_id, Branch.id == data.branch_id).first()
@@ -214,6 +228,10 @@ def create_device(db: Session, principal: Principal, data) -> dict:
         site = attendance_sites.load_site(db, principal.company_id, site_id)
         if site.status != "ACTIVE":
             raise AppError(422, "Choose an active site.", "VALIDATION_ERROR")
+    if data.kind != "KIOSK":
+        from app.services import device_admin
+
+        return device_admin.create_device(db, principal, data, zone)
     now = _now()
     device = AttendanceDevice(
         company_id=principal.company_id, code=data.code.strip().upper(), name=data.name.strip(), kind="KIOSK",
@@ -231,21 +249,25 @@ def create_device(db: Session, principal: Principal, data) -> dict:
 
 
 def reissue_claim_code(db: Session, principal: Principal, device_id: int) -> dict:
-    device = _get(db, principal.company_id, device_id)
+    device = _get(db, principal.company_id, device_id, any_kind=True)
     if device.status != "PENDING_ACTIVATION":
         raise conflict("Only a device waiting for pairing gets a claim code.", "INVALID_TRANSITION")
     claim = _issue_claim(device, _now())
     device.row_version += 1
     AuditLogService.log(db, principal, "Attendance", "DEVICE_REGISTERED", f"Claim code reissued for {device.code}",
                         "attendance_device", device.id)
-    return {**serialize(device), **claim}
+    return {**_serialize_any(device), **claim}
 
 
 def transition(db: Session, principal: Principal, device_id: int, action: str, reason: Optional[str],
                expected_version: Optional[int] = None) -> dict:
-    device = _get(db, principal.company_id, device_id)
+    device = _get(db, principal.company_id, device_id, any_kind=True)
     if expected_version is not None and expected_version != device.row_version:
         raise conflict("The device changed since you opened it.", "ROW_VERSION_CONFLICT")
+    if device.kind != "KIOSK":
+        from app.services import device_admin
+
+        return device_admin.transition(db, principal, device, action, reason)
     sources, target, audit = TRANSITIONS[action]
     if device.status not in sources:
         raise conflict(f"A {device.status.lower()} device cannot be {target.lower()}.", "INVALID_TRANSITION")

@@ -42,6 +42,25 @@ PUBLIC_ROUTES = {
     # AS-M2: a kiosk pairs itself with the one-time claim code an attendance admin created (no user session by design,
     # SP-AS-207); rate limited per address and host, failures counted per device (tests/attendance/test_kiosk_token.py).
     ("POST", "/api/v1/attendance/kiosk/pair"),
+    # AS-M7 (G-17): biometric terminals and agents carry no user session. ADMS push authenticates with the serial plus
+    # the per-device secret (unknown serials are quarantined, same 401 as a wrong secret); agents sign each batch
+    # with HMAC-SHA256 (tests/attendance/test_device_ingest.py).
+    ("GET", "/api/v1/iclock/cdata"),
+    ("POST", "/api/v1/iclock/cdata"),
+    ("GET", "/api/v1/iclock/getrequest"),
+    ("POST", "/api/v1/iclock/devicecmd"),
+    ("GET", "/api/v1/iclock/ping"),
+    ("POST", "/api/v1/attendance/ingest/punches"),
+}
+
+# Routes outside /api/, reviewed one by one: firmware cannot change the ADMS path (04-attendance/01 §8.1).
+NON_API_ROUTES = {
+    ("GET", "/health"),
+    ("GET", "/iclock/cdata"),
+    ("POST", "/iclock/cdata"),
+    ("GET", "/iclock/getrequest"),
+    ("POST", "/iclock/devicecmd"),
+    ("GET", "/iclock/ping"),
 }
 
 # Tables with a company_id column that are deliberately not tenant (RLS) tables.
@@ -52,9 +71,11 @@ NON_TENANT_COMPANY_COLUMNS = {
     "fx_rates": "platform rates (company_id NULL) are shared; RLS limits tenant rows and writes to the own tenant",
     "jobs": "claimed across tenants by the worker through the system session; tenant reads filter company_id in "
             "app/payroll/services/jobs.py and payloads carry ids only",
+    # AS-M7 (0055): serial -> (company, device) of activated devices, read before the tenant is known (H-1).
+    "device_registry_index": "read and written only by the system role; the app role has no privilege on it",
 }
 SYSTEM_ONLY_TABLES = ("auth_handoff_codes", "platform_admins", "platform_sessions", "commercial_brand_profiles",
-                      "commercial_brand_assets", "partners")
+                      "commercial_brand_assets", "partners", "device_quarantine", "device_registry_index")
 
 
 def _dependency_calls(dependant):
@@ -77,6 +98,14 @@ def test_every_api_route_requires_a_principal_unless_reviewed_as_public(app):
             if not _dependency_calls(route.dependant) & authenticated:
                 unprotected |= {(method, route.path) for method in route.methods}
     assert unprotected == PUBLIC_ROUTES
+
+
+def test_non_api_routes_are_reviewed(app):
+    found = set()
+    for route in app.routes:
+        if isinstance(route, APIRoute) and not route.path.startswith("/api/"):
+            found |= {(method, route.path) for method in route.methods}
+    assert found == NON_API_ROUTES
 
 
 def test_operator_routes_are_bound_to_platform_hosts(app):

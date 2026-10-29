@@ -156,7 +156,12 @@ HANDLER_MODULES: Tuple[str, ...] = ("app.services.scheduler_fanout", "app.servic
                                    "app.services.holiday_rollover",  # LH-M1 Goal 5: holiday.rollover / .reminders
                                    "app.services.holiday_closures",  # LH-M1 Goal 5: holiday.closure_retro
                                    "app.services.attendance_jobs",  # AS-M2: day_close, location_sweep, consent_expire
-                                   "app.services.roster_consents")  # AS-M2: roster.revalidate_employee (AS-ROS-06)
+                                   "app.services.roster_consents",  # AS-M2: roster.revalidate_employee (AS-ROS-06)
+                                   "app.services.attendance_requests",  # AS-M4: attendance.sla_scan + decided callback
+                                   "app.services.payroll_sync",  # G-16: payroll.retro.detect
+                                   "app.services.integrations",  # G-24: channels.deliver / .retry, push.tickle
+                                   "app.services.team_payroll",  # team batch engine callback
+                                   "app.services.attendance_readiness")  # G-23: attendance.acceptance_run
 FUTURE_HANDLER_MODULES: FrozenSet[str] = frozenset({
     "app.services.scheduler_fanout", "app.services.holiday_rollover", "app.services.holiday_assignments",
     "app.services.holiday_calendar_service", "app.services.leave_jobs", "app.services.shift_catalogue",
@@ -370,12 +375,16 @@ def claim(worker_id: str, *, limit: int = CLAIM_BATCH, ids: Optional[Iterable[in
     if ids is not None:
         params["ids"] = list(ids)
         only = "AND id = ANY(:ids) "
+    # The picked ids are MATERIALIZED: a plain ``id IN (SELECT ... LIMIT n SKIP LOCKED)`` may be re-evaluated by the
+    # planner (semi-join rescans) and claim more than ``n`` rows once the table's statistics change.
     statement = text(
+        "WITH picked AS MATERIALIZED (SELECT id FROM jobs WHERE status = 'QUEUED' AND run_at <= :now " + only +
+        "ORDER BY priority, run_at, id LIMIT :n FOR UPDATE SKIP LOCKED) "
         "UPDATE jobs SET status = 'RUNNING', locked_by = :w, locked_at = :now, heartbeat_at = :now, "
         "attempts = attempts + 1, updated_at = :now "
-        "WHERE id IN (SELECT id FROM jobs WHERE status = 'QUEUED' AND run_at <= :now " + only +
-        "ORDER BY priority, run_at, id LIMIT :n FOR UPDATE SKIP LOCKED) "
-        "RETURNING id, company_id, type, payload, attempts, max_attempts, created_by_user_id, priority, run_at"
+        "FROM picked WHERE jobs.id = picked.id "
+        "RETURNING jobs.id, jobs.company_id, jobs.type, jobs.payload, jobs.attempts, jobs.max_attempts, "
+        "jobs.created_by_user_id, jobs.priority, jobs.run_at"
     )
     with system_session() as db:
         rows = db.execute(statement, params).all()

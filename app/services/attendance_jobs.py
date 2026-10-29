@@ -78,6 +78,43 @@ def location_sweep(ctx) -> dict:
     return {k: v for k, v in result.items() if k != "company_id"}
 
 
+@jobs.register("attendance.ot_proposals")
+def ot_proposals(ctx) -> dict:
+    """DAILY, daily-local (AS-M8, 04-attendance/05 §5): overtime proposals for the payroll weeks touching the last
+    ``LOOKBACK_DAYS`` days of FINAL attendance (v2 tenants only; idempotent)."""
+    from datetime import date, timedelta
+
+    from app.services import attendance_access, attendance_overtime
+
+    if not attendance_access.v2_enabled(ctx.db, ctx.company_id):
+        return {"skipped": "v1"}
+    raw = (ctx.payload or {}).get("local_date")
+    today = date.fromisoformat(raw) if raw else clock.company_today(ctx.db, ctx.company_id)
+    result = attendance_overtime.run(ctx.db, ctx.company_id, first=today - timedelta(
+        days=attendance_overtime.LOOKBACK_DAYS), last=today - timedelta(days=1))
+    return {k: v for k, v in result.items() if k != "weeks_detail"}
+
+
+@jobs.register("shift_request.expire")
+def shift_request_expire(ctx) -> dict:
+    """HOURLY (AS-M6, 03-shifts/03 §4.4): pending shift requests past their cutoff -> EXPIRED (every transition checks
+    expiry under the lock too; this only sweeps)."""
+    from app.services import shift_requests
+
+    result = shift_requests.expire_due(ctx.db, ctx.company_id)
+    return {"requests_expired": result["requests_expired"]}
+
+
+@jobs.register("open_shift.expire")
+def open_shift_expire(ctx) -> dict:
+    """HOURLY (AS-M6, §6.3): open shifts whose instance started or whose ``expires_at`` passed -> EXPIRED; pending
+    claims follow."""
+    from app.services import shift_requests
+
+    result = shift_requests.expire_due(ctx.db, ctx.company_id)
+    return {"open_shifts_expired": result["open_shifts_expired"]}
+
+
 @jobs.register("attendance.consent_expire")
 def consent_expire(ctx) -> dict:
     """DAILY, daily-local (payload ``local_date``): GRANTED consents past ``valid_to`` get an EXPIRED row (07 §5.2 C-6),

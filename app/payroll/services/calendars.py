@@ -681,6 +681,14 @@ def period_state_on(db: Session, company_id: int, employee_id: int, day: date, *
     if placement is None or not placement.pay_group_id:
         return "OPEN"
     period = period_containing(db, company_id, placement.pay_group_id, day)
+    from app.services import attendance_access
+
+    if attendance_access.v2_enabled(db, company_id):
+        # JC-AS-10 (G-16): with a split attendance cycle the date belongs to the period whose window holds it
+        # (27 Nov of a 26th-25th cycle is December's input), so its state is that period's state.
+        from app.services import payroll_sync
+
+        period = payroll_sync.period_of_window(db, company_id, placement.pay_group_id, day) or period
     if period is None:
         return "OPEN"
     if period.status in PERIOD_STATE:

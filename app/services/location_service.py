@@ -421,7 +421,16 @@ def status_payload(db: Session, att: Optional[Attendance], policy: AttendancePol
 # ---------------------------------------------------------------------------
 # Self-service endpoints
 # ---------------------------------------------------------------------------
-def _own_live_session(db: Session, principal: Principal, policy: AttendancePolicy, now: datetime):
+def session_policy(db: Session, att: Attendance) -> AttendancePolicy:
+    """The policy a session is tracked under: the employee's capture policy (interval, grace, pause on break) on its
+    shift date over the company settings; v1 tenants resolve LEGACY_V1, i.e. the company settings themselves."""
+    from app.services import attendance_capture_policy
+
+    return attendance_capture_policy.for_session(db, att)
+
+
+def _own_live_session(db: Session, principal: Principal, now: datetime):
+    """(employee, live session or None, the policy that session is tracked under)."""
     from app.services import attendance_service
 
     if not principal.has("attendance:mark"):
@@ -431,32 +440,38 @@ def _own_live_session(db: Session, principal: Principal, policy: AttendancePolic
         raise forbidden("Your employment record is inactive.")
     attendance_service.lock_employee(db, employee.id)
     att = attendance_service.live_session(db, employee.id, lock=True)
+    policy = session_policy(db, att) if att is not None else attendance_policy.load(db, principal.company_id)
     if att is not None and attendance_service.expire_if_needed(db, att, policy, now):
         att = None
     if att is not None:
         enforce_policy(db, att, policy, now)
-    return employee, att
+    return employee, att, policy
 
 
 def enforce_policy(db: Session, att: Attendance, policy: AttendancePolicy, now: datetime) -> None:
-    """The company's current policy wins over whatever a session started with (e.g. a race with a punch-in)."""
+    """The current policy wins over whatever a session started with (e.g. a race with a punch-in): tracking switched
+    off stops it; a changed interval re-anchors the next check (slots under the old interval are settled first)."""
     if not policy.tracking_enabled and att.tracking_state in (ACTIVE, PAUSED):
         stop_tracking(db, att, policy, now, "POLICY_DISABLED")
+    elif att.tracking_state == ACTIVE and att.tracking_interval_minutes != policy.tracking_interval_minutes:
+        reconcile(db, att, policy, now)
+        overdue = att.tracking_overdue_since
+        att.tracking_interval_minutes = policy.tracking_interval_minutes
+        _re_anchor(att, now)
+        att.tracking_overdue_since = overdue
 
 
 def tracking_status(db: Session, principal: Principal) -> dict:
-    policy = attendance_policy.load(db, principal.company_id)
     now = clock.utcnow()
-    _, att = _own_live_session(db, principal, policy, now)
+    _, att, policy = _own_live_session(db, principal, now)
     if att is not None:
         reconcile(db, att, policy, now)
     return status_payload(db, att, policy, now)
 
 
 def submit_sample(db: Session, principal: Principal, data: SampleSubmission) -> dict:
-    policy = attendance_policy.load(db, principal.company_id)
     now = clock.utcnow()
-    employee, att = _own_live_session(db, principal, policy, now)
+    employee, att, policy = _own_live_session(db, principal, now)
 
     previous = db.query(LocationSample).filter(
         LocationSample.employee_id == employee.id, LocationSample.idempotency_key == data.idempotency_key
@@ -641,7 +656,7 @@ def stop_for_employee(db: Session, company_id: int, employee_id: Optional[int], 
     att = attendance_service.live_session(db, employee_id, lock=True)
     if att is None or att.tracking_state not in (ACTIVE, PAUSED):
         return False
-    stop_tracking(db, att, attendance_policy.load(db, company_id), clock.utcnow(), reason)
+    stop_tracking(db, att, session_policy(db, att), clock.utcnow(), reason)
     return True
 
 
@@ -655,7 +670,6 @@ def apply_policy_change(db: Session, company_id: int, changed: set) -> int:
     """Apply a changed tracking policy to running shifts immediately (not at their next punch)."""
     if not changed & TRACKING_KEYS:
         return 0
-    policy = attendance_policy.load(db, company_id)
     now = clock.utcnow()
     sessions = (
         db.query(Attendance)
@@ -669,6 +683,7 @@ def apply_policy_change(db: Session, company_id: int, changed: set) -> int:
         .all()
     )
     for att in sessions:
+        policy = session_policy(db, att)
         if not policy.tracking_enabled:
             stop_tracking(db, att, policy, now, "POLICY_DISABLED")
             continue
@@ -735,17 +750,22 @@ def sweep(db: Session, company_id: int) -> dict:
     )
     expired = missed = stopped = 0
     for att in live:
-        if attendance_service.expire_if_needed(db, att, policy, now):
+        if att.tracking_state in (ACTIVE, PAUSED):
+            att_policy = session_policy(db, att)
+            enforce_policy(db, att, att_policy, now)
+        else:
+            att_policy = policy
+        if attendance_service.expire_if_needed(db, att, att_policy, now):
             expired += 1
             continue
         if att.tracking_state in (ACTIVE, PAUSED):
-            reason = _no_longer_collectable(db, att, policy)
+            reason = _no_longer_collectable(db, att, att_policy)
             if reason:
                 # Whoever can no longer submit readings must not accumulate misses either.
-                stop_tracking(db, att, policy, now, reason, settle=False)
+                stop_tracking(db, att, att_policy, now, reason, settle=False)
                 stopped += 1
                 continue
-        missed += reconcile(db, att, policy, now)
+        missed += reconcile(db, att, att_policy, now)
     redacted = purge_expired(db, company_id, now)
     return {"company_id": company_id, "live_sessions": len(live), "expired": expired, "missed_slots": missed,
             "stopped": stopped, "redacted": redacted}

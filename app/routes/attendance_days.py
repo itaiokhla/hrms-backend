@@ -47,7 +47,8 @@ def list_days(employee_id: int = Query(..., ge=1), start: date = Query(...), end
     if end < start or (end - start).days + 1 > MAX_LIST_DAYS:
         raise bad_request(f"Choose a range of at most {MAX_LIST_DAYS} days.", "RANGE_TOO_LONG")
     rows = attendance_days.days_for(db, principal.company_id, [employee.id], start, end)
-    return {"items": [attendance_days.as_json(rows[key]) for key in sorted(rows)]}
+    label_of = attendance_days.labels(db, principal.company_id, rows.values())
+    return {"items": [attendance_days.as_json(rows[key], label=label_of[rows[key].id]) for key in sorted(rows)]}
 
 
 @router.get("/attendance/exceptions")
@@ -66,6 +67,21 @@ def list_exceptions(start: date = Query(...), end: date = Query(...), code: Opti
                                       employee_id=employee_id, skip=skip, limit=limit)
 
 
+@router.get("/attendance/conflicts")
+def list_conflicts(start: date = Query(...), end: date = Query(...), employee_id: Optional[int] = Query(None, ge=1),
+                   skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
+                   principal: Principal = Depends(require(READ)), db: Session = Depends(get_db)):
+    """LH's conflicts view as an alias of the exceptions list: the six leave-holiday kinds only (03 §12; LH 05 §4.3)."""
+    attendance_access.require_v2(db, principal.company_id)
+    if employee_id is not None:
+        authz.ensure_employee_access(db, principal, READ, employee_id)
+    from app.models.attendance import AttendanceDay
+
+    scope = authz.employee_scope(db, principal, READ).clause(AttendanceDay.employee_id)
+    return attendance_days.exceptions(db, principal.company_id, scope, start, end, employee_id=employee_id,
+                                      skip=skip, limit=limit, kinds=attendance_days.LH_CONFLICT_KINDS)
+
+
 @router.get("/attendance/days/{employee_id:int}/{shift_date}")
 def get_day(employee_id: int, shift_date: date, explain: bool = False,
             principal: Principal = Depends(require(READ)), db: Session = Depends(get_db)):
@@ -73,7 +89,8 @@ def get_day(employee_id: int, shift_date: date, explain: bool = False,
     employee = authz.ensure_employee_access(db, principal, READ, employee_id)
     row = attendance_days.get_day(db, principal.company_id, employee.id, shift_date)
     body = {"day": None if row is None else attendance_days.as_json(
-        row, versions=attendance_days.versions_of(db, principal.company_id, row.id))}
+        row, versions=attendance_days.versions_of(db, principal.company_id, row.id),
+        label=attendance_days.day_label(db, principal.company_id, row))}
     if explain:
         body["explain"] = attendance_days.explain(db, principal.company_id, employee.id, shift_date)
     elif row is None:
@@ -105,4 +122,4 @@ def evaluation_of(db: Session, company_id: int, employee_id: int, day: date) -> 
     if not attendance_access.v2_enabled(db, company_id):
         return None
     row = attendance_days.get_day(db, company_id, employee_id, day)
-    return None if row is None else attendance_days.as_json(row)
+    return None if row is None else attendance_days.as_json(row, label=attendance_days.day_label(db, company_id, row))

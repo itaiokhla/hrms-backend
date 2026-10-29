@@ -12,6 +12,7 @@ from sqlalchemy import (
     Text,
     TypeDecorator,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
@@ -27,11 +28,14 @@ STEP_STATUSES = ("waiting", "pending", "approved", "rejected", "skipped", "cance
 # Leave chains use the first four (the leave API accepts no others); payroll modules add the last two.
 APPROVER_TYPES = (
     "primary_manager", "skip_level_manager", "department_head", "role", "finance_role", "specific_user",
+    "team_lead",  # JC-AS-21 / JC-AS-46: resolved by team_service.resolve_team_lead (AS-M4, migration 0052)
 )
 # Modules an approval chain, generic approval request or delegation belongs to (3.1 §5.14, 3.9 §3.9).
 APPROVAL_MODULES = (
     "leave", "payroll_run", "compensation", "wage_input", "overtime", "task", "reimbursement", "loan",
     "bank_change", "payment_batch", "off_cycle", "final_settlement", "lop", "attendance", "settings",
+    "timesheet",  # JC-AS-21 (AS-M4, migration 0052)
+    "shift_request", "team_inputs",  # AS-M6 shift requests and manager-prepared payroll batches (migration 0058)
 )
 
 
@@ -89,9 +93,19 @@ class ApprovalChainStep(TenantMixin, BaseModel):
     min_amount_currency = Column(String(3), nullable=True)
     # Thresholds other than days and amounts, interpreted by the approvals service.
     condition = Column(JSONB, nullable=True)
+    # AS-M4 (migration 0052, IG-AS-81): the route the step belongs to (NULL = the module's legacy chain) and the
+    # step SLA snapshot taken at instantiation (NULL = the module default, e.g. attendance.approval.sla_hours).
+    route_id = Column(Integer, nullable=True)
+    sla_hours = Column(Integer, nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("company_id", "module", "step_order", name="uq_approval_chain_step"),
+        Index("uq_approval_chain_step", "company_id", "module", text("COALESCE(route_id, 0)"), "step_order",
+              unique=True),
+        ForeignKeyConstraint(
+            ["company_id", "route_id"], ["approval_routes.company_id", "approval_routes.id"],
+            ondelete="CASCADE", name="fk_approval_chain_route",
+        ),
+        CheckConstraint("sla_hours IS NULL OR sla_hours BETWEEN 1 AND 720", name="ck_approval_chain_sla"),
         ForeignKeyConstraint(
             ["company_id", "role_id"], ["roles.company_id", "roles.id"], name="fk_approval_chain_role"
         ),

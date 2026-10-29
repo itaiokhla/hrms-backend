@@ -33,6 +33,13 @@ class NotificationService:
             action_url=action_url,
         )
         db.add(notification)
+        # G-24: wake the user's browsers (payload-less Web Push; the service worker fetches this notification).
+        from app.database.db import current_company_id
+        from app.services import integrations
+
+        company_id = current_company_id(db)
+        if company_id is not None:
+            integrations.tickle_user(db, company_id, user_id)
         return notification
 
     @staticmethod

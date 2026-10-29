@@ -82,13 +82,16 @@ def panel(db: Session, principal: Principal) -> dict:
         "collection": {
             "sources": sorted(policy.allowed_sources), "location_at_punch": policy.location_mode,
             "location_on_breaks": policy.location_on_breaks, "tracking": policy.tracking_enabled,
+            "tracking_interval_minutes": policy.tracking_interval_minutes if policy.tracking_enabled else None,
+            "tracking_pause_on_break": policy.tracking_pause_on_break,
             "face_match": {"on": policy.face_on_punch or policy.face_on_break,
                            "applies_to_me": (policy.face_on_punch or policy.face_on_break) and face_allowed,
                            "note": None if face_allowed else "You punch without face matching."},
             "punch_photo": policy.punch_photo, "kiosk_methods": sorted(policy.kiosk_methods),
             "site_checks": {"geofence": policy.geofence_mode, "network": policy.ip_mode, "qr": policy.qr_mode},
             "note": "Location is recorded only when you punch." if not policy.tracking_enabled else
-                    "Location is recorded while you are checked in, never outside work.",
+                    f"Location is checked about every {policy.tracking_interval_minutes} minutes while you are checked "
+                    "in, never outside work.",
         },
         "retention": [
             {"class": "LOCATION", "label": f"Location: {settings.retention_days} days", "days": settings.retention_days},

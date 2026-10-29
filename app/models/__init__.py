@@ -67,6 +67,10 @@ from . import (  # noqa: E402,F401
 )
 # Attendance-shift and cross-module models (AS 14 IG-AS-03), after the payroll block.
 from app.models import rosters, scheduler, shifts, teams, views  # noqa: E402,F401
+from app.models import attendance_requests  # noqa: E402,F401  (AS-M4, migration 0052)
+from app.models import devices  # noqa: E402,F401  (AS-M7, migration 0055)
+from app.models import shift_requests  # noqa: E402,F401  (AS-M6, migration 0057)
+from app.models import integrations, team_payroll  # noqa: E402,F401  (migration 0058)
 
 TENANT_TABLES = sorted(
     m.__tablename__ for base in (BaseModel, BigIdModel) for m in base.__subclasses__() if issubclass(m, TenantMixin)

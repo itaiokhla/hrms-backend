@@ -202,6 +202,12 @@ def record(db: Session, company_id: int, employee_id: int, purpose: str, status:
 
 
 def _effects(db: Session, row: AttendanceConsent) -> None:
+    if row.purpose == "LOCATION_TRACKING" and row.status in ("DECLINED", "WITHDRAWN") and row.scope == "STANDING":
+        from app.services import location_service
+
+        # C-5: location during the shift stops at once (the session stays open).
+        location_service.stop_for_employee(db, row.company_id, row.employee_id, "POLICY_DISABLED")
+        return
     if row.purpose != "BIOMETRIC_FACE":
         return
     faces = db.query(FaceEncoding).filter(FaceEncoding.company_id == row.company_id,

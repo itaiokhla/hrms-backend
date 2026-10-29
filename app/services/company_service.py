@@ -95,6 +95,10 @@ def provision_company(
 
     # GEN 09:00-18:00 with a 60-minute unpaid lunch: 8 scheduled hours, not 9 (BUG-AS-33).
     shift = shift_catalogue.seed_company_shift(db, company.id)
+    from app.services import attendance_requests
+
+    # AS-M4: attendance reason codes and the default approval routes (migration 0052 seeds existing companies).
+    attendance_requests.seed_company(db, company.id)
     from app.services import org_structure_service
 
     # Default employer (legal entity) and work location; the admin confirms the country later.

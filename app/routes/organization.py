@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core import authz
 from app.core.principal import Principal, require
 from app.database.db import get_db
-from app.schemas.employees import DelegationCreate, ManagerAssignment, SecondaryLineCreate
+from app.schemas.employees import BulkAssignReports, DelegationCreate, ManagerAssignment, SecondaryLineCreate
 from app.services import employee_service, org_service
 
 router = APIRouter(prefix="/api/v1/org", tags=["Organization"])
@@ -20,6 +20,38 @@ def org_nodes(
     db: Session = Depends(get_db),
 ):
     return org_service.org_nodes(db, principal, parent_id, q)
+
+
+@router.get("/hierarchy")
+def full_hierarchy(
+    department_id: Optional[int] = None,
+    team_id: Optional[int] = None,
+    q: Optional[str] = Query(None, max_length=100),
+    principal: Principal = Depends(require("employee:read")),
+    db: Session = Depends(get_db),
+):
+    return org_service.full_hierarchy(db, principal, department_id, team_id, q)
+
+
+@router.post("/assign-reports")
+def bulk_assign_reports(
+    data: BulkAssignReports,
+    principal: Principal = Depends(require("org:manage_hierarchy")),
+    db: Session = Depends(get_db),
+):
+    return org_service.bulk_assign_reports(db, principal, data.manager_id, data.employee_ids)
+
+
+@router.delete("/employees/{employee_id}/manager")
+def remove_manager(
+    employee_id: int,
+    principal: Principal = Depends(require("org:manage_hierarchy")),
+    db: Session = Depends(get_db),
+):
+    employee = authz.ensure_employee_access(db, principal, "org:manage_hierarchy", employee_id)
+    org_service.assign_manager(db, principal, employee, None)
+    db.commit()
+    return {"ok": True, "employee_id": employee_id}
 
 
 @router.get("/employees/{employee_id}/chain")

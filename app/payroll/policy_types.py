@@ -1076,10 +1076,25 @@ class AttendanceRounding(_Strict):
         return self
 
 
+class AttendanceBreakRule(_Strict):
+    """One BreakRule (AS 03-shifts/01 §5.1) of ``break_defaults``: the breaks of a custom-time roster entry without a
+    shift (§5.4). The engine checks the combinations (``shift_engine.validate_break_defaults``)."""
+
+    kind: Literal["LUNCH", "REST", "PERSONAL", "OTHER"] = "LUNCH"
+    mode: Literal["PUNCHED", "FIXED_WINDOW", "FLOATING_WINDOW", "AUTO_DEDUCT"] = "AUTO_DEDUCT"
+    minutes: Annotated[int, IntRule(minimum=1, maximum=240, unit="minutes")] = 30
+    paid: bool = False
+    start: LocalTime | None = None
+    end: LocalTime | None = None
+    window_start: LocalTime | None = None
+    window_end: LocalTime | None = None
+    next_day: bool = False
+    auto_deduct_after_minutes: Annotated[int, IntRule(minimum=0, maximum=1440, unit="minutes")] | None = None
+
+
 class AttendanceRulesPolicy(PolicyFields):
     """Spine §6.2.2; AS 04-attendance/02 §4.3. Read by the day evaluation for STANDARD days only (payroll reads the
-    evaluations, never this policy: ``SKIPPED_POLICY_TYPES``, JC-AS-18). ``break_defaults`` arrive with the policy
-    editor (FU-AS-25)."""
+    evaluations, never this policy: ``SKIPPED_POLICY_TYPES``, JC-AS-18)."""
 
     profile: Literal["LEGACY_V1", "STANDARD"] = _f("STANDARD", "LEGACY_V1 follows payroll's attendance pay policy.")
     day_basis: Literal["PRESENCE", "HOURS"] = _f("HOURS", "A half is present by any work, or by worked hours.")
@@ -1108,6 +1123,8 @@ class AttendanceRulesPolicy(PolicyFields):
     short_hours_enabled: bool = _f(False, "Mark days shorter than expected.")
     short_tolerance_minutes: GraceMinutes = _f(0, "Short minutes tolerated before a short mark.")
     break_attestation: bool = _f(False, "Ask at check out whether the break was taken.")
+    break_defaults: list[AttendanceBreakRule] = _f(
+        help_="Breaks of roster entries with custom times and no shift (at most 4).", factory=list)
     rounding: AttendanceRounding = _f(help_="Rounding of worked time (never breaks, never marks).",
                                       factory=AttendanceRounding)
     open_day_start_time: LocalTime = _f("04:00", "Start of the attendance day when there is no shift.")
@@ -1129,6 +1146,13 @@ class AttendanceRulesPolicy(PolicyFields):
             raise ValueError("late_half_day_after_minutes: must be greater than the grace in")
         if self.time_bank_enabled:
             raise ValueError("time_bank_enabled: Time bank is not available yet")
+        if self.break_defaults:
+            from app.services import shift_engine
+
+            issues = shift_engine.validate_break_defaults([r.model_dump() for r in self.break_defaults])
+            if issues:
+                first = issues[0]
+                raise ValueError(f"{first.field.replace('break_rules', 'break_defaults')}: {first.message}")
         return self
 
 
