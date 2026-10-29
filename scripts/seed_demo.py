@@ -56,7 +56,8 @@ class Api:
 # Pooja grant Employee (e2e/04). Kept equal to the registry by tests/payroll_unit/test_legacy_e2e_seed.py.
 SELF_SERVICE = [
     ("employee:read", "SELF"), ("employee:read_confidential", "SELF"), ("profile:update", "SELF"),
-    ("attendance:read", "SELF"), ("attendance:mark", "SELF"), ("location:read", "SELF"), ("leave:read", "SELF"),
+    ("attendance:read", "SELF"), ("attendance:mark", "SELF"), ("attendance:request", "SELF"), ("location:read", "SELF"),
+    ("leave:read", "SELF"),
     ("leave:apply", "SELF"),
     ("holiday:read", "COMPANY"), ("payroll:read", "SELF"), ("compensation:read", "SELF"),
     ("asset:read", "SELF"), ("asset:acknowledge", "SELF"),

@@ -714,6 +714,9 @@ def test_starter_v1_switches_i13():
         "holiday.provisional_counts", "holiday.publish.notify_employees",
         # AS-M3: punching stays on (today's behaviour); it changes no pay by itself.
         "attendance.capture.enabled",
+        # Team attendance: the manager tools stay usable once a tenant switches them on (no pay effect by themselves).
+        "attendance.team.proxy_punch.allow_manual_location", "attendance.team.proxy_punch.reason_required",
+        "attendance.team.edit_enabled",
     }
     assert {k for k, v in values.items() if v is True} == STARTER_ON | safety_and_display
     for key in STARTER_OFF_WITH_DECISION:

@@ -87,7 +87,7 @@ def test_claim_inside_the_notice_window_needs_consent_once_the_us_pack_is_adopte
 
 
 # =============================================================================================== G-22
-def test_packs_view_adoption_and_ramadan_limit(plant):
+def test_packs_view_adoption_and_ramadan_limit(app, plant):
     from app.services import working_time_packs
 
     admin = plant["admin"]
@@ -104,6 +104,11 @@ def test_packs_view_adoption_and_ramadan_limit(plant):
                      json={"enabled": False, "reason": "x"}).status_code == 422
     worker = plant["people"]["Ravi"]
     assert worker.get("/api/v1/attendance/packs").status_code == 403
+    # An HR administrator (attendance:manage_policy, no payroll configuration access) can release it again.
+    hr = employee_with_login(app, admin, "Hema", roles=("hr_admin",))
+    r = hr.put(f"/api/v1/attendance/packs/{entity['legal_entity_id']}", json={"enabled": False, "reason": "Back to guidance"})
+    assert r.status_code == 200, r.text
+    assert next(i for i in r.json()["items"] if i["legal_entity_id"] == entity["legal_entity_id"])["adopted"] is False
     ae = working_time_packs.pack("AE")
     assert working_time_packs.daily_max_on(ae, date(2027, 2, 10)) == 6
     assert working_time_packs.daily_max_on(ae, date(2027, 4, 10)) == 10

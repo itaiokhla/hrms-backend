@@ -82,15 +82,14 @@ def set_adoption(db: Session, principal: Principal, legal_entity_id: int, enable
         raise bad_request(f"There is no working-time pack for {entity.country_code} yet.", "PACK_UNAVAILABLE")
     if not (reason or "").strip():
         raise bad_request("Say why the country rules are switched on or off.", "REASON_REQUIRED")
-    result = settings_engine.save_values(db, principal, [settings_engine.SettingChange(
-        key=pack_resolver.PACK_SWITCH, value=bool(enabled), scope_type="LEGAL_ENTITY", scope_id=entity.id,
-        reason=reason.strip()[:500])])
+    change = settings_engine.write_module_value(db, principal, pack_resolver.PACK_SWITCH, bool(enabled),
+                                                reason=reason.strip()[:500], legal_entity_id=entity.id)
     AuditLogService.log(db, principal, "Attendance", "WORKING_TIME_PACK_ADOPTED" if enabled else
                         "WORKING_TIME_PACK_RELEASED",
                         f"{entity.country_code} working-time pack {'adopted' if enabled else 'switched off'} for "
                         f"{entity.legal_name}", "legal_entity", entity.id,
                         details={"pack_version": working_time_packs.PACK_VERSION})
-    return {"change": result["changes"][0] if result.get("changes") else None, **packs_view(db, principal)}
+    return {"change": change, **packs_view(db, principal)}
 
 
 def fww_estimate(db: Session, principal: Principal, legal_entity_id: int, start: date, end: date) -> dict:

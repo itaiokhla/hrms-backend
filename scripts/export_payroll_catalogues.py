@@ -263,8 +263,9 @@ JOB: dict[str, L] = {
 # defined these locally until F-22/F-44; labels and tones are unchanged from those pages.
 Derived = tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], dict[str, L]]
 DERIVED: dict[str, Derived] = {
-    "approval_request": (("PENDING",), (), ("APPROVED", "CANCELLED", "REJECTED"), {
+    "approval_request": (("PENDING",), (), ("APPROVED", "CANCELLED", "REJECTED", "RETURNED"), {
         "PENDING": ("Pending", "warning", "Waiting for an approver's decision. Nothing takes effect until it is approved."),
+        "RETURNED": ("Returned", "warning", "An approver sent it back for changes. The requester edits and submits it again."),
         "APPROVED": ("Approved", "success", "Every step of the approval chain approved it."),
         "REJECTED": ("Rejected", "danger", "An approver rejected it. It has no effect."),
         "CANCELLED": ("Cancelled", "neutral", "The requester withdrew it. It has no effect."),

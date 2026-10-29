@@ -1214,29 +1214,42 @@ def write_tenant_value(db: Session, principal: Principal, key: str, value: Any, 
     The caller has already checked its own permission (settings:manage) and the admin-only rule;
     concurrency is last-write-wins as in the legacy screen. Returns the change result.
     """
+    return write_module_value(db, principal, key, value, reason=reason)
+
+
+def write_module_value(db: Session, principal: Principal, key: str, value: Any, *, reason: str | None = None,
+                       legal_entity_id: int | None = None) -> dict[str, Any]:
+    """A module's own write of one of its keys (TENANT, or LEGAL_ENTITY when ``legal_entity_id`` is given) from
+    today, with change control and audit. The calling module has already checked its own permission (e.g.
+    ``attendance:manage_policy`` for ``attendance.packs.enabled``), so payroll configuration access is not needed."""
     company = _company(db, principal.company_id)
     today = company_today(company)
     canonical = reg.canonical_key(key)
     defn = reg.REGISTRY[canonical]
-    target = ScopeTarget(Level.TENANT, None, "Company")
-    ctx = build_context(db, company.id, on=today)
+    if legal_entity_id is None:
+        level, target = Level.TENANT, ScopeTarget(Level.TENANT, None, "Company")
+    else:
+        entity = _get(db, LegalEntity, company.id, legal_entity_id, "Legal entity")
+        level = Level.LEGAL_ENTITY
+        target = ScopeTarget(level, entity.id, entity.legal_name, legal_entity_id=entity.id)
+    ctx = build_context(db, company.id, on=today, legal_entity_id=legal_entity_id)
     rows = _tenant_rows(db, ctx, [canonical]).get(canonical, {})
     platform = _platform_rows(db, ctx, [canonical]).get(canonical, {})
     countries = _countries(db, company.id, target, ctx)
     limits = [c for code in countries for c in pack_constraints(code, today) if c.target == canonical]
     current = _resolve_loaded(ctx, canonical, rows, platform, limits)
-    here = rows.get(Level.TENANT)
+    here = rows.get(level)
     locked = bool(here.locked) if here is not None else False
-    normalized = reg.validate_write(canonical, value, level=Level.TENANT, locked=locked, actor_is_admin=True,
+    normalized = reg.validate_write(canonical, value, level=level, locked=locked, actor_is_admin=True,
                                     legal_limits=limits)
-    token = _scope_tokens(db, company.id, [canonical], Level.TENANT, None).get(canonical, 0)
-    if canonical in _open_requests(db, company.id, [canonical], Level.TENANT, None):
+    token = _scope_tokens(db, company.id, [canonical], level, target.scope_id).get(canonical, 0)
+    if canonical in _open_requests(db, company.id, [canonical], level, target.scope_id):
         raise bad_request(f"A change of {defn.label} is waiting for approval.", "CHANGE_PENDING")
-    change = SettingChange(canonical, value, reason=reason, row_version=token)
+    change = SettingChange(canonical, value, scope_type=level.value, scope_id=target.scope_id, reason=reason,
+                           row_version=token)
     plan = _Planned(change, canonical, defn, target, today, reg.to_json(canonical, normalized), locked, current,
                     token, countries)
-    if here is not None and _same(canonical, here.value, plan.value_json) \
-            and not _later_rows(db, company.id, canonical, target, today):
+    if here is not None and _same(canonical, here.value, plan.value_json)             and not _later_rows(db, company.id, canonical, target, today):
         plan.status = "UNCHANGED"
     return _write(db, principal, company, plan, _change_approval_enabled(db, company.id, today))
 
