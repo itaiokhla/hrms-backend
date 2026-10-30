@@ -351,7 +351,8 @@ def test_loader_query_count_does_not_grow_with_head_count(tenant, app):
     print(f"loader statements: 1 employee {small}, 5 employees {large}")
     assert large <= small + 2, (small, large)
     # IG-AS-77: one LH day-facts pass, shared shifts, batched policies and settings (was 112 before batching).
-    assert large <= 60, (small, large)
+    # S6 (2026-10-30): 66 for 1 and for 5 employees after the shift criterion / holiday-rule lookups (IG-AS-166).
+    assert large <= 66, (small, large)
 
 
 # --------------------------------------------------------------------------- locked periods, preview, attestation

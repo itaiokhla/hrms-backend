@@ -134,7 +134,9 @@ def test_an_employee_of_the_same_company_cannot_use_planner_or_other_peoples_rou
     sita, sita_id = plant["people"]["Sita"], plant["ids"]["Sita"]
     # Reads Sita may legitimately make: her own shift (BUG-AS-35) and the rotation pattern (no personal data); her
     # roster period opens with her own row only and no drafts (IG-AS-144, checked below).
-    own_reads = {f"/shifts/{a['shift']}", f"/shifts/{a['shift']}/versions", f"/rosters/{a['period']}"}
+    # The open shift's claimant view (an OPEN shift she may claim) is hers to read too — masked, checked below.
+    own_reads = {f"/shifts/{a['shift']}", f"/shifts/{a['shift']}/versions", f"/rosters/{a['period']}",
+                 f"/open-shifts/{a['open_shift']}"}
     wrong = []
     for method, path, body in _calls(a):
         if path.endswith("/claim") or (method == "GET" and (path in own_reads or "/preview" in path)):
@@ -145,6 +147,9 @@ def test_an_employee_of_the_same_company_cannot_use_planner_or_other_peoples_rou
             wrong.append((method, path, r.status_code, r.text[:160]))
     assert wrong == [], "\n".join(map(str, wrong))
     assert _state(a) == before
+    detail = sita.get(f"/api/v1/open-shifts/{a['open_shift']}")
+    assert detail.status_code == 200, detail.text
+    assert not detail.json().get("claims") and detail.json().get("released_by") is None  # never other people's claims
     grid = sita.get(f"/api/v1/rosters/{a['period']}").json()
     assert [e["id"] for e in grid["employees"]] == [sita_id]
     assert {e["employee_id"] for e in grid["entries"]} == {sita_id} and grid["drafts"] == []

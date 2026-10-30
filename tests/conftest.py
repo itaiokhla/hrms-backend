@@ -65,6 +65,8 @@ def pytest_configure(config):
     cur.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s", (DB_NAME,))
     cur.execute(f"DROP DATABASE IF EXISTS {DB_NAME}")
     cur.execute(f"CREATE DATABASE {DB_NAME}")
+    # Sessions in UTC whatever the cluster default (a fresh cluster takes the machine zone, e.g. +05:30; FU-AS-55).
+    cur.execute(f"ALTER DATABASE {DB_NAME} SET timezone TO 'UTC'")
     cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (APP_ROLE,))
     if not cur.fetchone():
         cur.execute(f"CREATE ROLE {APP_ROLE} LOGIN PASSWORD %s NOSUPERUSER NOBYPASSRLS", (APP_ROLE_PASSWORD,))

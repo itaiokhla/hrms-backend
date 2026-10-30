@@ -94,6 +94,9 @@ def test_the_open_shift_detail_shows_a_claimant_only_their_own_side(app, plant):
     body = seen.json()
     assert body["can_claim"] is True and body["my_claim"] is None and "claims" not in body
     assert body["released_by_employee_id"] is None and "Saving up" not in seen.text
+    assert body["branch_name"] == plant["branch"]["name"]  # claimants cannot read the branch list (FU-AS-56 b)
+    listed = next(i for i in mohan.get("/api/v1/open-shifts").json()["items"] if i["id"] == here)
+    assert listed["branch_name"] == plant["branch"]["name"]
     mine = sita.get(f"/api/v1/open-shifts/{here}").json()
     assert mine["my_claim"]["id"] == claim.json()["id"] and mine["can_claim"] is False
     other = mohan.get(f"/api/v1/open-shifts/{there}").json()
@@ -185,7 +188,7 @@ def test_shift_lists_support_saved_views_with_their_own_allow_lists(app, plant):
                                                      "query": {"kind": "FIXED", "sort": "name", "columns": ["net"]}})
     assert shifts.status_code == 201, shifts.text
     mine = plant["people"]["Ravi"].get("/api/v1/saved-views", params={"list_key": "roster.open_shifts"}).json()
-    assert "sys:i_can_take" in {v["id"] for v in mine["system_views"]}
+    assert "sys:available_to_me" in {v["id"] for v in mine["system_views"]}
     other = signup_company(app, "Other Views Co")
     theirs = other.get("/api/v1/saved-views", params={"list_key": "roster.open_shifts"}).json()
     assert made.json()["id"] not in {v["id"] for v in theirs["views"]}

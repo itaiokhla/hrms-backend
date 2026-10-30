@@ -281,7 +281,7 @@ def test_x_int_56_leave_approval_takes_the_employee_lock_and_times_out_without_w
     assert "r" in outcome, "the approval did not give up waiting for the lock"
     assert outcome["r"].status_code == 409 and outcome["r"].json()["code"] == "LOCK_TIMEOUT", outcome["r"].text
     assert owner_rows("SELECT count(*) AS n FROM leaves WHERE employee_id = :e", e=imran["id"])[0]["n"] == 0
-    assert _leave(_record(t, imran, THU, SAT)["id"])[0] == Decimal(1)
+    assert _leave(_record(t, imran, THU, SAT)["id"])[0] == Decimal(2)  # Thu + Fri; Sat is the weekly off (no roster here)
 
 
 # ------------------------------------------------------------------------------------------------ X-INT-58

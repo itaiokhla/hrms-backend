@@ -100,23 +100,40 @@ LIST_KEYS: Mapping[str, ListDef] = {
     # registration every call answered 422 INVALID_LIST_KEY.
     "shift.shifts": ListDef(
         list_key="shift.shifts", endpoint="GET /shifts", read_permissions=("shift:read",),
-        query_keys=frozenset({"kind", "status", "branch_id", "legal_entity_id"}),
+        query_keys=frozenset({"kind", "status", "branch_id", "legal_entity_id", "night", "in_use"}),
         sort_keys=("code", "name", "kind", "status"), default_sort="code", q_fields=("code", "name"),
         columns=("name", "kind", "times", "net", "breaks", "owner", "version", "status"),
-        system_views=_views(("active", "Active shifts", ("HR", "MANAGER"), {"status": "ACTIVE", "sort": "code"})),
+        # X 04 §2.8 catalogue rows (AS-UX-01).
+        system_views=_views(
+            ("active_shifts", "Active shifts", ("HR",), {"status": "ACTIVE", "sort": "code"}),
+            ("night_shifts", "Night shifts", ("HR",), {"night": True}),
+            ("not_used", "Not used", ("HR",), {"in_use": False}),
+            ("archived", "Archived", ("HR",), {"status": "ARCHIVED"}),
+        ),
     ),
     "shift.rules": ListDef(
         list_key="shift.rules", endpoint="GET /shift-assignment-rules", read_permissions=("shift:read",),
-        query_keys=frozenset({"shift_id", "status"}), sort_keys=("priority",), default_sort="-priority",
+        query_keys=frozenset({"shift_id", "status", "in_force_on", "ending_within_days"}), sort_keys=("priority",),
+        default_sort="-priority",
+        system_views=_views(
+            ("in_force_today", "In force today", ("HR",), {"in_force_on": "today", "sort": "-priority"}),
+            ("ending_in_30_days", "Ending in 30 days", ("HR",), {"ending_within_days": 30}),
+            ("inactive", "Inactive", ("HR",), {"status": "INACTIVE"}),
+        ),
     ),
     "roster.open_shifts": ListDef(
         list_key="roster.open_shifts", endpoint="GET /open-shifts",
         read_permissions=("roster:request", "roster:plan", "roster:approve"),
-        query_keys=frozenset({"from", "to", "status", "eligible_only"}), sort_keys=("shift_date",),
-        default_sort="shift_date", max_range_days=92,
+        query_keys=frozenset({"from", "to", "status", "eligible_only", "has_pending_claims", "expires_on",
+                              "filled_within"}),
+        sort_keys=("shift_date",), default_sort="shift_date", max_range_days=92,
         system_views=_views(
-            ("i_can_take", "Shifts I can take", ("EMPLOYEE",), {"eligible_only": True}),
-            ("all_open", "All open shifts", ("TEAM_LEAD", "MANAGER", "HR"), {"status": "OPEN"}),
+            ("available_to_me", "Available to me", ("EMPLOYEE",), {"eligible_only": True, "sort": "shift_date"}),
+            ("all_open", "All open", ("TEAM_LEAD", "HR"), {"status": "OPEN"}),
+            ("needs_approval", "Needs approval", ("TEAM_LEAD", "HR"), {"has_pending_claims": True}),
+            ("expiring_today", "Expiring today", ("TEAM_LEAD", "HR"), {"status": "OPEN", "expires_on": "today"}),
+            ("filled_this_week", "Filled this week", ("TEAM_LEAD", "HR"), {"status": "FILLED", "filled_within": "this_week"}),
+            ("expired", "Expired", ("HR",), {"status": "EXPIRED"}),
         ),
     ),
 }

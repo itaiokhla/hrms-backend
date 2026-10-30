@@ -364,6 +364,9 @@ def test_rotation_generation_turns_a_work_token_on_a_holiday_into_a_holiday_rule
     after = _sql("SELECT kind, source FROM roster_drafts WHERE employee_id = :e AND shift_date = :d",
                  e=ravi["id"], d=holiday + timedelta(days=1)).one()
     assert tuple(after) == ("WORK", "ROTATION")
+    # Sita's days are left to the auto-publish job below (roster_entry_changes is append-only, so they must never be
+    # published here).
+    _sql("DELETE FROM roster_drafts WHERE employee_id = :e", e=sita["id"])
     preview = _publish(plant, dry_run=True)
     assert "HOLIDAY_WORK" not in {r["rule_key"] for r in preview["results"]}
     _publish_all(plant)
@@ -377,11 +380,7 @@ def test_rotation_generation_turns_a_work_token_on_a_holiday_into_a_holiday_rule
     finally:
         db.close()
 
-    # Auto-publish for Sita over the same holiday: her drafts were published above as part of the period, so clear
-    # them and let the job publish the horizon itself.
-    _sql("DELETE FROM roster_entry_changes WHERE employee_id = :e", e=sita["id"])
-    _sql("DELETE FROM roster_entries WHERE employee_id = :e", e=sita["id"])
-    _sql("DELETE FROM roster_drafts WHERE employee_id = :e", e=sita["id"])
+    # Auto-publish for Sita over the same holiday: the job publishes her horizon itself.
     db = _db(plant)
     try:
         result = shift_rotations.auto_publish(db, admin.company_id, start - timedelta(days=1))

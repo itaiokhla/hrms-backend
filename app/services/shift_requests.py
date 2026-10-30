@@ -449,13 +449,23 @@ def serialize(db: Session, row: ShiftRequest, viewer: Optional[Principal] = None
     return out
 
 
+def _branch_names(db: Session, company_id: int) -> Dict[int, str]:
+    from app.models.org import Branch
+
+    return dict(db.query(Branch.id, Branch.name).filter(Branch.company_id == company_id).all())
+
+
 def serialize_open_shift(db: Session, row: OpenShift, codes: Optional[Mapping[int, str]] = None,
-                         claims: Optional[Mapping[int, int]] = None) -> dict:
+                         claims: Optional[Mapping[int, int]] = None,
+                         branches: Optional[Mapping[int, str]] = None) -> dict:
     codes = codes if codes is not None else _shift_codes(db, row.company_id)
+    # The branch name, so claimants (who may not read the branch list) see where the shift is.
+    branches = branches if branches is not None else _branch_names(db, row.company_id)
     return {"id": row.id, "shift_date": row.shift_date.isoformat(), "shift_id": row.shift_id,
             "shift_code": codes.get(row.shift_id) if row.shift_id else None,
             "custom_start_time": row.custom_start_time, "custom_end_time": row.custom_end_time,
-            "branch_id": row.branch_id, "team_id": row.team_id, "site_id": row.site_id,
+            "branch_id": row.branch_id, "branch_name": branches.get(row.branch_id),
+            "team_id": row.team_id, "site_id": row.site_id,
             "required_count": row.required_count, "filled_count": row.filled_count, "status": row.status,
             "source": row.source, "approval_required": row.approval_required,
             "required_tags": list((row.eligibility or {}).get("required_tags") or []),
@@ -1892,9 +1902,10 @@ def list_open_shifts(db: Session, principal: Principal, *, start: Optional[date]
                         ShiftRequest.open_shift_id.in_([r.id for r in rows] or [0]))}
     items = []
     memo: dict = {}
+    branches = _branch_names(db, cid)
     for row in rows:
         oversees = planner and _oversees(db, principal, row, memo)
-        item = serialize_open_shift(db, row, codes, claims)
+        item = serialize_open_shift(db, row, codes, claims, branches)
         if not oversees and row.released_by_employee_id != me:  # who released it is a colleague's request (V-7)
             item["released_by_employee_id"] = None
         if me is not None and principal.has(REQUEST) and row.status == "OPEN":
