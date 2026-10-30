@@ -558,6 +558,80 @@ def set_status(db: Session, principal: Principal, shift_id: int, archive: bool,
     return get_shift(db, principal, shift.id)
 
 
+SINGLE_INSTANCE_RULES = ("DAILY_HOURS_EXCEEDED", "SPREAD_OVER_EXCEEDED", "OUTDOOR_MIDDAY_BAN")
+
+
+def single_instance_compliance(db: Session, company_id: int, data: Optional[engine.ShiftVersionData], day: date,
+                               employee_ids, *, outdoor: bool = False) -> List[dict]:
+    """§3.6 "Compliance (single-instance rules)" (EC AS-SHF-18): for every distinct working-time pack (country) and
+    work zone of the population, build the instance of ``data`` on ``day`` and run the rules that need only that
+    instance with the pack's limits. Listed as WARN (``.not_verified`` message unless the pack is VERIFIED); this
+    block never blocks a save — the binding checks stay at roster publish and at evaluation. The person-based night
+    and adolescent checks need each employee's attributes and stay at publish."""
+    from dataclasses import replace
+
+    from app.services import roster_rules as rules
+    from app.services import roster_validation
+    from app.services.org_structure_service import placement_zone
+    from app.services.working_time_packs import PACKS
+
+    if data is None or not employee_ids:
+        return []
+    groups: Dict[Tuple[str, str], List[int]] = {}
+    rows = db.query(EmployeeAssignment, LegalEntity.country_code).join(
+        LegalEntity, (LegalEntity.company_id == EmployeeAssignment.company_id)
+        & (LegalEntity.id == EmployeeAssignment.legal_entity_id)).filter(
+        EmployeeAssignment.company_id == company_id, EmployeeAssignment.employee_id.in_(sorted(employee_ids)),
+        EmployeeAssignment.is_primary.is_(True), EmployeeAssignment.effective_from <= day,
+        or_(EmployeeAssignment.effective_to.is_(None), EmployeeAssignment.effective_to >= day)).all()
+    for assignment, country in rows:
+        if (country or "").upper() in PACKS:
+            groups.setdefault(((country or "").upper(), placement_zone(db, assignment)), []).append(
+                assignment.employee_id)
+    out: List[dict] = []
+    for (country, zone), people in sorted(groups.items()):
+        try:
+            instance = engine.build_instance(data, day, zone)
+        except engine.ShiftEngineError:
+            continue
+        planned = replace(rules.from_shift_instance(instance, changed=True), outdoor=outdoor)
+        limits = roster_validation.limits_for(db, company_id, [people[0]], day).for_employee(people[0])
+        schedule = rules.ScheduleData((rules.EmployeeSchedule(people[0], zone, (planned,)),))
+        for result in rules.validate(schedule, limits, rules.RuleContext()):
+            if result.rule_key not in SINGLE_INSTANCE_RULES:
+                continue
+            out.append({"rule_key": result.rule_key, "severity": rules.WARN, "country": country, "zone": zone,
+                        "employees": len(set(people)), "measured": str(result.measured) if result.measured is not None
+                        else None, "limit": str(result.limit) if result.limit is not None else None,
+                        "unit": result.unit, "message_key": result.message_key})
+    return out
+
+
+def _population_floor(db: Session, company_id: int, employee_ids) -> Optional[Tuple[date, str]]:
+    """§3.3 rule 4 (EC AS-TZ-01): the latest employee-local today over the work zones of the population's current
+    primary placements, with the zone that sets it (one conversion per distinct zone, not per employee)."""
+    from app.services.org_structure_service import placement_zone
+
+    now = clock.utcnow()
+    around = now.date()
+    rows = db.query(EmployeeAssignment).filter(
+        EmployeeAssignment.company_id == company_id, EmployeeAssignment.employee_id.in_(sorted(employee_ids)),
+        EmployeeAssignment.is_primary.is_(True), EmployeeAssignment.effective_from <= around + ONE_DAY,
+        or_(EmployeeAssignment.effective_to.is_(None), EmployeeAssignment.effective_to >= around - ONE_DAY)).all()
+    zones: Dict[tuple, str] = {}
+    for row in rows:
+        key = (getattr(row, "work_timezone", None), row.branch_id, row.legal_entity_id)
+        if key not in zones:
+            zones[key] = placement_zone(db, row)
+    best = None
+    for zone in set(zones.values()):
+        if zone in pytz.all_timezones_set:
+            local = now.astimezone(pytz.timezone(zone)).date()
+            if best is None or local > best[0]:
+                best = (local, zone)
+    return best
+
+
 def create_version(db: Session, principal: Principal, shift_id: int, body, *, legacy: bool = False) -> dict:
     """POST /shifts/{id}/versions (§3.4); ``body.dry_run`` previews without writing (§3.6)."""
     shift = load_shift(db, principal, shift_id, lock=True)
@@ -587,6 +661,11 @@ def create_version(db: Session, principal: Principal, shift_id: int, body, *, le
     old = resolution.version_data(plan["previous"], shift.kind) if plan["previous"] is not None else None
     new = _data(shift.kind, values)
     population = _population(db, shift.company_id, shift.id, start, plan["end"])
+    floor = _population_floor(db, shift.company_id, population) if population else None
+    if floor is not None and start < floor[0]:  # a zone ahead of the owner has already lived the date
+        raise AppError(409, "Employees in another time zone have already started that date.",
+                       "SHIFT_VERSION_IN_FORCE",
+                       extra={"details": {"next_allowed_from": floor[0].isoformat(), "zone": floor[1]}})
     if start == today and population:
         started = _started_today(db, shift.company_id, sorted(population), today)
         if started:
@@ -598,6 +677,8 @@ def create_version(db: Session, principal: Principal, shift_id: int, body, *, le
         "dates_by_payroll_state": _payroll_states(db, shift.company_id, population),
         "scheduled_minutes": {"old": _minutes(old, start, zone), "new": _minutes(new, start, zone)},
         "warnings": plan["warnings"],
+        "compliance": single_instance_compliance(db, shift.company_id, new, start, population,
+                                                 outdoor=bool(values.get("outdoor"))),
     }
     if body.dry_run:
         return {"dry_run": True, **preview}
@@ -1012,7 +1093,14 @@ def create_rule(db: Session, principal: Principal, data, *, simulate: bool = Fal
     preview = {"employees_affected": len(population), "sample": sample,
                "dates_changed": sum(len(d) for d in population.values()),
                "dates_by_payroll_state": _payroll_states(db, principal.company_id, population)}
-    if simulate:
+    if simulate:  # §12 simulate also carries the §3.6 single-instance compliance block (EC AS-SHF-18)
+        version = db.query(ShiftVersion).filter(
+            ShiftVersion.company_id == principal.company_id, ShiftVersion.shift_id == shift.id,
+            ShiftVersion.voided_at.is_(None), ShiftVersion.effective_from <= data.effective_from,
+            or_(ShiftVersion.effective_to.is_(None), ShiftVersion.effective_to >= data.effective_from)).first()
+        preview["compliance"] = single_instance_compliance(
+            db, principal.company_id, resolution.version_data(version, shift.kind) if version is not None else None,
+            data.effective_from, list(population), outdoor=bool(getattr(version, "outdoor", False)))
         return preview
     _past_start_check(db, principal, data)
     if replaced is not None:

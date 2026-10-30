@@ -159,6 +159,7 @@ class RosterPeriod(TenantMixin, BaseModel):
         UniqueConstraint("company_id", "code", name="uq_roster_periods_code"),
         _fk("roster_periods", "branch_id", "branches", "branch"),
         _fk("roster_periods", "team_id", "teams", "team"),  # X-M1 (0047)
+        _fk("roster_periods", "approval_request_id", "approval_requests", "approval"),  # §5.2 (0062)
         ForeignKeyConstraint(["company_id", "last_publication_id"],
                              ["roster_publications.company_id", "roster_publications.id"],
                              name="fk_roster_periods_last_publication", use_alter=True),
@@ -190,10 +191,13 @@ class RosterDraft(TenantMixin, BaseModel):
     base_entry_version = Column(Integer, nullable=True)
     note = Column(String(500), nullable=True)
     reason = Column(String(500), nullable=True)
+    # Spine §3.7: who wrote the draft (the last saver of a cell; migration 0061) — SoD shift.roster.planner_cannot_publish
+    created_by_user_id = Column(Integer, nullable=True)
     row_version = Column(Integer, nullable=False, default=1)
 
     __table_args__ = (
         UniqueConstraint("company_id", "id", name="uq_roster_drafts_company_id_id"),
+        _fk("roster_drafts", "created_by_user_id", "users", "created_by"),
         UniqueConstraint("company_id", "roster_period_id", "employee_id", "shift_date", "entry_seq",
                          name="uq_roster_drafts_cell"),
         _fk("roster_drafts", "roster_period_id", "roster_periods", "period"),
@@ -364,4 +368,26 @@ class RosterConsentConflict(TenantMixin, BaseModel):
         Index("uq_roster_consent_conflicts_open", "company_id", "roster_entry_id", "purpose", unique=True,
               postgresql_where=text("status = 'OPEN'")),
         Index("ix_roster_consent_conflicts_period", "company_id", "roster_period_id", "status"),
+    )
+
+
+class TzZoneSnapshot(TenantMixin, BaseModel):
+    """What job ``tzdata.impact_scan`` last saw of one time zone the company uses (EC AS-TZ-03; 02-system-design §7.4
+    runbook TZDATA-1): the UTC offset at ``window_from`` and every offset change up to ``window_to`` (24 months), so a
+    later tz database release can be compared and the published entries whose instants move recorded as a schedule
+    change. Table: 0066_tzdata_impact_scan."""
+
+    __tablename__ = "tz_zone_snapshots"
+
+    zone = Column(String(64), nullable=False)
+    tzdata_version = Column(String(16), nullable=False)
+    window_from = Column(DateTime(timezone=True), nullable=False)
+    window_to = Column(DateTime(timezone=True), nullable=False)
+    initial_offset_minutes = Column(Integer, nullable=False)
+    transitions = Column(JSONB, nullable=False, default=list)  # [[utc ISO instant, offset minutes after it], ...]
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "zone", name="uq_tz_zone_snapshots_zone"),
+        CheckConstraint("jsonb_typeof(transitions) = 'array'", name="ck_tz_zone_snapshots_transitions"),
+        CheckConstraint("window_to > window_from", name="ck_tz_zone_snapshots_window"),
     )

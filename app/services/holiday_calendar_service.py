@@ -496,6 +496,7 @@ def calendar_users(db: Session, company_id: int, calendar_id: int, on_or_after: 
             .filter(EmployeeAssignment.company_id == company_id, EmployeeAssignment.is_primary.is_(True),
                     or_(EmployeeAssignment.effective_to.is_(None), EmployeeAssignment.effective_to >= on_or_after))
             .all())
+    resolver.prime_shift_criterion({a.employee_id for a in rows}, on_or_after, on_or_after)  # shift_ids: one read
     for a in rows:
         day = max(a.effective_from, on_or_after)
         if resolver.calendar_on(a, day)[0] in targets:
@@ -843,10 +844,12 @@ def usage_counts(db: Session, company_id: int, on: Optional[date] = None) -> Dic
         if row.effective_to is None or row.effective_to >= on:
             out[row.calendar_id]["criteria"] += 1
     seen: Set[int] = set()
-    for a in db.query(EmployeeAssignment).filter(
-            EmployeeAssignment.company_id == company_id, EmployeeAssignment.is_primary.is_(True),
-            EmployeeAssignment.effective_from <= on,
-            or_(EmployeeAssignment.effective_to.is_(None), EmployeeAssignment.effective_to >= on)):
+    current = db.query(EmployeeAssignment).filter(
+        EmployeeAssignment.company_id == company_id, EmployeeAssignment.is_primary.is_(True),
+        EmployeeAssignment.effective_from <= on,
+        or_(EmployeeAssignment.effective_to.is_(None), EmployeeAssignment.effective_to >= on)).all()
+    resolver.prime_shift_criterion({a.employee_id for a in current}, on, on)  # shift_ids: one read for everyone
+    for a in current:
         if a.employee_id in seen:
             continue
         seen.add(a.employee_id)

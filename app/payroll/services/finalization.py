@@ -463,10 +463,15 @@ def _apply_consumption(db: Session, run: PayrollRun, period: PayPeriod, rows: Se
             paid_inputs = {sid for line in settlement_lines for kind, sid, _, _ in parse_sources(line, row.employee_id)
                            if kind == "WAGE_INPUT"}
             found = _final_settlement_encashments(db, row, paid_inputs)
-            if not found:
+            # Leave v2 encashment requests paid through their system wage input (LH SPINE §5.4: PAID once).
+            from app.services import leave_encashment
+
+            requested = leave_encashment.paid_requests_for_inputs(db, cid, paid_inputs)
+            if not found and not requested:
                 raise _fail(409, "ENCASHMENT_UNRESOLVED", f"The leave-encashment line of employee #{row.employee_id} "
                             "does not name its leave type and days.")
             encashed.extend((code, days, f"fs_item:{item_id}") for code, days, item_id in found)
+            encashed.extend(requested)
         for code, days, ref in encashed:
             if time_inputs._transaction(db, cid, employee_id=row.employee_id, leave_type=code, delta=-abs(days),
                                         reason="ENCASH", key=f"payroll:encash:{row.id}:{code}:{ref}"[:120],

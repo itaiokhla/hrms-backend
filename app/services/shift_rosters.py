@@ -350,15 +350,34 @@ def list_periods(db: Session, principal: Principal, *, status: Optional[str] = N
             "limit": limit}
 
 
+def _visible_employees(db: Session, principal: Principal, employees: Sequence[int]) -> List[int]:
+    """The subset of ``employees`` inside the caller's roster read / plan / publish scope."""
+    codes = [c for c in (READ, PLAN, PUBLISH) if principal.has(c)]
+    if principal.is_company_admin or any(principal.has_company_scope(c) for c in codes):
+        return list(employees)
+    visible: set = set()
+    for code in codes:
+        scope = employee_scope(db, principal, code)
+        visible |= {e for (e,) in db.query(Employee.id).filter(Employee.company_id == principal.company_id,
+                                                                Employee.id.in_(employees or [0]),
+                                                                scope.clause(Employee.id))}
+    return [e for e in employees if e in visible]
+
+
 def grid(db: Session, principal: Principal, period_id: int) -> dict:
-    """The period grid: employees in scope, published entries, drafts and the shift legend (§13)."""
+    """The period grid: employees in scope, published entries, drafts and the shift legend (§13). Only the employees
+    the caller's ``roster:read`` / ``plan`` / ``publish`` scope reaches are returned (a SELF reader sees their own
+    row, never colleagues' schedules); drafts are planner work in progress and go to planners and publishers only
+    (S5, IG-AS-144)."""
     period = load_period(db, principal, period_id)
-    employees = _owner_employees(db, period)
+    employees = _visible_employees(db, principal, _owner_employees(db, period))
     people = {e.id: e for e in db.query(Employee).filter(Employee.company_id == period.company_id,
                                                          Employee.id.in_(employees or [0]))}
     entries = entries_many(db, period.company_id, employees, period.start_date, period.end_date)
     drafts = db.query(RosterDraft).filter(RosterDraft.company_id == period.company_id,
-                                          RosterDraft.roster_period_id == period.id).all()
+                                          RosterDraft.roster_period_id == period.id,
+                                          RosterDraft.employee_id.in_(employees or [0])).all() \
+        if (principal.has(PLAN) or principal.has(PUBLISH)) else []
     shift_ids = {r.shift_id for rows in entries.values() for r in rows if r.shift_id} | {
         d.shift_id for d in drafts if d.shift_id}
     shifts = db.query(Shift).filter(Shift.company_id == period.company_id,
@@ -366,7 +385,14 @@ def grid(db: Session, principal: Principal, period_id: int) -> dict:
     from app.services import roster_consents  # EC AS-ROS-06: badge of entries a consent change made invalid
 
     conflicts = roster_consents.open_conflicts(db, period.company_id, [r.id for rows in entries.values() for r in rows])
+    from app.services import shift_requests
+
+    owners = _owner_employees(db, period)
     return {
+        # §5.2: whether a publish of this period goes to an approver, and whether one is waiting (drafts frozen)
+        "publish_requires_approval": bool(owners) and shift_requests._setting(
+            db, period.company_id, APPROVAL_SETTING, owners[0], period.start_date),
+        "approval_pending": approval_pending(db, period),
         "consent_conflicts": [{"roster_entry_id": entry_id, "purposes": sorted(purposes)}
                               for entry_id, purposes in sorted(conflicts.items())],
         "period": serialize_period(period, len(drafts)),
@@ -413,6 +439,7 @@ def put_drafts(db: Session, principal: Principal, period_id: int, cells: Sequenc
                        extra={"details": {"limit": MAX_DRAFT_CELLS}})
     period = load_period(db, principal, period_id, lock=True)
     check_row_version(period, expected_version)
+    _frozen(db, period)
     if period.status not in ("DRAFT", "PUBLISHED", "AMENDING"):
         raise AppError(409, "This roster period is closed for changes.", "INVALID_TRANSITION",
                        extra={"details": {"current_status": period.status}})
@@ -460,10 +487,13 @@ def put_drafts(db: Session, principal: Principal, period_id: int, cells: Sequenc
         row.site_id = getattr(cell, "site_id", None)
         row.planned_work_mode = getattr(cell, "planned_work_mode", None)
         row.source = getattr(cell, "source", None) or "MANUAL"
+        if not (row.kind == "OFF" and row.source == "HOLIDAY_RULE"):
+            row.planned_shift_id = None  # only a holiday-rule OFF remembers the shift it replaced (§8)
         row.note = getattr(cell, "note", None)
         row.reason = getattr(cell, "reason", None)
         row.base_entry_id = base.id if base is not None else None
         row.base_entry_version = base.version if base is not None else None
+        row.created_by_user_id = principal.user_id  # the last saver of the cell (SoD, EC AS-ROS-11)
         saved += 1
         if cell.action == "UPSERT" and cell.kind == "OFF" and cell.entry_seq == 1:
             # An OFF is always alone on its date: later entries of the date are withdrawn too (§7.2).
@@ -483,6 +513,7 @@ def put_drafts(db: Session, principal: Principal, period_id: int, cells: Sequenc
 def discard_drafts(db: Session, principal: Principal, period_id: int, expected_version: Optional[int]) -> dict:
     period = load_period(db, principal, period_id, lock=True)
     check_row_version(period, expected_version)
+    _frozen(db, period)
     _covering(db, principal, PLAN, _owner_employees(db, period))
     db.query(RosterDraft).filter(RosterDraft.company_id == period.company_id,
                                  RosterDraft.roster_period_id == period.id).delete(synchronize_session=False)
@@ -511,6 +542,7 @@ class _Cell:
     note: Optional[str] = None
     entry: Optional[RosterEntry] = None  # the published entry this cell replaces
     changed: bool = False
+    planned_shift_id: Optional[int] = None  # HOLIDAY_RULE OFF: the shift of the token it replaced (§8, AS-INT-07)
 
     def values(self, version: int) -> dict:
         return {"employee_id": self.employee_id, "shift_date": self.shift_date, "entry_seq": self.entry_seq,
@@ -523,7 +555,7 @@ class _Cell:
 def _published_cell(row: RosterEntry) -> _Cell:
     return _Cell(row.employee_id, row.shift_date, row.entry_seq, row.kind, row.shift_id, row.shift_version_id,
                  row.custom_start_time, row.custom_end_time, row.custom_segments, row.site_id, row.planned_work_mode,
-                 row.source, row.note, entry=row)
+                 row.source, row.note, entry=row, planned_shift_id=row.planned_shift_id)
 
 
 def _same(cell: _Cell, entry: RosterEntry) -> bool:
@@ -615,9 +647,16 @@ def validate_cells(db: Session, company_id: int, candidate: Sequence[_Cell], cha
                                  reasons=reasons or {}, exemptions=exemptions or {})
 
 
-def _gate(outcome: ValidationOutcome, principal: Principal, exemptions: Mapping[str, Any]) -> None:
+def _gate(outcome: ValidationOutcome, principal: Principal, exemptions: Mapping[str, Any],
+          db: Optional[Session] = None) -> None:
     if exemptions and not principal.has(EXEMPT):
         raise forbidden("Publishing with an exemption needs the Publish with exemption permission.")
+    if exemptions and db is not None:
+        # roster:exempt + step-up (03-shifts/02 §6.1; owner decision IG-AS-150 for EC AS-PAY-14: a correction inside a
+        # FINALIZED period is an exemption with a reason and a fresh step-up; payroll gets the retro signal).
+        from app.payroll.services import step_up
+
+        step_up.ensure_step_up(db, principal)
     if outcome.blocking:
         keys = {getattr(r, "rule_key", None) or (r.get("rule_key") if isinstance(r, dict) else None)
                 for r in outcome.blocking}
@@ -723,7 +762,7 @@ def _write(db: Session, principal: Optional[Principal], company_id: int, *, kind
                                 roster_period_id=period.id if period is not None else None,
                                 publication_id=publication.id, version=1, published_at=now,
                                 published_by_user_id=principal.user_id if principal is not None else None,
-                                note=cell.note, request_id=request_id)
+                                note=cell.note, request_id=request_id, planned_shift_id=cell.planned_shift_id)
             db.add(entry)
             change_kind = "CREATED"
         else:
@@ -731,7 +770,7 @@ def _write(db: Session, principal: Optional[Principal], company_id: int, *, kind
             for key in ("kind", "shift_id", "shift_version_id", "custom_start_time", "custom_end_time",
                         "custom_segments", "site_id", "planned_work_mode"):
                 setattr(entry, key, getattr(cell, key))
-            entry.source, entry.note = cell.source, cell.note
+            entry.source, entry.note, entry.planned_shift_id = cell.source, cell.note, cell.planned_shift_id
             entry.request_id = request_id
             entry.acknowledged_at = None  # a changed shift is acknowledged again
             entry.version += 1
@@ -771,6 +810,8 @@ def _write(db: Session, principal: Optional[Principal], company_id: int, *, kind
     if leave_dates:
         leave_jobs.recount_dates(db, company_id, leave_dates, key=f"recalc:roster:{publication.id}",
                                  actor_user_id=principal.user_id if principal is not None else None)
+    if kind != "REQUEST":  # an applied request tells its own parties (03-shifts/03 §8)
+        _notify_employees(db, company_id, publication.id, changed)
     if principal is not None:
         AuditLogService.log(db, principal, MODULE, "ROSTER_PUBLISHED",
                             f"Published {len(changed)} roster change(s)", "roster_publication", publication.id,
@@ -784,6 +825,42 @@ def _write(db: Session, principal: Optional[Principal], company_id: int, *, kind
                                 details={"rule_key": key, "exemption_ref": (exemption or {}).get("exemption_ref")})
     _emit(db, "roster.published", {"publication_id": publication.id})
     return publication
+
+
+NOTICE_LIST_MAX = 7  # dates named in one roster.published / roster.changed notification
+
+
+def _notify_employees(db: Session, company_id: int, publication_id: int, changed: Sequence[_Cell]) -> int:
+    """Notifications ``roster.published`` / ``roster.changed`` (spine §9.3; 03-shifts/02 §14): each employee whose
+    entries a publication created, changed or withdrew hears once — the action link carries the publication, the
+    dedup ``roster:{publication_id}:{employee_id}`` — with dates and shift codes only, never anyone's reasons. In-app
+    until the ``notify.roster.*`` channel settings exist (FU-AS-53)."""
+    from app.services.notification_service import NotificationService
+
+    per: Dict[int, List[_Cell]] = {}
+    for cell in changed:
+        per.setdefault(cell.employee_id, []).append(cell)
+    users = dict(db.query(Employee.id, Employee.user_id).filter(
+        Employee.company_id == company_id, Employee.id.in_(sorted(per) or [0]), Employee.user_id.isnot(None)))
+    codes = dict(db.query(Shift.id, Shift.code).filter(
+        Shift.company_id == company_id, Shift.id.in_(sorted({c.shift_id for c in changed if c.shift_id}) or [0])))
+    sent = 0
+    for employee_id, cells in sorted(per.items()):
+        if not users.get(employee_id):
+            continue
+        items = []
+        for cell in sorted(cells, key=lambda c: (c.shift_date, c.entry_seq)):
+            what = ("removed" if cell.kind is None else "off" if cell.kind == "OFF" else
+                    codes.get(cell.shift_id) or f"{cell.custom_start_time}–{cell.custom_end_time}")
+            items.append(f"{cell.shift_date:%a %d %b} {what}")
+        text = ", ".join(items[:NOTICE_LIST_MAX]) + (
+            f" and {len(items) - NOTICE_LIST_MAX} more" if len(items) > NOTICE_LIST_MAX else "")
+        new = all(c.entry is None for c in cells)
+        NotificationService.create(db, users[employee_id], "Your schedule was published" if new else
+                                   "Your schedule changed", f"{text}. Check My schedule.", "roster",
+                                   f"/rosters/my-schedule?publication={publication_id}")
+        sent += 1
+    return sent
 
 
 def _period_changes(db: Session, period: RosterPeriod, data) -> List[_Cell]:
@@ -801,14 +878,154 @@ def _period_changes(db: Session, period: RosterPeriod, data) -> List[_Cell]:
         cells.append(_Cell(draft.employee_id, draft.shift_date, draft.entry_seq,
                            draft.kind if draft.action == "UPSERT" else None, draft.shift_id, None,
                            draft.custom_start_time, draft.custom_end_time, draft.custom_segments, draft.site_id,
-                           draft.planned_work_mode, draft.source, draft.note))
+                           draft.planned_work_mode, draft.source, draft.note,
+                           planned_shift_id=draft.planned_shift_id if draft.action == "UPSERT" else None))
         cells[-1].draft = draft  # type: ignore[attr-defined]
     return cells
 
 
-def publish(db: Session, principal: Principal, period_id: int, data, *, validate_only: bool = False) -> dict:
+SOD_SETTING = "shift.roster.planner_cannot_publish"
+
+
+def _publisher_user_ids(db: Session, company_id: int, employees: Sequence[int]) -> List[int]:
+    """Active users holding ``roster:publish`` at a scope covering every employee of the publication."""
+    from app.core.principal import build_principal
+    from app.models.user import User
+    from app.payroll.services.approvals import _permission_holder_user_ids
+
+    company = db.get(Company, company_id)
+    found = []
+    for user_id in _permission_holder_user_ids(db, PUBLISH):
+        user = db.query(User).filter(User.company_id == company_id, User.id == user_id).one_or_none()
+        if user is None or user.status != "active":
+            continue
+        holder = build_principal(db, user, None, company)
+        if not holder.has(PUBLISH):
+            continue
+        if holder.is_company_admin or holder.has_company_scope(PUBLISH):
+            found.append(user_id)
+            continue
+        scope = employee_scope(db, holder, PUBLISH)
+        covered = {e for (e,) in db.query(Employee.id).filter(Employee.company_id == company_id,
+                                                               Employee.id.in_(employees), scope.clause(Employee.id))}
+        if covered == set(employees):
+            found.append(user_id)
+    return sorted(set(found))
+
+
+def _notify_sod_unavailable(db: Session, period: RosterPeriod, planner_ids: Iterable[int] = ()) -> None:
+    """``roster.sod_unavailable``: the ``shift:manage`` COMPANY holders are told to grant ``roster:publish`` to someone
+    else or to switch the rule off, ``planner_ids`` to ask for that; one unread notice per person and period (the
+    link is the dedup)."""
+    from app.core.principal import build_principal
+    from app.models.notification import Notification
+    from app.models.user import User
+    from app.payroll.services.approvals import _permission_holder_user_ids
+    from app.services.notification_service import NotificationService
+
+    company = db.get(Company, period.company_id)
+    link = f"/rosters/{period.id}?sod=unavailable"
+    managers = set()
+    for user_id in _permission_holder_user_ids(db, "shift:manage"):
+        user = db.query(User).filter(User.company_id == period.company_id, User.id == user_id).one_or_none()
+        if user is None or user.status != "active":
+            continue
+        manager = build_principal(db, user, None, company)
+        if manager.is_company_admin or manager.has_company_scope("shift:manage"):
+            managers.add(user_id)
+    for user_id in sorted(managers | set(planner_ids)):
+        if db.query(Notification.id).filter(Notification.user_id == user_id,
+                                            Notification.action_url == link, Notification.is_read.is_(False)).first():
+            continue
+        NotificationService.create(db, user_id, f"Roster {period.code} has nobody else to publish it",
+                                   "The planner-cannot-publish rule is on and no second person holds Publish "
+                                   "schedules for this roster. " + ("Grant it to someone or switch the rule off."
+                                                                    if user_id in managers else
+                                                                    "Ask an administrator to grant it to someone or "
+                                                                    "to switch the rule off."), "roster", link)
+
+
+def _sod_planner_publish(db: Session, principal: Principal, period: RosterPeriod, changes: Sequence[Any],
+                         employees: Sequence[int]) -> None:
+    """``shift.roster.planner_cannot_publish`` (03-shifts/02 §2.4, §5.2; EC AS-ROS-11, GV-AS-ROS-16): the last saver of
+    the drafts cannot publish them — 403 ``SOD_PLANNER_PUBLISH``, a fixed safeguard ``roster:exempt`` does not lift.
+    When no second eligible publisher remains, the ``shift:manage`` COMPANY holders are told (``roster.sod_unavailable``)
+    to grant ``roster:publish`` to someone else or to switch the setting off."""
+    from app.services import shift_requests
+
+    if not employees or not shift_requests._setting(db, period.company_id, SOD_SETTING, employees[0], period.start_date):
+        return
+    drafts = [c.draft for c in changes if getattr(c, "draft", None) is not None]
+    latest = max(drafts, key=lambda d: (d.updated_at, d.id), default=None)
+    if latest is None or latest.created_by_user_id != principal.user_id:
+        return
+    others = [u for u in _publisher_user_ids(db, period.company_id, employees) if u != principal.user_id]
+    if not others:
+        _notify_sod_unavailable(db, period)
+        db.commit()  # the notice survives the refusal below (IG-AS-143)
+    raise AppError(403, "The person who saved these drafts cannot also publish them.", "SOD_PLANNER_PUBLISH",
+                   extra={"details": {"eligible_publishers": len(others)}})
+
+
+def sod_after_access_change(db: Session, company_id: int) -> List[int]:
+    """EC AS-ROS-11 at the moment a ``roster:publish`` assignment ends (03-shifts/02 §1.4; GV-AS-ROS-16), called by the
+    access module's reroute hook (``rbac_service.reroute_approvals``: a role removed or its window ended — the daily
+    ``access.assignment_expire`` included — a grant removed, a scope narrowed). A period with drafts under
+    ``shift.roster.planner_cannot_publish`` whose last draft saver is left without a second ``roster:publish`` holder
+    covering the drafted employees tells its planners and the ``shift:manage`` COMPANY holders now, not at the next
+    refused publish. Never commits; returns the periods flagged."""
+    from app.services import shift_requests
+
+    drafted = [p for (p,) in db.query(RosterDraft.roster_period_id).filter(
+        RosterDraft.company_id == company_id).distinct()]
+    if not drafted:
+        return []
+    periods = db.query(RosterPeriod).filter(RosterPeriod.company_id == company_id, RosterPeriod.id.in_(drafted)) \
+        .order_by(RosterPeriod.id).all()
+    flagged = []
+    for period in periods:
+        drafts = db.query(RosterDraft).filter(RosterDraft.company_id == company_id,
+                                              RosterDraft.roster_period_id == period.id)
+        employees = sorted(e for (e,) in drafts.with_entities(RosterDraft.employee_id).distinct())
+        if not shift_requests._setting(db, company_id, SOD_SETTING, employees[0], period.start_date):
+            continue
+        planner = drafts.with_entities(RosterDraft.created_by_user_id).order_by(
+            RosterDraft.updated_at.desc(), RosterDraft.id.desc()).limit(1).scalar()
+        if planner is None or any(u != planner for u in _publisher_user_ids(db, company_id, employees)):
+            continue
+        _notify_sod_unavailable(db, period, _planner_user_ids(db, company_id, employees))
+        flagged.append(period.id)
+    return flagged
+
+
+APPROVAL_SETTING = "shift.roster.publish_requires_approval"
+ENGINE_MODULE, ENGINE_SUBJECT = "roster_publish", "ROSTER_PERIOD"
+
+
+def approval_pending(db: Session, period: RosterPeriod) -> bool:
+    """A publication of the period waits in the engine (spine §4.1: drafts frozen)."""
+    if period.approval_request_id is None:
+        return False
+    from app.models.approvals import ApprovalRequest
+
+    status = db.query(ApprovalRequest.status).filter(ApprovalRequest.company_id == period.company_id,
+                                                     ApprovalRequest.id == period.approval_request_id).scalar()
+    return status == "PENDING"
+
+
+def _frozen(db: Session, period: RosterPeriod) -> None:
+    if approval_pending(db, period):
+        raise AppError(409, "This roster waits for publication approval; its drafts cannot change.",
+                       "ROSTER_PUBLISH_PENDING", extra={"details": {"approval_request_id": period.approval_request_id}})
+
+
+def publish(db: Session, principal: Principal, period_id: int, data, *, validate_only: bool = False,
+            approved_hash: Optional[str] = None) -> dict:
     """POST /rosters/{period_id}/publish (§5.1): dry run, gate, write. ``validate_only`` is the planner's
-    ``POST /validate`` (a dry run covered by ``roster:plan``, never a write)."""
+    ``POST /validate`` (a dry run covered by ``roster:plan``, never a write). With
+    ``shift.roster.publish_requires_approval`` (§5.2; owner decision IG-AS-150) the planner's publish opens an engine
+    request (module ``roster_publish``) with the frozen snapshot hash instead of writing; ``approved_hash`` is the
+    engine callback's re-run as the approver."""
     period = load_period(db, principal, period_id)
     changes = _period_changes(db, period, data)
     if not changes:
@@ -819,7 +1036,13 @@ def publish(db: Session, principal: Principal, period_id: int, data, *, validate
     employees = sorted({c.employee_id for c in changes})
     if validate_only:
         data.dry_run = True
-    _covering(db, principal, PLAN if validate_only else PUBLISH, employees)
+    from app.services import shift_requests
+
+    needs_approval = approved_hash is None and not validate_only and shift_requests._setting(
+        db, period.company_id, APPROVAL_SETTING, employees[0], period.start_date)
+    if approved_hash is None and not data.dry_run:
+        _frozen(db, period)
+    _covering(db, principal, PLAN if (validate_only or needs_approval) else PUBLISH, employees)
     lock_employees(db, employees)
     period = load_period(db, principal, period_id, lock=True)
     stale = [c for c in changes if getattr(c, "draft").base_entry_id is not None and (
@@ -847,18 +1070,28 @@ def publish(db: Session, principal: Principal, period_id: int, data, *, validate
     scope = {"employee_ids": sorted(getattr(data, "employee_ids", None) or employees),
              "from": (getattr(data, "date_from", None) or period.start_date).isoformat(),
              "to": (getattr(data, "date_to", None) or period.end_date).isoformat()}
+    final = [c.values(c.entry.version + 1 if c.entry is not None and c.changed else
+                      c.entry.version if c.entry is not None else 1) for c in candidate]
+    ids = set(scope["employee_ids"])
+    expected_hash = snapshot_hash(v for v in final if v["employee_id"] in ids
+                                  and scope["from"] <= v["shift_date"].isoformat() <= scope["to"])
     if data.dry_run:
-        final = [c.values(c.entry.version + 1 if c.entry is not None and c.changed else
-                          c.entry.version if c.entry is not None else 1) for c in candidate]
-        ids = set(scope["employee_ids"])
         return {"dry_run": True, "changes": [c.values(0) | {"change_kind": "WITHDRAWN" if c.kind is None else
                                                              "UPDATED" if c.entry is not None else "CREATED"}
                                              for c in changed],
                 "results": [_result_json(r) for r in outcome.results],
                 "blocking": [_result_json(r) for r in outcome.blocking],
-                "snapshot_hash": snapshot_hash(v for v in final if v["employee_id"] in ids
-                                               and scope["from"] <= v["shift_date"].isoformat() <= scope["to"])}
-    _gate(outcome, principal, exemptions)
+                "snapshot_hash": expected_hash, "requires_approval": bool(needs_approval)}
+    if approved_hash is not None and approved_hash != expected_hash:
+        raise AppError(409, "The roster changed since it was sent for approval; submit it again.",
+                       "ROSTER_STALE_DRAFT", extra={"details": {"approved_hash": approved_hash}})
+    if needs_approval:
+        _gate(outcome, principal, exemptions, db)  # only a publishable roster goes to the approver
+        return _request_approval(db, principal, period, data, scope, employees, expected_hash, acknowledged, reasons,
+                                 exemptions, outcome)
+    if approved_hash is None:
+        _sod_planner_publish(db, principal, period, changes, employees)
+    _gate(outcome, principal, exemptions, db)
     publication = _write(db, principal, period.company_id, kind="PERIOD", period=period, candidate=candidate,
                          changed=changed, scope=scope, outcome=outcome, acknowledged=acknowledged, reasons=reasons,
                          exemptions=exemptions)
@@ -878,6 +1111,75 @@ def publish(db: Session, principal: Principal, period_id: int, data, *, validate
             "entries_withdrawn": publication.entries_withdrawn,
             "min_notice_hours": str(publication.min_notice_hours) if publication.min_notice_hours is not None else None,
             "results": [_result_json(r) for r in outcome.results], "period": serialize_period(period, left)}
+
+
+def _request_approval(db: Session, principal: Principal, period: RosterPeriod, data, scope: dict, employees: List[int],
+                      expected_hash: str, acknowledged: List[str], reasons: dict, exemptions: dict,
+                      outcome: ValidationOutcome) -> dict:
+    """§5.2: open the ``roster_publish`` engine request — approvers hold ``roster:publish`` covering every employee
+    (``party_employee_ids``), never the maker (``maker_user_ids``); the request carries the frozen preview hash and
+    what the publish needs (acknowledged warnings, reasons, exemptions, scope). Drafts stay frozen while it waits."""
+    from app.payroll.services import approvals
+
+    request = approvals.submit(
+        db, principal, module=ENGINE_MODULE, subject_type=ENGINE_SUBJECT, subject_id=period.id,
+        subject_employee_id=employees[0],
+        context={"snapshot_hash": expected_hash, "scope": scope, "acknowledged_warnings": acknowledged,
+                 "reasons": reasons, "exemptions": exemptions, "period_code": period.code,
+                 "employee_ids": list(getattr(data, "employee_ids", None) or []),
+                 "date_from": getattr(data, "date_from", None), "date_to": getattr(data, "date_to", None),
+                 "maker_user_ids": [principal.user_id], "party_employee_ids": employees},
+        attributes={"period_code": period.code})
+    period.requires_approval = True
+    period.approval_request_id = request.id
+    period.row_version += 1
+    db.flush()
+    AuditLogService.log(db, principal, MODULE, "ROSTER_PUBLISH_REQUESTED", f"Roster {period.code} sent for approval",
+                        "roster_period", period.id, details={"approval_request_id": request.id,
+                                                             "snapshot_hash": expected_hash})
+    _emit(db, "roster.publish.requested", {"roster_period_id": period.id, "approval_request_id": request.id})
+    return {"dry_run": False, "pending_approval": True, "approval_request_id": request.id,
+            "snapshot_hash": expected_hash, "results": [_result_json(r) for r in outcome.results],
+            "period": serialize_period(period)}
+
+
+def _publication_decided(db: Session, principal: Optional[Principal], request) -> None:
+    """Engine callback (module ``roster_publish``): APPROVED → the publish runs as the approver with the approved
+    hash (409 ROSTER_STALE_DRAFT when the drafts no longer match); REJECTED / RETURNED / CANCELLED → the drafts are
+    unfrozen (the request is no longer PENDING)."""
+    from types import SimpleNamespace
+
+    period = (db.query(RosterPeriod).filter(RosterPeriod.company_id == request.company_id,
+                                            RosterPeriod.id == request.subject_id).with_for_update().first())
+    if period is None or period.approval_request_id != request.id:
+        return
+    if request.status == "APPROVED":
+        if principal is None:
+            raise conflict("A roster publication is approved by a person.", "APPROVER_REQUIRED")
+        ctx = request.context or {}
+        data = SimpleNamespace(
+            dry_run=False, acknowledged_warnings=ctx.get("acknowledged_warnings") or [],
+            reasons=ctx.get("reasons") or {}, exemptions=ctx.get("exemptions") or {},
+            employee_ids=ctx.get("employee_ids") or None,
+            date_from=date.fromisoformat(ctx["date_from"]) if ctx.get("date_from") else None,
+            date_to=date.fromisoformat(ctx["date_to"]) if ctx.get("date_to") else None)
+        publish(db, principal, period.id, data, approved_hash=ctx.get("snapshot_hash"))
+        return
+    if request.status in ("REJECTED", "RETURNED", "CANCELLED"):
+        period.row_version += 1
+        db.flush()
+        AuditLogService.log(db, principal, MODULE, "ROSTER_PUBLISH_DECLINED",
+                            f"Roster {period.code} publication {request.status.lower()}", "roster_period", period.id,
+                            company_id=period.company_id, actor_type="user" if principal is not None else "system")
+
+
+def _register_engine_callback() -> None:
+    from app.payroll.services import approvals
+
+    approvals.register_callback(ENGINE_MODULE, ENGINE_SUBJECT, _publication_decided)
+
+
+_register_engine_callback()
 
 
 def direct_publish(db: Session, principal: Principal, data) -> dict:
@@ -909,7 +1211,7 @@ def direct_publish(db: Session, principal: Principal, data) -> dict:
     if data.dry_run:
         return {"dry_run": True, "results": [_result_json(r) for r in outcome.results],
                 "blocking": [_result_json(r) for r in outcome.blocking]}
-    _gate(outcome, principal, exemptions)
+    _gate(outcome, principal, exemptions, db)
     scope = {"employee_ids": employees, "from": min(days).isoformat(), "to": max(days).isoformat()}
     publication = _write(db, principal, principal.company_id, kind="DIRECT", period=None, candidate=candidate,
                          changed=changed, scope=scope, outcome=outcome, acknowledged=data.acknowledged_warnings or [],
@@ -979,6 +1281,15 @@ def reversion_entries(db: Session, principal: Principal, shift_id: int, version:
     entries = query.order_by(RosterEntry.employee_id, RosterEntry.shift_date).all()
     if not entries:
         return None
+    # EC AS-PAY-15 (owner decision IG-AS-150): entries on INPUT_LOCKED / FINALIZED payroll dates keep their old
+    # version (evaluation uses the entry's stored version); only OPEN dates are re-versioned or re-pointed.
+    states = roster_validation.period_states(db, principal.company_id, [_published_cell(e) for e in entries])
+    locked = [e for e in entries if states.get(e.shift_date) in (roster_validation.rules.INPUT_LOCKED,
+                                                                  roster_validation.rules.FINALIZED)]
+    entries = [e for e in entries if e not in locked]
+    if not entries:
+        return {"publication_id": None, "entries_reversioned": 0, "entries_repointed": 0,
+                "entries_left_on_previous_version": len(locked)}
     cells = [_published_cell(e) for e in entries]
     zones = roster_validation.zones_for(db, principal.company_id, cells)
     versions = roster_validation._Versions(db, principal.company_id, [shift_id])
@@ -1007,4 +1318,146 @@ def reversion_entries(db: Session, principal: Principal, shift_id: int, version:
                              reason_code="SHIFT_VERSION_CHANGED")
     db.flush()
     return {"publication_id": publication.id if publication is not None else None,
-            "entries_reversioned": len(changed), "entries_repointed": repointed}
+            "entries_reversioned": len(changed), "entries_repointed": repointed,
+            "entries_left_on_previous_version": len(locked)}
+
+
+# =============================================================================================== jobs
+PUBLISH_DUE_WARNING_DAYS = 2  # roster.publish_reminders: due within this many days, or overdue
+
+
+def close_due_periods(db: Session, company_id: int, local_date: date) -> dict:
+    """Job ``roster.close_periods`` (DAILY, daily-local; 03-shifts/02 §4.2): a PUBLISHED period whose end date is
+    before the local date and none of whose dates is still OPEN in payroll becomes CLOSED (read-only; later changes
+    only by DIRECT publications with reason). A period whose employees belong to no pay group has no payroll state to
+    wait for (IG-AS-139)."""
+    from types import SimpleNamespace
+
+    from app.services import roster_validation
+
+    closed = []
+    rows = db.query(RosterPeriod).filter(RosterPeriod.company_id == company_id, RosterPeriod.status == "PUBLISHED",
+                                         RosterPeriod.end_date < local_date).with_for_update(skip_locked=True).all()
+    for period in rows:
+        employees = _owner_employees(db, period)
+        days = [period.start_date + timedelta(days=i) for i in range((period.end_date - period.start_date).days + 1)]
+        grouped = employees and db.query(EmployeeAssignment.id).filter(
+            EmployeeAssignment.company_id == company_id, EmployeeAssignment.employee_id.in_(employees),
+            EmployeeAssignment.is_primary.is_(True), EmployeeAssignment.pay_group_id.isnot(None)).first()
+        if grouped:
+            cells = [SimpleNamespace(employee_id=e, shift_date=days[0]) for e in employees] + [
+                SimpleNamespace(employee_id=employees[0], shift_date=d) for d in days]
+            states = roster_validation.period_states(db, company_id, cells)
+            if any(d not in states for d in days):
+                continue  # a date is still OPEN in payroll
+        period.status = "CLOSED"
+        period.row_version += 1
+        closed.append(period.id)
+        AuditLogService.log(db, None, MODULE, "ROSTER_PERIOD_CLOSED", f"Roster period {period.code} closed",
+                            "roster_period", period.id, company_id=company_id, actor_type="system")
+        _emit(db, "roster.period.closed", {"roster_period_id": period.id})
+    db.flush()
+    return {"closed": closed}
+
+
+SHIFT_REMINDER_MINUTES = 60  # notify.roster.shift_reminder_minutes until the setting exists (FU-AS-53)
+
+
+def shift_reminders(db: Session, company_id: int, now: Optional[datetime] = None) -> dict:
+    """Job ``roster.shift_reminders`` (HOURLY; spine §9.3 ``roster.shift_reminder``): the rostered employee hears about
+    a published WORK entry that starts within the next ``SHIFT_REMINDER_MINUTES`` — once per entry version (dedup
+    ``shiftrem:{roster_entry_id}:{version}``, carried in the action link), so a changed shift is reminded again and a
+    missed hourly run is caught up by the next one."""
+    from app.models.notification import Notification
+    from app.services import roster_validation
+    from app.services.notification_service import NotificationService
+
+    now = now or clock.utcnow()
+    until = now + timedelta(minutes=SHIFT_REMINDER_MINUTES)
+    day = now.date()
+    entries = (db.query(RosterEntry).join(Employee, (Employee.company_id == RosterEntry.company_id)
+                                          & (Employee.id == RosterEntry.employee_id))
+               .filter(RosterEntry.company_id == company_id, RosterEntry.kind == "WORK",
+                       RosterEntry.withdrawn_at.is_(None), Employee.user_id.isnot(None),
+                       RosterEntry.shift_date >= day - ONE_DAY, RosterEntry.shift_date <= day + ONE_DAY).all())
+    if not entries:
+        return {"checked": 0, "reminded": 0}
+    zones = roster_validation.zones_for(db, company_id, entries)
+    versions = roster_validation._Versions(db, company_id, {e.shift_id for e in entries if e.shift_id})
+    users = dict(db.query(Employee.id, Employee.user_id).filter(
+        Employee.company_id == company_id, Employee.id.in_(sorted({e.employee_id for e in entries}))))
+    codes = dict(db.query(Shift.id, Shift.code).filter(
+        Shift.company_id == company_id, Shift.id.in_(sorted({e.shift_id for e in entries if e.shift_id}) or [0])))
+    sent = 0
+    for entry in entries:
+        zone = zones.get((entry.employee_id, entry.shift_date), "UTC")
+        instance = roster_validation._instance(versions, {k: getattr(entry, k) for k in ENTRY_KEYS}, zone)
+        if instance is None or not (now < instance.start_at <= until):
+            continue
+        link = f"/rosters/my-schedule?reminder={entry.id}-{entry.version}"
+        user_id = users[entry.employee_id]
+        if db.query(Notification.id).filter(Notification.user_id == user_id,
+                                            Notification.action_url == link).first() is not None:
+            continue
+        local = instance.start_at.astimezone(pytz.timezone(zone))
+        NotificationService.create(db, user_id, "Your shift starts soon",
+                                   f"{codes.get(entry.shift_id) or 'Your shift'} starts at {local:%H:%M} "
+                                   f"({local.tzname()}).", "roster", link)
+        sent += 1
+    db.flush()
+    return {"checked": len(entries), "reminded": sent}
+
+
+def _planner_user_ids(db: Session, company_id: int, employees: Sequence[int]) -> List[int]:
+    """Active users holding ``roster:plan`` whose scope reaches at least one employee the period plans for."""
+    from app.core.principal import build_principal
+    from app.models.user import User
+    from app.payroll.services.approvals import _permission_holder_user_ids
+
+    company = db.get(Company, company_id)
+    found = []
+    for user_id in _permission_holder_user_ids(db, PLAN):
+        user = db.query(User).filter(User.company_id == company_id, User.id == user_id).one_or_none()
+        if user is None or user.status != "active":
+            continue
+        principal = build_principal(db, user, None, company)
+        if not principal.has(PLAN):
+            continue
+        if principal.is_company_admin or principal.has_company_scope(PLAN):
+            found.append(user_id)
+            continue
+        scope = employee_scope(db, principal, PLAN)
+        if employees and db.query(Employee.id).filter(Employee.company_id == company_id, Employee.id.in_(employees),
+                                                      scope.clause(Employee.id)).first():
+            found.append(user_id)
+    return sorted(set(found))
+
+
+def publish_reminders(db: Session, company_id: int, local_date: date) -> dict:
+    """Job ``roster.publish_reminders`` (DAILY, daily-local): planners of a DRAFT or AMENDING period whose
+    ``publish_due_at`` falls within ``PUBLISH_DUE_WARNING_DAYS`` (or has passed) get one in-app ``roster.publish_due``
+    notification per day (dedup ``pubdue:{roster_period_id}:{local_date}``, carried in the action link)."""
+    from app.models.notification import Notification
+    from app.services.notification_service import NotificationService
+
+    horizon = datetime.combine(local_date + timedelta(days=PUBLISH_DUE_WARNING_DAYS + 1), time(0, 0), tzinfo=timezone.utc)
+    rows = db.query(RosterPeriod).filter(RosterPeriod.company_id == company_id,
+                                         RosterPeriod.status.in_(("DRAFT", "AMENDING")),
+                                         RosterPeriod.publish_due_at.isnot(None),
+                                         RosterPeriod.publish_due_at < horizon,
+                                         RosterPeriod.start_date >= local_date).all()
+    sent = 0
+    for period in rows:
+        link = f"/rosters/{period.id}?due={local_date.isoformat()}"
+        overdue = period.publish_due_at <= clock.utcnow()
+        for user_id in _planner_user_ids(db, company_id, _owner_employees(db, period)):
+            if db.query(Notification.id).filter(Notification.user_id == user_id,
+                                                Notification.action_url == link).first() is not None:
+                continue
+            NotificationService.create(
+                db, user_id, f"Roster {period.code} {'is overdue for publishing' if overdue else 'is due for publishing'}",
+                f"{period.name}: publish by {period.publish_due_at.date().isoformat()} so people get their notice.",
+                "roster", link)
+            sent += 1
+    db.flush()
+    return {"periods": len(rows), "notified": sent}

@@ -33,8 +33,8 @@ def pending_recalculations(db: Session, company_id: int, start: date, end: date)
                                     Job.status.in_(("QUEUED", "RUNNING", "FAILED"))).order_by(Job.id):
         payload = job.payload or {}
         dates = [date.fromisoformat(d) for d in payload.get("dates") or ()]
-        if payload.get("date_from"):
-            first = date.fromisoformat(payload["date_from"])
+        if payload.get("date_from") or payload.get("from"):  # "from": shift versions / rules (JC-AS-34)
+            first = date.fromisoformat(payload.get("date_from") or payload["from"])
             dates += [first, horizon(first)]
         if dates and min(dates) <= end and max(dates) >= start:
             out.append({"job_id": job.id, "status": job.status, "from": min(dates).isoformat(),
@@ -55,10 +55,12 @@ def recount_dates(db: Session, company_id: int, dates: Iterable[date], *, key: s
     affected = db.query(func.count(LeaveDay.id)).filter(LeaveDay.company_id == company_id, LeaveDay.date.in_(wanted),
                                                         LeaveDay.voided_at.is_(None)).scalar() or 0
     if affected <= RECALC_INLINE_LIMIT:
-        changed = time_inputs.reevaluate_leave_days(db, company_id, wanted, actor_user_id=actor_user_id)
+        changed = time_inputs.reevaluate_leave_days(db, company_id, wanted, actor_user_id=actor_user_id,
+                                                    note=_note(key))
         return {"mode": "inline", "dates": len(wanted), "leave_days": affected, "changed": changed}
     job = jobs.enqueue(db, company_id=company_id, type="leave.recalculate",
-                       payload={"dates": [d.isoformat() for d in wanted]}, idempotency_key=key[:120],
+                       payload={"dates": [d.isoformat() for d in wanted],
+                                **({"note": _note(key)} if _note(key) else {})}, idempotency_key=key[:120],
                        created_by_user_id=actor_user_id, read_permission="holiday:manage")
     return {"mode": "job", "job_id": job.id, "dates": len(wanted), "leave_days": affected, "changed": None}
 
@@ -91,17 +93,47 @@ def recount_pattern_switch(db: Session, company_id: int, *, branch_id: int, old_
                          actor_user_id=actor_user_id)
 
 
+_NOTES = (("recalc:roster:", "Roster changed"), ("recalc:shift:", "Shift times changed"))
+
+
+def _note(key: str) -> Optional[str]:
+    """The v2 request message of a recount, from its key (``None``: the default "Holiday calendar changed")."""
+    return next((note for prefix, note in _NOTES if key.startswith(prefix)), None)
+
+
+def _source_window(db: Session, company_id: int, payload: dict) -> Optional[tuple]:
+    """(first, last) dates a shift version can change (its own window; ``last`` None = open-ended), else None."""
+    if payload.get("source_kind") != "shift_version" or not payload.get("source_id"):
+        return None
+    from app.models.shifts import ShiftVersion
+
+    row = db.query(ShiftVersion.effective_from, ShiftVersion.effective_to).filter(
+        ShiftVersion.company_id == company_id, ShiftVersion.id == int(payload["source_id"])).first()
+    return (row[0], row[1]) if row is not None else None
+
+
 @jobs.register("leave.recalculate")
 def _recalculate_job(ctx: jobs.JobContext) -> dict:
+    """``dates`` (a big holiday / roster change), ``date_from`` (tzdata), or ``employee_ids`` + ``from`` — the
+    ``shift_catalogue._effects`` recount of a shift version or rule (key ``recalc:shift:{kind}:{id}:{version}``,
+    JC-AS-34, X-INT-58): approved leave of those employees from ``from`` (inside the version's own window) to the
+    horizon is regenerated, so the new scheduled minutes reach every charged half / full day."""
     payload = ctx.payload or {}
+    employee_ids = payload.get("employee_ids")
+    note = payload.get("note") or ("Shift times changed" if payload.get("source_kind") else None)
     if payload.get("dates"):
         dates = [date.fromisoformat(d) for d in payload["dates"]]
-    elif payload.get("date_from"):
-        start = date.fromisoformat(payload["date_from"])
-        dates = list(workweek.dates_between(start, horizon(start)))
+    elif payload.get("date_from") or payload.get("from"):
+        start = date.fromisoformat(payload.get("date_from") or payload["from"])
+        end = horizon(start)
+        window = _source_window(ctx.db, ctx.company_id, payload)
+        if window is not None:
+            start, end = max(start, window[0]), min(end, window[1] or end)
+        dates = list(workweek.dates_between(start, end)) if start <= end else []
     else:
         return {"changed": 0}
-    changed = time_inputs.reevaluate_leave_days(ctx.db, ctx.company_id, dates, actor_user_id=ctx.created_by_user_id)
+    changed = time_inputs.reevaluate_leave_days(ctx.db, ctx.company_id, dates, actor_user_id=ctx.created_by_user_id,
+                                                employee_ids=employee_ids, note=note)
     return {"dates": len(dates), "changed": changed}
 
 

@@ -148,9 +148,11 @@ def test_pay_group_scope_is_targeted_and_offered_only_on_payroll_codes():
         Scope.LEGAL_ENTITY: "legal_entity_id", Scope.BRANCH: "branch_id", Scope.PAY_GROUP: "pay_group_id",
     }
     with_pay_group = {p.code for p in reg.PERMISSIONS if Scope.PAY_GROUP in p.scopes}
-    # JC-AS-24: payroll roles read attendance at PAY_GROUP; every other PAY_GROUP code is a payroll code.
-    assert with_pay_group and all(code.startswith("payroll:") for code in with_pay_group - {"attendance:read"})
-    for code in ("employee:read", "employee:read_confidential", "location:read", "leave:read",
+    # JC-AS-24: payroll roles read attendance at PAY_GROUP; LH SPINE §9: and leave (the payroll manager's leave:read
+    # PG grant). Every other PAY_GROUP code is a payroll code.
+    assert with_pay_group and all(code.startswith("payroll:") for code in with_pay_group - {"attendance:read",
+                                                                                         "leave:read"})
+    for code in ("employee:read", "employee:read_confidential", "location:read",
                  "asset:read", "report:read", "employee:update"):
         assert not reg.is_valid_grant(code, _PG), code
     assert reg.is_valid_grant("payroll:run:read", _PG) and reg.is_valid_grant("attendance:read", _PG)
@@ -356,7 +358,7 @@ def test_pay_group_grants_accepted_on_payroll_codes_and_rejected_elsewhere(app):
     assert ok.status_code == 200, ok.text
     assert {(g["permission"], g["scope"]) for g in ok.json()["grants"]} == {
         ("payroll:run:read", _PG), ("payroll:compensation:read", _PG)}
-    for code in ("employee:read", "leave:read", "location:read", "asset:read", "payroll:payment:prepare"):
+    for code in ("employee:read", "location:read", "asset:read", "payroll:payment:prepare"):
         r = founder.post("/api/v1/roles", json={"name": f"Bad {code}", "grants": [{"permission": code, "scope": "PAY_GROUP"}]})
         assert r.status_code == 400, code
     catalog = founder.get("/api/v1/permissions").json()
@@ -516,7 +518,7 @@ def test_payroll_approver_can_go_when_nobody_creates_runs(app):
 # ---------------------------------------------------------------------------
 LATER_GRANT_REVISIONS = ("0033_tax_profiles_unclaimed", "0042_as_m1_permissions", "0048_x_m1_permissions",
                          "0050_as_m2_sites_consents", "0053_as_m4_permissions",
-                         "0054_attendance_team", "0056_as_m8_m9", "0058_remaining_goals")
+                         "0054_attendance_team", "0056_as_m8_m9", "0058_remaining_goals", "0064_lh_m2_permissions")
 
 
 def _later_grants(key):

@@ -105,6 +105,91 @@ def shift_request_expire(ctx) -> dict:
     return {"requests_expired": result["requests_expired"]}
 
 
+@jobs.register("roster.close_periods")
+def roster_close_periods(ctx) -> dict:
+    """DAILY, daily-local (03-shifts/02 §4.2): published periods that ended and whose dates left payroll OPEN -> CLOSED."""
+    from datetime import date
+
+    from app.services import shift_rosters
+
+    raw = (ctx.payload or {}).get("local_date")
+    today = date.fromisoformat(raw) if raw else clock.company_today(ctx.db, ctx.company_id)
+    return shift_rosters.close_due_periods(ctx.db, ctx.company_id, today)
+
+
+@jobs.register("roster.rotation_generate", access=lambda db, principal, job: principal.has_company_scope(
+    "roster:plan") or principal.has_company_scope("shift:assign"))
+def roster_rotation_generate(ctx) -> dict:
+    """DAILY, daily-local (03-shifts/02 §3.5): auto-publish assignments publish their rotation ``horizon_days`` ahead.
+    Progress is counted in chunks (EC AS-REL-06) and the run is readable at ``GET /jobs/{id}`` by company-wide planners
+    and rotation assigners (the rotation page's "2 of 17 chunks failed")."""
+    from datetime import date
+
+    from app.services import shift_rotations
+
+    raw = (ctx.payload or {}).get("local_date")
+    today = date.fromisoformat(raw) if raw else clock.company_today(ctx.db, ctx.company_id)
+    result = shift_rotations.auto_publish(ctx.db, ctx.company_id, today, progress=ctx.progress)
+    return {**result, "blocked": {str(k): v for k, v in result["blocked"].items()}}
+
+
+@jobs.register("roster.compliance_rescan")
+def roster_compliance_rescan(ctx) -> dict:
+    """DAILY, daily-local (03-shifts/02 §6.5; EC AS-CTY-06): published future entries re-validated, planners told."""
+    from datetime import date
+
+    from app.services import roster_consents
+
+    raw = (ctx.payload or {}).get("local_date")
+    today = date.fromisoformat(raw) if raw else clock.company_today(ctx.db, ctx.company_id)
+    return roster_consents.compliance_rescan(ctx.db, ctx.company_id, today)
+
+
+@jobs.register("roster.shift_reminders")
+def roster_shift_reminders(ctx) -> dict:
+    """HOURLY (spine §9.3 roster.shift_reminder): employees whose published shift starts within the lead time."""
+    from app.services import shift_rosters
+
+    return shift_rosters.shift_reminders(ctx.db, ctx.company_id)
+
+
+@jobs.register("shift.tag_expiry")
+def shift_tag_expiry(ctx) -> dict:
+    """DAILY, daily-local (spine §9.3 shift.tag_expiring): planners, 30 days before an employee skill tag ends."""
+    from datetime import date
+
+    from app.services import shift_requests
+
+    raw = (ctx.payload or {}).get("local_date")
+    today = date.fromisoformat(raw) if raw else clock.company_today(ctx.db, ctx.company_id)
+    return shift_requests.tag_expiry(ctx.db, ctx.company_id, today)
+
+
+@jobs.register("tzdata.impact_scan")
+def tzdata_impact_scan(ctx) -> dict:
+    """DAILY, daily-local (02-system-design §7.4 runbook TZDATA-1; EC AS-TZ-03): a tz database release that moves
+    published shifts is recorded as a SYSTEM schedule change, people are told and validation re-runs."""
+    from datetime import date
+
+    from app.services import tzdata_scan
+
+    raw = (ctx.payload or {}).get("local_date")
+    today = date.fromisoformat(raw) if raw else clock.company_today(ctx.db, ctx.company_id)
+    return tzdata_scan.impact_scan(ctx.db, ctx.company_id, today)
+
+
+@jobs.register("roster.publish_reminders")
+def roster_publish_reminders(ctx) -> dict:
+    """DAILY, daily-local (spine notification ``roster.publish_due``): planners of periods due for publishing."""
+    from datetime import date
+
+    from app.services import shift_rosters
+
+    raw = (ctx.payload or {}).get("local_date")
+    today = date.fromisoformat(raw) if raw else clock.company_today(ctx.db, ctx.company_id)
+    return shift_rosters.publish_reminders(ctx.db, ctx.company_id, today)
+
+
 @jobs.register("open_shift.expire")
 def open_shift_expire(ctx) -> dict:
     """HOURLY (AS-M6, §6.3): open shifts whose instance started or whose ``expires_at`` passed -> EXPIRED; pending

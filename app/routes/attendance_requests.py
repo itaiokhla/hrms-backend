@@ -546,6 +546,16 @@ def _subject(db: Session, principal: Principal, item: dict) -> Optional[dict]:
         return {"summary": f"Timesheet {row.period_start.isoformat()} – {row.period_end.isoformat()}",
                 "shift_date": row.period_start.isoformat(), "status": row.status,
                 "link": f"/attendance/timesheets?employee_id={row.employee_id}&week={row.period_start.isoformat()}"}
+    if item["module"] == "roster_publish":  # §5.2 publication approval (IG-AS-150)
+        from app.models.rosters import RosterPeriod
+
+        row = db.query(RosterPeriod).filter(RosterPeriod.company_id == principal.company_id,
+                                            RosterPeriod.id == item["subject_id"]).first()
+        if row is None:
+            return None
+        return {"summary": f"Publish roster {row.code} ({row.start_date.strftime('%d %b')} – "
+                           f"{row.end_date.strftime('%d %b')})", "shift_date": row.start_date.isoformat(),
+                "status": row.status, "link": f"/rosters/{row.id}"}
     if item["module"] == "shift_request":
         from app.models.employee import Employee
         from app.models.shift_requests import ShiftRequest

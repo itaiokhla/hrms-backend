@@ -144,6 +144,12 @@ class Employee(TenantMixin, BaseModel):
     position = Column(String(100), nullable=True)
     hire_date = Column(Date, nullable=False)
     termination_date = Column(Date, nullable=True)
+    # Leave v2 lifecycle dates (SPINE §4.1, migration 0063): probation (NULL = no probation rule), early confirmation,
+    # start of a resignation / termination notice, and service start for tenure (NULL = hire date).
+    probation_end_date = Column(Date, nullable=True)
+    confirmation_date = Column(Date, nullable=True)
+    notice_start_date = Column(Date, nullable=True)
+    service_start_date = Column(Date, nullable=True)
     base_salary = Column(Numeric(12, 2), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False, index=True)
     photo_path = Column(String(255), nullable=True)

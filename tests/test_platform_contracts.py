@@ -51,6 +51,10 @@ PUBLIC_ROUTES = {
     ("POST", "/api/v1/iclock/devicecmd"),
     ("GET", "/api/v1/iclock/ping"),
     ("POST", "/api/v1/attendance/ingest/punches"),
+    # G-24 (IG-AS-129): calendar apps fetch the published schedule without a session. The URL token carries the company
+    # id and a 256-bit secret stored only as a SHA-256 hash; unknown token or company -> the same 404; revocable from
+    # My schedule (tests/shifts/test_remaining_goals.py::test_calendar_feed_serves_the_published_schedule_until_revoked).
+    ("GET", "/api/v1/calendar/{token}.ics"),
 }
 
 # Routes outside /api/, reviewed one by one: firmware cannot change the ADMS path (04-attendance/01 §8.1).
@@ -162,3 +166,15 @@ def test_foreign_keys_between_tenant_tables_include_the_company(app):
     single = sorted(f"{src}.{','.join(cols)} -> {dst} ({name})" for name, src, dst, cols in rows
                     if src in tenant and dst in tenant and "company_id" not in cols)
     assert single == [], "\n".join(single)
+
+
+def test_assistant_tables_are_tenant_tables_and_its_routes_need_a_tenant_user(app):
+    """The AI assistant (docs/leave_agent.md §10, §18): conversations, messages and prepared actions are RLS tenant
+    tables (checked with every other one above), and every /api/v1/agent route resolves a signed-in principal."""
+    from app.core.principal import get_principal
+    from app.models import TENANT_TABLES
+
+    assert {"agent_threads", "agent_messages", "agent_actions"} <= set(TENANT_TABLES)
+    routes = [r for r in app.routes if isinstance(r, APIRoute) and r.path.startswith("/api/v1/agent/")]
+    assert len(routes) >= 7
+    assert all(get_principal in _dependency_calls(r.dependant) for r in routes)

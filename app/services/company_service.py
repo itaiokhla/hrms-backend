@@ -27,6 +27,20 @@ DEFAULT_LEAVE_TYPES = [
 ]
 
 
+SEED_CATEGORIES = {"casual": "CASUAL", "sick": "SICK", "earned": "ANNUAL", "maternity": "PARENTAL",
+                   "paternity": "PARENTAL", "unpaid": "UNPAID"}
+# Seeded leave reason codes (03-leave/05 §4; the same list migration 0063 gives existing companies).
+REASON_CODES = (
+    ("REJECT", "WORKLOAD", "Business need / workload", True), ("REJECT", "COVERAGE", "Not enough cover", True),
+    ("REJECT", "POLICY", "Against leave policy", False), ("REJECT", "INSUFFICIENT_NOTICE", "Too little notice", False),
+    ("RETURN", "DATES", "Please change the dates", False), ("RETURN", "DOCUMENT", "Document missing", False),
+    ("RETURN", "DETAILS", "More details needed", False), ("CANCEL", "PLANS_CHANGED", "Plans changed", False),
+    ("RECALL", "BUSINESS_CRITICAL", "Business-critical work", False),
+    ("ADJUST", "CORRECTION", "Correction of an error", False), ("ADJUST", "GRANT", "Special grant", False),
+    ("OVERRIDE", "HR_DECISION", "HR decision", False),
+)
+
+
 def slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     return slug[:60] or "company"
@@ -79,8 +93,19 @@ def provision_company(
 
     roles = rbac_service.seed_company_roles(db, company.id)
 
-    for code, name, quota, paid, unlimited in DEFAULT_LEAVE_TYPES:
-        db.add(LeaveType(code=code, name=name, annual_quota=quota, is_paid=paid, is_unlimited=unlimited))
+    from app.models.leave import CATEGORY_DEFAULTS
+    from app.models.leave_v2 import LeaveReasonCode
+
+    for rank, (code, name, quota, paid, unlimited) in enumerate(DEFAULT_LEAVE_TYPES):
+        # Leave v2 catalogue fields (03-leave/01 §3.3, §3.11): category, sensitivity, class, icon, colour, order.
+        category = SEED_CATEGORIES[code]
+        sensitivity, absence_class, icon = CATEGORY_DEFAULTS[category]
+        db.add(LeaveType(code=code, name=name, annual_quota=quota, is_paid=paid, is_unlimited=unlimited,
+                         category=category, sensitivity=sensitivity, absence_class=absence_class, icon=icon,
+                         counts_toward_absence_score=absence_class == "UNPLANNED", color_token=f"leave-{rank + 1}",
+                         display_order=100 + 10 * rank))
+    for applies_to, code, label, refused in REASON_CODES:
+        db.add(LeaveReasonCode(code=code, label=label, applies_to=applies_to, counts_as_refused=refused))
     # Default route: direct manager, then HR for requests of 3+ days.
     db.add(ApprovalChainStep(module="leave", step_order=1, approver_type="primary_manager"))
     db.add(

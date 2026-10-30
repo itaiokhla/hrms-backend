@@ -9,12 +9,14 @@
   ``roster_consent_conflict`` and the grid badge) and notifies the planners holding ``roster:plan`` over the employee
   (``roster.consent_conflict``: dates and counts only, never reasons); entries that are valid again resolve their open
   conflicts. **No entry is ever withdrawn automatically.**
+* Job ``roster.compliance_rescan`` (DAILY) re-validates every published future entry against the working-time rules
+  and tells planners, per branch, when the findings change (EC AS-CTY-06; see ``compliance_rescan``).
 """
 
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from sqlalchemy.orm import Session
 
@@ -164,6 +166,103 @@ def revalidate_employee(db: Session, company_id: int, employee_id: int, purpose:
                      f"/attendance/schedules/{created[0].roster_period_id}" if created[0].roster_period_id else None,
                      "warning")
     return {"checked": len(entries), "conflicts": len(created), "resolved": resolved}
+
+
+# Working-time findings of the daily rescan; notice, backdate, lint and coverage rules concern a change, not the
+# published schedule, so they are not rescanned.
+RESCAN_JOB = "roster.compliance_rescan"
+RESCAN_RULES = (rules.WEEKLY_HOURS_EXCEEDED, rules.DAILY_HOURS_EXCEEDED, rules.SPREAD_OVER_EXCEEDED,
+                rules.MIN_REST_VIOLATION, rules.WEEKLY_REST_EXCEEDED, rules.WEEKLY_REST_HOURS,
+                rules.NIGHT_WORK_CONSENT_MISSING, rules.ADOLESCENT_LIMITS, rules.OUTDOOR_MIDDAY_BAN,
+                rules.OT_CAP_PROJECTED)
+
+
+def compliance_rescan(db: Session, company_id: int, local_date) -> dict:
+    """Job ``roster.compliance_rescan`` (DAILY, daily-local; 03-shifts/02 §6.5, appendix-a §14 step 6b; EC AS-CTY-06).
+
+    The rules that apply to a branch can change with no new pack version and no publish: an employee joins a
+    protected group (turns out to be under 18, a gender recorded), a held exemption ends, a Ramadan window moves, a
+    policy limit tightens. Publish validation only looks at the dates a publication touches, so this job re-validates
+    every published future entry (``local_date`` .. + ``HORIZON_DAYS``) against the working-time rules and, per
+    branch, sends each planner over the affected people one INFO notification with counts per rule key and severity.
+    It notifies again only when the findings of the branch differ from the last ones sent (their digest is in the
+    action link, which is the dedup key). Nothing is changed."""
+    import hashlib
+    import json
+    from collections import Counter
+    from dataclasses import replace
+
+    from sqlalchemy import or_
+
+    from app.models.attendance import AttendanceSite
+    from app.models.notification import Notification
+    from app.models.org import Branch, EmployeeAssignment
+    from app.services import roster_validation
+    from app.services.notification_service import NotificationService
+
+    horizon = local_date + timedelta(days=HORIZON_DAYS)
+    entries = (db.query(RosterEntry)
+               .filter(RosterEntry.company_id == company_id, RosterEntry.withdrawn_at.is_(None),
+                       RosterEntry.shift_date >= local_date, RosterEntry.shift_date <= horizon)
+               .order_by(RosterEntry.employee_id, RosterEntry.shift_date, RosterEntry.entry_seq).all())
+    by_employee: Dict[int, List[RosterEntry]] = {}
+    for entry in entries:
+        by_employee.setdefault(entry.employee_id, []).append(entry)
+    if not by_employee:
+        return {"checked": 0, "employees": 0, "branches": {}, "notified": 0}
+    ids = sorted(by_employee)
+    people = {e.id: e for e in db.query(Employee).filter(Employee.company_id == company_id, Employee.id.in_(ids))}
+    branch_of = dict(db.query(EmployeeAssignment.employee_id, EmployeeAssignment.branch_id).filter(
+        EmployeeAssignment.company_id == company_id, EmployeeAssignment.employee_id.in_(ids),
+        EmployeeAssignment.is_primary.is_(True), EmployeeAssignment.effective_from <= local_date,
+        or_(EmployeeAssignment.effective_to.is_(None), EmployeeAssignment.effective_to >= local_date)))
+    sites = {e.site_id for e in entries if e.site_id}
+    outdoor = {i for (i,) in db.query(AttendanceSite.id).filter(
+        AttendanceSite.company_id == company_id, AttendanceSite.id.in_(sites or {0}), AttendanceSite.outdoor.is_(True))}
+    limits = roster_validation.limits_for(db, company_id, ids, local_date)
+    context = rules.RuleContext(today=local_date, consents=tuple(consents_for(db, company_id, ids)),
+                                check_span_days=None)
+    findings: Dict[Optional[int], list] = {}
+    for employee_id in ids:
+        person, mine = people.get(employee_id), by_employee[employee_id]
+        if person is None:
+            continue
+        zone, instances = _schedule(db, company_id, person, mine)
+        adult_from = roster_validation._eighteenth_birthday(getattr(person, "date_of_birth", None))
+        instances = tuple(replace(p, outdoor=e.site_id in outdoor,
+                                  adolescent=adult_from is not None and p.shift_date < adult_from)
+                          for p, e in zip(instances, mine))
+        lim = limits.for_employee(employee_id)
+        schedule = rules.EmployeeSchedule(
+            employee_id=employee_id, work_timezone=zone, instances=instances, employment_start=person.hire_date,
+            employment_end=person.termination_date,
+            protected_groups=rules.protected_groups_for(getattr(person, "gender", None), lim.night_work_groups.keys()))
+        for result in rules.validate(rules.ScheduleData(employees=(schedule,)), limits, context):
+            if result.rule_key in RESCAN_RULES and any(local_date <= d <= horizon for d in result.dates):
+                findings.setdefault(branch_of.get(employee_id), []).append(
+                    (result.rule_key, result.severity, employee_id, [d.isoformat() for d in result.dates]))
+    names = dict(db.query(Branch.id, Branch.name).filter(Branch.company_id == company_id,
+                                                         Branch.id.in_([b for b in findings if b] or [0])))
+    sent, summary = 0, {}
+    for branch_id, rows in sorted(findings.items(), key=lambda kv: kv[0] or 0):
+        counts = Counter((rule_key, severity) for rule_key, severity, _, _ in rows)
+        summary[str(branch_id or 0)] = {f"{k}:{s}": n for (k, s), n in sorted(counts.items())}
+        digest = hashlib.sha256(json.dumps(sorted(rows), default=str).encode()).hexdigest()[:16]
+        link = f"/rosters?compliance={branch_id or 0}-{digest}"
+        text = "; ".join(f"{n} × {k.replace('_', ' ').capitalize()} ({s})" for (k, s), n in sorted(counts.items()))
+        planners = sorted({u for employee_id in {r[2] for r in rows}
+                           for u in _planner_user_ids(db, company_id, employee_id)})
+        for user_id in planners:
+            if db.query(Notification.id).filter(Notification.user_id == user_id,
+                                                Notification.action_url == link).first() is not None:
+                continue
+            NotificationService.create(
+                db, user_id, "Schedule compliance check",
+                f"{names.get(branch_id, 'Unassigned')}: published shifts from {local_date:%d %b} now show {text}. "
+                "Review the schedules; nothing was changed.", "info", link)
+            sent += 1
+    db.flush()
+    return {"checked": len(entries), "employees": len(ids), "branches": summary, "notified": sent}
 
 
 def open_conflicts(db: Session, company_id: int, entry_ids: Iterable[int]) -> Dict[int, List[str]]:

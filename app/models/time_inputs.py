@@ -27,7 +27,12 @@ from sqlalchemy.dialects.postgresql import JSONB
 from app.models.base import BaseModel, TenantMixin
 
 PORTIONS = ("FULL", "FIRST_HALF", "SECOND_HALF")
-BALANCE_REASONS = ("ACCRUAL", "USE", "ENCASH", "ADJUST", "EXPIRE")
+BALANCE_REASONS = ("ACCRUAL", "USE", "ENCASH", "ADJUST", "EXPIRE",
+                   # Leave v2 (SPINE §6.4, migration 0063): credits OPENING, GRANT, CARRY_FORWARD, COMP_OFF; PRORATE
+                   # either way; debits LAPSE, PENALTY.
+                   "OPENING", "GRANT", "PRORATE", "CARRY_FORWARD", "COMP_OFF", "LAPSE", "PENALTY")
+LEDGER_SOURCES = ("LEAVE", "ACCRUAL_JOB", "YEAR_END", "ADJUSTMENT", "IMPORT", "MIGRATION", "COMP_OFF", "ENCASHMENT",
+                  "PAYROLL", "SYSTEM")
 INPUT_STATUSES = ("PENDING", "APPROVED", "REJECTED", "CANCELLED")
 ACTIVE_INPUT_STATUSES = ("PENDING", "APPROVED")
 SUSPENSION_STATUSES = ("ACTIVE", "CANCELLED")
@@ -78,6 +83,10 @@ class LeaveDay(TenantMixin, BaseModel):
     pay_treatment_snapshot = Column(JSONB, nullable=False, default=dict)
     voided_at = Column(DateTime(timezone=True), nullable=True)
     void_reason = Column(String(30), nullable=True)
+    # Leave v2 (migration 0063): why a date is charged (WORKING, BASIS = the counting basis charges a non-working
+    # date, SANDWICH) and the type rule's counting basis; NULL on legacy rows.
+    charge_reason = Column(String(12), nullable=True)
+    counting_basis = Column(String(24), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("company_id", "id", name="uq_leave_days_company_id_id"),
@@ -101,7 +110,7 @@ class LeaveBalanceTransaction(TenantMixin, BaseModel):
     employee_id = Column(Integer, nullable=False)
     leave_type = Column(String(30), nullable=False)
     delta = Column(Numeric(6, 2), nullable=False)
-    reason = Column(String(10), nullable=False)
+    reason = Column(String(20), nullable=False)
     ref_type = Column(String(30), nullable=True)
     ref_id = Column(Integer, nullable=True)
     idempotency_key = Column(String(120), nullable=False)
@@ -109,6 +118,12 @@ class LeaveBalanceTransaction(TenantMixin, BaseModel):
     expires_on = Column(Date, nullable=True)
     note = Column(String(500), nullable=True)
     created_by_user_id = Column(Integer, nullable=True)
+    # Leave v2 (migration 0063): the balance scope (leave year) the row belongs to, its writer and the plan version
+    # that produced it. NULL on legacy rows (their cycle is the calendar year of effective_date).
+    cycle_start = Column(Date, nullable=True)
+    cycle_end = Column(Date, nullable=True)
+    source = Column(String(12), nullable=True)
+    policy_version_id = Column(Integer, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("company_id", "id", name="uq_leave_balance_transactions_company_id_id"),

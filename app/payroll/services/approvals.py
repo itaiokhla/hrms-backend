@@ -85,6 +85,7 @@ MODULE_PERMISSIONS: Dict[str, str] = {
     "settings": "settings:approve_changes",
     "shift_request": "roster:approve",  # AS-M6 (migration 0058): routes, team_lead steps, SLA like attendance
     "team_inputs": "payroll:inputs:approve",  # manager-prepared batches: payroll commits them (migration 0058)
+    "roster_publish": "roster:publish",  # AS-M5 §5.2 publication approval (migration 0062)
 }
 ENGINE_MODULES = tuple(m for m in APPROVAL_MODULES if m != "leave")
 assert set(MODULE_PERMISSIONS) == set(ENGINE_MODULES), "every approval module needs an approve permission"
@@ -103,6 +104,7 @@ INBOX_URL = "/payroll/approvals"
 MODULE_INBOX_URLS: Dict[str, str] = {"attendance": "/approvals?module=attendance",
                                      "timesheet": "/approvals?module=timesheet",
                                      "shift_request": "/attendance/shift-requests",
+                                     "roster_publish": "/rosters",
                                      "team_inputs": "/payroll/team-inputs?tab=approvals"}
 
 
@@ -122,6 +124,7 @@ AUDIT_MODULES: Dict[str, str] = {
     "attendance": "Attendance",  # BUG-AS-59
     "timesheet": "Attendance",
     "shift_request": "Shifts",
+    "roster_publish": "Rosters",
     "team_inputs": payroll_audit.PAYROLL_INPUTS,
     "reimbursement": payroll_audit.REIMBURSEMENTS,
     "loan": payroll_audit.LOANS,
@@ -142,6 +145,7 @@ MODULE_LABELS: Dict[str, str] = {
     "attendance": "attendance request",
     "timesheet": "timesheet",
     "shift_request": "shift request",
+    "roster_publish": "roster publication",
     "team_inputs": "team payroll batch",
     "reimbursement": "reimbursement claim",
     "loan": "loan",
@@ -349,10 +353,18 @@ class _Context:
             return False
         employee_id = subject_employee_id(request)
         if employee_id is not None:
-            key = (principal.user_id, permission, employee_id)
-            if key not in self._coverage:
-                self._coverage[key] = authz.can_access_employee(self.db, principal, permission, employee_id)
-            return self._coverage[key]
+            # context["party_employee_ids"] (e.g. both employees of a shift swap, EC AS-SWP-09; owner decision
+            # IG-AS-150): the approver must cover every party, so a lead covering one of them is never a candidate
+            # and the request falls through to the next step / NO_ELIGIBLE_APPROVER instead.
+            parties = [employee_id] + [e for e in _int_list((request.context or {}).get("party_employee_ids"))
+                                       if e != employee_id]
+            for party in parties:
+                key = (principal.user_id, permission, party)
+                if key not in self._coverage:
+                    self._coverage[key] = authz.can_access_employee(self.db, principal, permission, party)
+                if not self._coverage[key]:
+                    return False
+            return True
         if principal.has_company_scope(permission):
             return True
         context = request.context or {}

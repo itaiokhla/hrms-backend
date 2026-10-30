@@ -171,6 +171,25 @@ def in_force_row(db: Session, company_id: int, employee_id: int, on: dt.date) ->
             .first())
 
 
+PAY_BASIS_STATUSES = ("ACTIVE", "SCHEDULED", "SUPERSEDED")  # in force on the date; DRAFT / PENDING / REJECTED ignored
+HOURLY_DAILY_TYPES = ("HOURLY", "DAILY")
+
+
+def pay_basis_class_on(db: Session, company_id: int, employee_id: int, on: dt.date) -> str:
+    """Read-only (JC-AS-49, AS 03-shifts/03 §3.4; owner decision IG-AS-150): ``PERIOD`` when the compensation assignment
+    in force on ``on`` uses a CTC / gross / net / task template (period pay), ``HOURLY_DAILY`` for an hourly or daily
+    template, ``NONE`` without one. Attendance reads it to decide whether giving a shift away is a paid day off."""
+    row = (db.query(CompensationAssignment)
+           .filter(CompensationAssignment.company_id == company_id, CompensationAssignment.employee_id == employee_id,
+                   CompensationAssignment.status.in_(PAY_BASIS_STATUSES), _covers(on))
+           .order_by(CompensationAssignment.effective_from.desc())
+           .first())
+    if row is None:
+        return "NONE"
+    template = _template(db, _template_version(db, company_id, row.template_version_id))
+    return "HOURLY_DAILY" if template.type in HOURLY_DAILY_TYPES else "PERIOD"
+
+
 def in_force(db: Session, principal: Principal, employee_id: int, on: dt.date) -> CompensationAssignment | None:
     """The assignment in force on `on` for an employee the caller may read (404 otherwise)."""
     ensure_read(db, principal, employee_id, on, on)

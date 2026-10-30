@@ -1,7 +1,7 @@
 from datetime import date
-from typing import Annotated, Optional
+from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -22,7 +22,9 @@ def _brand_name(principal) -> str:
 
 router = APIRouter(prefix="/api/v1/reports", tags=["Reports"])
 
-ExportFormat = Annotated[str, Path(pattern=r"^(excel|pdf)$")]
+# A Literal, not Annotated[str, Path(pattern=...)]: FastAPI 0.104 loses the Path class of an Annotated
+# FieldInfo on pydantic >= 2.12 and refuses the route at import.
+ExportFormat = Literal["excel", "pdf"]
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 

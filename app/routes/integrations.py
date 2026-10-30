@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.core.principal import Principal, get_principal
+from app.core.rate_limit import client_ip, limiter
 from app.database.db import SessionLocal, bind_tenant, get_db
 from app.payroll.services import idempotency
 from app.services import integrations as service
@@ -158,7 +159,8 @@ def feed_revoke(principal: Principal = Depends(get_principal), db: Session = Dep
 
 
 @public.get("/calendar/{token}.ics")
-def calendar_feed(token: str):
+def calendar_feed(token: str, request: Request):
+    limiter.check(f"calendar-feed:ip:{client_ip(request)}", 60, 60)  # FU-AS-52: no token guessing from one address
     parsed = service.parse_feed_token(token)
     if parsed is None:
         return Response(status_code=404)

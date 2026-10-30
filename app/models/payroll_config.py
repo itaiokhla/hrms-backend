@@ -187,6 +187,10 @@ class PolicyVersion(TenantMixin, BaseModel):
     policy_hash = Column(CHAR(64), nullable=True)
     activated_by_user_id = Column(Integer, nullable=True)
     activated_at = Column(DateTime(timezone=True), nullable=True)
+    # Second-person activation (LH 03-leave/01 §5.6 step 0, migration 0063): the maker's request on a DRAFT version.
+    activation_requested_by_user_id = Column(Integer, nullable=True)
+    activation_requested_at = Column(DateTime(timezone=True), nullable=True)
+    activation_request = Column(JSONB(none_as_null=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("company_id", "id", name="uq_policy_versions_company_id_id"),

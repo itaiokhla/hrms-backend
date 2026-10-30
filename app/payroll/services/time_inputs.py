@@ -25,7 +25,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
@@ -406,8 +406,32 @@ def _observance_of(db: Session, company_id: int, calendar_ids: Iterable[int]) ->
 
 
 def _calendar_version(db: Session, company_id: int, calendar_ids: Iterable[int], patterns: Iterable[Tuple[Any, Any]],
-                      branch_ids: Iterable[int], start: date, end: date) -> str:
-    """content_hash of the calendar years, pattern versions and assignment rows consulted (LH 05 §3.4)."""
+                      branch_ids: Iterable[int], start: date, end: date, *, roster: Iterable[Tuple[int, int]] = (),
+                      shift_versions: Iterable[int] = (), shift_rules: Iterable[Tuple[int, int]] = ()) -> str:
+    """content_hash of the calendar years, pattern versions and assignment rows consulted (LH 05 §3.4) and, JC-AS-30,
+    the roster entries (``[roster_entry_id, version]``, OFF included), shift versions and shift-assignment rules
+    (``[rule_id, row_version]``) that decided the shift. Empty keys are omitted, so a tenant without rosters or rules
+    keeps its hash (zero diff); the same inputs always give the same hash (AS-INT-08, X-INT-56, X-INT-58)."""
+    return content_hash({**_calendar_parts(db, company_id, calendar_ids, patterns, branch_ids, start, end),
+                         **_shift_parts(roster, shift_versions, shift_rules)})
+
+
+def _shift_parts(roster: Iterable[Tuple[int, int]] = (), shift_versions: Iterable[int] = (),
+                 shift_rules: Iterable[Tuple[int, int]] = ()) -> Dict[str, list]:
+    """The JC-AS-30 keys of ``calendar_version``, sorted; a key without values is left out."""
+    out: Dict[str, list] = {}
+    if roster:
+        out["roster"] = sorted([int(i), int(v)] for i, v in set(roster))
+    if shift_versions:
+        out["shift_versions"] = sorted([int(v)] for v in set(shift_versions))
+    if shift_rules:
+        out["shift_rules"] = sorted([int(i), int(v)] for i, v in set(shift_rules))
+    return out
+
+
+def _calendar_parts(db: Session, company_id: int, calendar_ids: Iterable[int], patterns: Iterable[Tuple[Any, Any]],
+                    branch_ids: Iterable[int], start: date, end: date) -> Dict[str, list]:
+    """The pre-JC-AS-30 payload of ``calendar_version``: calendar years, pattern versions, assignment rows."""
     from app.models.holiday import HolidayCalendarYear
     from app.models.pay_org import BranchCalendarLink, HolidayCalendarAssignment
     from app.services import holiday_calendar_service
@@ -441,8 +465,8 @@ def _calendar_version(db: Session, company_id: int, calendar_ids: Iterable[int],
                                                               HolidayCalendarAssignment.row_version).filter(
         HolidayCalendarAssignment.company_id == company_id, HolidayCalendarAssignment.effective_from <= end,
         or_(HolidayCalendarAssignment.effective_to.is_(None), HolidayCalendarAssignment.effective_to >= start))]
-    return content_hash({"years": sorted(years), "patterns": sorted([list(p) for p in set(patterns) if p[0]]),
-                         "assignments": sorted(assignments)})
+    return {"years": sorted(years), "patterns": sorted([list(p) for p in set(patterns) if p[0]]),
+            "assignments": sorted(assignments)}
 
 
 def _value(standard) -> int:
@@ -480,10 +504,28 @@ class _Batch:
             self.shifts = {} if light else shift_resolution.shifts_for_many(db, company_id, list(ids), start, end)
         except Exception:  # noqa: BLE001 - shift data that cannot be resolved leaves the standard-hours fallback
             self.shifts = {}
+        # JC-AS-30 inputs of calendar_version: the published entries of every (E, D) (OFF included) and the row
+        # versions of the shift rules that resolved a shift; nothing is read for a tenant without either.
+        self.roster_marks: Dict[Tuple[int, date], Tuple[Tuple[int, int], ...]] = {}
+        if not light and hasattr(roster, "entries_batch"):
+            for employee_id, by_day in roster.entries_batch(db, company_id, list(ids), start, end).items():
+                for day, entries in by_day.items():
+                    marks = tuple((e.roster_entry_id, e.roster_version) for e in entries
+                                  if getattr(e, "roster_entry_id", None) is not None)
+                    if marks:
+                        self.roster_marks[(employee_id, day)] = marks
+        self.rule_versions: Dict[int, int] = {}
+        rule_ids = sorted({r.rule_id for r in self.shifts.values() if r is not None and r.rule_id})
+        if rule_ids:
+            from app.models.shifts import ShiftAssignmentRule
+
+            self.rule_versions = dict(db.query(ShiftAssignmentRule.id, ShiftAssignmentRule.row_version).filter(
+                ShiftAssignmentRule.company_id == company_id, ShiftAssignmentRule.id.in_(rule_ids)))
         self._holidays: Dict[Tuple[str, Any, Tuple[date, ...]], Dict[date, List[Holiday]]] = {}
         self._declared: Dict[Tuple[int, Tuple[date, ...]], Dict[date, str]] = {}
         self._observance: Dict[int, str] = {}
         self._versions: Dict[Any, str] = {}
+        self._parts: Dict[str, Dict[str, list]] = {}
         self._zones: Dict[Any, str] = {}
         self._standard: Dict[Any, int] = {}
 
@@ -531,8 +573,26 @@ class _Batch:
         key = (tuple(sorted({c for c in calendar_ids if c})), tuple(sorted({tuple(p) for p in patterns if p[0]}, key=repr)),
                tuple(sorted({b for b in branch_ids if b})), start, end)
         if key not in self._versions:
-            self._versions[key] = _calendar_version(self.db, self.company_id, key[0], key[1], key[2], start, end)
+            parts = _calendar_parts(self.db, self.company_id, key[0], key[1], key[2], start, end)
+            digest = content_hash(parts)
+            self._versions[key], self._parts[digest] = digest, parts
         return self._versions[key]
+
+    def day_version(self, base: str, employee_id: int, day: date) -> str:
+        """``calendar_version`` of one date (JC-AS-30): the range version plus the roster entries of (E, D) and the
+        shift version / rule that decided the shift when a roster entry or a shift rule decided it (a placement shift
+        adds nothing, zero diff). Per date, so the hash of a date never depends on the range asked (attendance
+        evaluates one date on a punch and three at day close)."""
+        if not base or base not in self._parts:
+            return base
+        resolved = self.shifts.get((employee_id, day))
+        decided = resolved is not None and resolved.source in ("ROSTER", "RULE")
+        extras = _shift_parts(
+            self.roster_marks.get((employee_id, day), ()),
+            (resolved.shift_version_id,) if decided and resolved.shift_version_id else (),
+            ((resolved.rule_id, self.rule_versions[resolved.rule_id]),)
+            if decided and resolved.rule_id in self.rule_versions else ())
+        return content_hash({**self._parts[base], **extras}) if extras else base
 
     def zone(self, placement: EmployeeAssignment) -> str:
         from app.services import org_structure_service
@@ -683,7 +743,8 @@ def _facts_for(db: Session, company_id: int, employee_id: int, start: date, end:
             d.calendar_source, bool(made_up), made_up,
             legal_entity_id=placement.legal_entity_id if placement is not None else None,
             timezone=batch.zone(placement) if placement is not None else None,
-            working_portion=work, scheduled_minutes=minutes, calendar_version=version,
+            working_portion=work, scheduled_minutes=minutes,
+            calendar_version=batch.day_version(version, employee_id, d.date),
             shift_source=resolved_shift.source if resolved_shift is not None else "NONE",
             shift_ids=(resolved_shift.shift_id,) if resolved_shift is not None and resolved_shift.shift_id else (),
             shift_version_ids=(resolved_shift.shift_version_id,)
@@ -711,6 +772,9 @@ def day_facts_many(db: Session, company_id: int, employee_ids: Sequence[int], st
         db.info["lh_graph_memo"] = {}
     try:
         batch = _Batch(db, company_id, ids, start, end, light=light)
+        # The holiday-calendar criterion ``shift_ids`` (EC AS-INT-07) is resolved once for the whole batch, the
+        # substitute look-back included, and only when a criteria row uses it.
+        patterns.prime_shift_criterion(ids, start - timedelta(days=SUBSTITUTE_LOOKBACK_DAYS), end)
         if batch_out is not None:  # the attendance batch loader reuses the resolved shifts (AS-M3, IG-AS-77)
             batch_out["shifts"] = batch.shifts
         return {employee_id: _facts_for(db, company_id, employee_id, start, end, patterns, batch)
@@ -949,6 +1013,12 @@ def _by_year(days: Iterable[LeaveDay]) -> Dict[int, Tuple[Decimal, date]]:
 
 def generate_leave_days(db: Session, leave: Leave, actor_user_id: Optional[int] = None) -> List[LeaveDay]:
     """At approval: one leave_days row per date, USE transactions per year, and a change-log entry."""
+    from app.services import leave_access
+
+    if leave_access.v2_enabled(db, leave.company_id):  # leave v2: plan charging + ledger per cycle
+        from app.services import leave_postings
+
+        return leave_postings.generate(db, leave, actor_user_id)
     if _active_leave_days(db, leave):
         return _active_leave_days(db, leave)
     leave_type = db.query(LeaveType).filter(LeaveType.company_id == leave.company_id,
@@ -983,6 +1053,13 @@ def generate_leave_days(db: Session, leave: Leave, actor_user_id: Optional[int] 
 
 def void_leave_days(db: Session, leave: Leave, reason: str, actor_user_id: Optional[int] = None) -> None:
     """Cancellation: void the days, give the charged days back (once), log the change (EC-LV-04)."""
+    from app.services import leave_access
+
+    if leave_access.v2_enabled(db, leave.company_id):
+        from app.services import leave_postings
+
+        leave_postings.void(db, leave, reason, actor_user_id)
+        return
     rows = _active_leave_days(db, leave)
     now = utcnow()
     for row in rows:
@@ -997,13 +1074,27 @@ def void_leave_days(db: Session, leave: Leave, reason: str, actor_user_id: Optio
                date_to=leave.end_date, actor_user_id=actor_user_id)
 
 
-def reevaluate_leave_days(db: Session, company_id: int, dates: Iterable[date], actor_user_id: Optional[int] = None) -> int:
-    """A holiday changed on ``dates``: re-decide whether approved leave there is charged (EC-LV-06, risk 7)."""
+def reevaluate_leave_days(db: Session, company_id: int, dates: Iterable[date], actor_user_id: Optional[int] = None, *,
+                          employee_ids: Optional[Iterable[int]] = None, note: Optional[str] = None) -> int:
+    """A holiday, work week, roster or shift changed on ``dates``: re-decide whether approved leave there is charged
+    (EC-LV-06, risk 7). ``employee_ids`` limits it to those employees (a shift version or rule, JC-AS-34); ``note``
+    is the v2 request message ("Roster changed", ...)."""
     wanted = sorted(set(dates))
     if not wanted:
         return 0
-    rows = db.query(LeaveDay).filter(LeaveDay.company_id == company_id, LeaveDay.date.in_(wanted),
-                                     LeaveDay.voided_at.is_(None)).order_by(LeaveDay.id).all()
+    people = sorted(set(employee_ids)) if employee_ids is not None else None
+    from app.services import leave_access
+
+    if leave_access.v2_enabled(db, company_id):  # leave v2: regenerate the touched requests under their plan
+        from app.services import leave_recalc
+
+        return leave_recalc.recount_dates(db, company_id, wanted, actor_user_id=actor_user_id, employee_ids=people,
+                                          **({"note": note} if note else {}))
+    query = db.query(LeaveDay).filter(LeaveDay.company_id == company_id, LeaveDay.date.in_(wanted),
+                                      LeaveDay.voided_at.is_(None))
+    if people is not None:
+        query = query.filter(LeaveDay.employee_id.in_(people or [0]))
+    rows = query.order_by(LeaveDay.id).all()
     changed = 0
     for row in rows:
         leave = db.get(Leave, row.leave_id)
@@ -1273,6 +1364,39 @@ def ledger_inputs(
     return days
 
 
+def _pending_leave_v2(db: Session, company_id: int, employee_id: int, start: date, end: date) -> List[dict]:
+    """Leave v2 items still open at the cutoff (LH SPINE §8): returned requests, change requests of approved leave,
+    comp-off claims of worked dates, pending encashments and approved leave flagged BALANCE_CONFLICT."""
+    from app.models.leave_v2 import CompOffClaim, LeaveChangeRequest, LeaveEncashmentRequest
+
+    items: List[dict] = []
+    touching = (Leave.company_id == company_id, Leave.employee_id == employee_id, Leave.start_date <= end,
+                Leave.end_date >= start)
+    for leave in db.query(Leave).filter(*touching, Leave.status == "returned").order_by(Leave.start_date, Leave.id):
+        items.append({"type": "leave_returned", "id": leave.id, "start": leave.start_date.isoformat(),
+                      "end": leave.end_date.isoformat(), "leave_type_code": leave.leave_type})
+    for change, leave in db.query(LeaveChangeRequest, Leave).join(
+            Leave, and_(Leave.company_id == LeaveChangeRequest.company_id, Leave.id == LeaveChangeRequest.leave_id)
+    ).filter(*touching, LeaveChangeRequest.status == "PENDING").order_by(LeaveChangeRequest.id):
+        items.append({"type": "leave_change", "id": change.id, "leave_id": leave.id, "kind": change.kind,
+                      "start": leave.start_date.isoformat(), "end": leave.end_date.isoformat()})
+    for claim in db.query(CompOffClaim).filter(
+            CompOffClaim.company_id == company_id, CompOffClaim.employee_id == employee_id,
+            CompOffClaim.worked_date >= start, CompOffClaim.worked_date <= end, CompOffClaim.status == "PENDING"):
+        items.append({"type": "comp_off_claim", "id": claim.id, "start": claim.worked_date.isoformat(),
+                      "end": claim.worked_date.isoformat()})
+    for request in db.query(LeaveEncashmentRequest).filter(
+            LeaveEncashmentRequest.company_id == company_id, LeaveEncashmentRequest.employee_id == employee_id,
+            LeaveEncashmentRequest.status == "PENDING"):
+        items.append({"type": "leave_encashment", "id": request.id, "leave_type_code": request.leave_type_code,
+                      "units": str(request.units)})
+    for leave in db.query(Leave).filter(*touching, Leave.status == "approved",
+                                        Leave.flags.contains(["BALANCE_CONFLICT"])):
+        items.append({"type": "leave_balance_conflict", "id": leave.id, "start": leave.start_date.isoformat(),
+                      "end": leave.end_date.isoformat(), "leave_type_code": leave.leave_type})
+    return items
+
+
 def pending_inputs(db: Session, company_id: int, employee_id: int, start: date, end: date) -> List[dict]:
     """Requests still awaiting a decision that touch ``start..end`` (exceptions at the input cutoff, EC-LV-02)."""
     items: List[dict] = []
@@ -1284,6 +1408,7 @@ def pending_inputs(db: Session, company_id: int, employee_id: int, start: date, 
         items.append({"type": "leave_cancellation" if leave.status == "approved" else "leave", "id": leave.id,
                       "start": leave.start_date.isoformat(), "end": leave.end_date.isoformat(),
                       "leave_type_code": leave.leave_type})
+    items.extend(_pending_leave_v2(db, company_id, employee_id, start, end))
     for row in _lop_by_date(db, company_id, employee_id, start, end, statuses=("PENDING",)).values():
         items.extend({"type": "lop_input", "id": r.id, "start": r.date.isoformat(), "end": r.date.isoformat(),
                       "portion": r.portion} for r in row)

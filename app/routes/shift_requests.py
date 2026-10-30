@@ -1,14 +1,14 @@
 """Shift requests, open shifts, availability, skill tags and shift acknowledgement (AS-M6; 03-shifts/03 §13).
 
 ``GET|POST /shift-requests`` · ``POST /shift-requests/preview`` · ``GET /shift-requests/{id}`` ·
-``POST /shift-requests/{id}/accept|decline|withdraw|approve|reject`` · ``GET|POST /open-shifts`` ·
-``GET /open-shifts/{id}`` · ``POST /open-shifts/{id}/claim|cancel`` · ``GET|POST /me/availability`` ·
+``POST /shift-requests/{id}/accept|decline|withdraw|approve|reject|extend`` ·``GET|POST /open-shifts`` ·
+``GET|PATCH /open-shifts/{id}`` ·``POST /open-shifts/{id}/claim|cancel`` · ``GET|POST /me/availability`` ·
 ``POST /me/availability/{id}/cancel`` · ``GET /availability`` · ``POST /availability/{id}/approve|reject`` ·
 ``GET|POST /skill-tags`` · ``PUT /employees/{id}/skill-tags`` · ``POST /me/schedule/entries/{id}/acknowledge``.
 Writes go through ``idempotency.execute`` (which commits). Permissions are checked by the service.
 """
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -43,6 +43,12 @@ class ShiftRequestIn(_Strict):
     requested_change: Optional[RequestedChange] = None
     reason: Optional[str] = Field(None, max_length=500)
     acknowledged_warnings: List[str] = Field(default_factory=list, max_length=30)
+    refile_of_request_id: Optional[int] = Field(None, ge=1)  # §4.4 re-file after an employer supersede
+
+
+class ExtendIn(_Strict):
+    expires_at: datetime
+    reason: str = Field(..., min_length=3, max_length=500)
 
 
 class AcceptIn(_Strict):
@@ -70,6 +76,18 @@ class OpenShiftIn(_Strict):
     same_team: Optional[bool] = None
     exclusive_window_hours: int = Field(0, ge=0, le=168)
     source: Literal["MANUAL", "UNCOVERED"] = "MANUAL"
+    note: Optional[str] = Field(None, max_length=500)
+
+
+class OpenShiftPatchIn(_Strict):
+    row_version: int = Field(..., ge=1)
+    required_count: Optional[int] = Field(None, ge=1, le=50)
+    expires_at: Optional[datetime] = None
+    shift_id: Optional[int] = Field(None, ge=1)
+    custom_start_time: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    custom_end_time: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    required_tags: Optional[List[str]] = Field(None, max_length=10)
+    same_team: Optional[bool] = None
     note: Optional[str] = Field(None, max_length=500)
 
 
@@ -106,6 +124,8 @@ def _write(db: Session, principal: Principal, request: Request, body: Any, run, 
 class SettingsIn(_Strict):
     requests_enabled: Optional[bool] = None
     open_shifts_enabled: Optional[bool] = None
+    planner_cannot_publish: Optional[bool] = None  # shift.roster.planner_cannot_publish (EC AS-ROS-11)
+    publish_requires_approval: Optional[bool] = None  # shift.roster.publish_requires_approval (§5.2)
     requests: Optional[Dict[str, Any]] = None
     open_shift_eligibility: Optional[Dict[str, Any]] = None
     availability: Optional[Dict[str, Any]] = None
@@ -190,12 +210,19 @@ def reject(request_id: int, data: NoteIn, request: Request, principal: Principal
         db, service.decide(db, principal, request_id, "REJECT", data.note), principal))
 
 
+@router.post("/shift-requests/{request_id:int}/extend")
+def extend(request_id: int, data: ExtendIn, request: Request, principal: Principal = Depends(get_principal),
+           db: Session = Depends(get_db)):
+    return _write(db, principal, request, data, lambda: service.serialize(
+        db, service.extend(db, principal, request_id, data.expires_at, data.reason), principal))
+
+
 # ----------------------------------------------------------------------------------------------- open shifts
 @router.get("/open-shifts")
 def list_open(start: Optional[date] = Query(None, alias="from"), end: Optional[date] = Query(None, alias="to"),
-              status: Optional[str] = Query(None, max_length=10), principal: Principal = Depends(get_principal),
-              db: Session = Depends(get_db)):
-    return service.list_open_shifts(db, principal, start=start, end=end, status=status)
+              status: Optional[str] = Query(None, max_length=10), eligible_only: Optional[bool] = Query(None),
+              principal: Principal = Depends(get_principal), db: Session = Depends(get_db)):
+    return service.list_open_shifts(db, principal, start=start, end=end, status=status, eligible_only=eligible_only)
 
 
 @router.post("/open-shifts", status_code=201)
@@ -210,6 +237,14 @@ def post_open(data: OpenShiftIn, request: Request, principal: Principal = Depend
 @router.get("/open-shifts/{open_shift_id:int}")
 def open_detail(open_shift_id: int, principal: Principal = Depends(get_principal), db: Session = Depends(get_db)):
     return service.open_shift_detail(db, principal, open_shift_id)
+
+
+@router.patch("/open-shifts/{open_shift_id:int}")
+def edit_open(open_shift_id: int, data: OpenShiftPatchIn, request: Request,
+              principal: Principal = Depends(get_principal), db: Session = Depends(get_db)):
+    body = data.model_dump(mode="json", exclude_unset=True)
+    return _write(db, principal, request, data, lambda: service.serialize_open_shift(
+        db, service.edit_open_shift(db, principal, open_shift_id, body)))
 
 
 @router.post("/open-shifts/{open_shift_id:int}/claim", status_code=201)

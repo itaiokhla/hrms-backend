@@ -54,6 +54,7 @@ CRITERIA_KEYS = {
     "employee_ids": "employee_id",
 }
 _ONE_DAY = timedelta(days=1)
+CRITERION_CHUNK_DAYS = 31  # an unprimed ``shift_ids`` lookup loads this many dates of the employee at once
 
 
 # ---------------------------------------------------------------------------------------------- clocks
@@ -130,6 +131,46 @@ class WorkWeekResolver:
         self._criteria: Optional[List[HolidayCalendarAssignment]] = None
         self._employees: Dict[int, Optional[Employee]] = {}
         self._employment_codes: Optional[Dict[int, str]] = None
+        # ``shift_ids`` criterion (§4.4.1, EC AS-INT-07): {(employee_id, date): shift_id | None}, loaded lazily — once
+        # for a primed (employees, range) batch, else per employee in CRITERION_CHUNK_DAYS chunks.
+        self._criterion_shifts: Dict[Tuple[int, date], Optional[int]] = {}
+        self._criterion_window: Optional[Tuple[frozenset, date, date]] = None
+
+    # ---- shift_ids criterion
+    def prime_shift_criterion(self, employee_ids: Iterable[int], start: date, end: date) -> None:
+        """Day-facts batches (``time_inputs._Batch``): the first ``shift_ids`` match inside ``start..end`` loads the
+        criterion shifts of every employee of the batch with one ``criterion_shifts_many`` call. Nothing is read
+        when no criteria row uses ``shift_ids``."""
+        self._criterion_window = (frozenset(employee_ids), start, end)
+
+    def criterion_shift(self, employee_id: int, day: date) -> Optional[int]:
+        """The shift the ``shift_ids`` criterion matches for (E, D): ``shift_resolution.criterion_shifts_many``
+        (the resolved shift; a HOLIDAY_RULE OFF entry on the shift it replaced, ``planned_shift_id``; any other OFF
+        entry or no shift → None)."""
+        key = (employee_id, day)
+        if key not in self._criterion_shifts:
+            from app.services import shift_resolution
+
+            window = self._criterion_window
+            if window is not None and employee_id in window[0] and window[1] <= day <= window[2]:
+                ids, start, end = sorted(window[0]), window[1], window[2]
+                if len(ids) * ((end - start).days + 1) > shift_resolution.MAX_EMPLOYEE_DAYS:
+                    ids = [employee_id]  # a batch above the resolver cap loads one employee at a time
+            else:
+                ids, start, end = [employee_id], day, day + timedelta(days=CRITERION_CHUNK_DAYS - 1)
+            self._criterion_shifts.update(
+                shift_resolution.criterion_shifts_many(self.db, self.company_id, ids, start, end))
+        return self._criterion_shifts.get(key)
+
+    def _criterion_shift_of(self, assignment: EmployeeAssignment, day: date) -> Optional[int]:
+        """A date the placement covers matches on the resolved criterion shift; a date outside it (the nearest
+        placement of F-04, outside employment) keeps the placement's own shift as before."""
+        if assignment.effective_from <= day and (assignment.effective_to is None or day <= assignment.effective_to):
+            try:
+                return self.criterion_shift(assignment.employee_id, day)
+            except AppError:  # shift data that cannot be resolved (range, version gaps): the placement's shift
+                logger.warning("shift_ids criterion unresolved for employee %s on %s", assignment.employee_id, day)
+        return assignment.shift_id
 
     # ---- loaders
     def branch(self, branch_id: Optional[int]) -> Optional[Branch]:
@@ -268,8 +309,9 @@ class WorkWeekResolver:
                 if self._employment_code(assignment.employment_type_id) not in (values or []):
                     return False
             elif key == "shift_ids":
-                # The resolved shift of the date; until shift resolution is wired here, the placement's shift.
-                if assignment.shift_id not in (values or []):
+                # The resolved shift of the date (§4.4.1): a HOLIDAY_RULE OFF entry matches on the shift it replaced,
+                # so publishing it never removes its own holiday (EC AS-INT-07); MANUAL / DAY_OVERRIDE OFF never match.
+                if self._criterion_shift_of(assignment, day) not in (values or []):
                     return False
             elif key in ("hired_on_or_after", "hired_on_or_before", "tenure_months_min", "tenure_months_max"):
                 hired = getattr(self._employee(assignment.employee_id), "hire_date", None)

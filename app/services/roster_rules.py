@@ -17,13 +17,15 @@ changed dates ± 14 days). Each :class:`PlannedInstance`: ``shift_date`` (employ
 ``entry_seq``, ``start_at`` / ``end_at`` (aware UTC, from ``shift_engine.build_instance``; ``None`` for OFF and
 OPEN shifts), ``net_minutes`` (scheduled net), ``shift_id``, ``archived``, ``has_on_call``, ``changed`` (this
 publication creates / changes / withdraws it), ``withdrawn``, the ``previous_*`` values of an UPDATED entry
-(notice, late addition, cancellation), ``safety_critical`` / ``long_duty`` (lints) and ``holiday_skeleton``.
+(notice, late addition, cancellation), ``safety_critical`` / ``long_duty`` (lints), ``holiday_skeleton`` and
+``holiday_unreviewed`` (a published WORK entry whose holiday arrived after its publication, §8).
 :func:`from_shift_instance` builds one from a ``shift_engine.ShiftInstance``.
 
 ``LimitsData``: an :class:`EmployeeLimits` default plus per-employee overrides — every limit is a
 :class:`Limit` (value, severity, source_ref, verified) or ``None`` (no limit); the week definition
 (``ROLLING`` / ``FIXED``) and ``week_start_day`` (0 = Monday); protected-group night windows; notice;
-``backdate_days``; ``holiday_mode``; OT caps; lint switches; raise-only ``rule_severity``. The caller applies
+``backdate_days``; ``holiday_mode``; Ramadan ``reduced_hours``; OT caps; lint switches; raise-only
+``rule_severity``. The caller applies
 §6.1 "Severity" (pack field severity, ``VERIFIED_FOR_PERIOD`` + ``enforce`` else at most WARN — except where
 the rule table itself says REQUIRE_REASON under DRAFT, e.g. ``NIGHT_WORK_CONSENT_MISSING``) when it fills
 ``Limit.severity``; ``verified = False`` only changes the message key ("Compliance not verified").
@@ -68,7 +70,7 @@ __all__ = [
     "PlannedInstance", "EmployeeSchedule", "ScheduleData", "Limit", "NightWorkRule", "OtCap", "EmployeeLimits",
     "LimitsData", "Consent", "TagHolding", "CoverageRule", "RotationCoverage", "LeaveImpact", "RuleContext",
     "validate", "summarize", "notice_hours", "affected_start", "min_notice_hours", "from_shift_instance",
-    "substitution_window", "substitution_issue",
+    "substitution_window", "substitution_issue", "ReducedHoursWindow", "entry_approves_holiday_work",
 ]
 
 WORK, OFF = "WORK", "OFF"
@@ -108,6 +110,9 @@ ON_CALL_NOT_ALLOWED = "ON_CALL_NOT_ALLOWED"
 COVERAGE_BELOW_MINIMUM = "COVERAGE_BELOW_MINIMUM"
 DOUBLE_SHIFT = "DOUBLE_SHIFT"
 SUBSTITUTION_INVALID = "SUBSTITUTION_INVALID"
+OUTDOOR_MIDDAY_BAN = "OUTDOOR_MIDDAY_BAN"  # pack seasonal.outdoor_midday_ban (EC AS-CTY-08)
+ADOLESCENT_LIMITS = "ADOLESCENT_LIMITS"  # pack night_work.adolescent (EC AS-CTY-07)
+RAMADAN_HOURS = "RAMADAN_HOURS"  # pack seasonal.ramadan_reduction_hours (EC X-INT-58)
 INTEGRITY_RULES = frozenset({SHIFT_OVERLAP, NOT_EMPLOYED, SHIFT_ARCHIVED})
 
 # SUBSTITUTION_INVALID details.rule (§4.4, SP-AS-040)
@@ -147,7 +152,12 @@ class PlannedInstance:
     safety_critical: bool = False
     long_duty: bool = False
     holiday_skeleton: bool = False  # kept WORK by HOLIDAY_SKELETON (no HOLIDAY_WORK result)
+    # A published (unchanged) WORK entry whose date became a full holiday after its publication (§8, EC AS-INT-18):
+    # nobody decided that holiday work yet, so the preview shows HOLIDAY_WORK for it (WARN) until the planner does.
+    holiday_unreviewed: bool = False
     entry_id: int | None = None
+    outdoor: bool = False  # shift_versions.outdoor or attendance_sites.outdoor (C-35)
+    adolescent: bool = False  # under 18 at 00:00 local of shift_date (derived by the caller; no date of birth here)
 
     @property
     def active(self) -> bool:
@@ -213,6 +223,65 @@ class NightWorkRule:
 
 
 @dataclass(frozen=True)
+class OutdoorBan:
+    """Pack ``seasonal.outdoor_midday_ban`` (appendix-a §5.7): no outdoor work in ``window`` from ``season_from`` to
+    ``season_to`` (``MM-DD``, both inclusive, work zone; wraps the year end; a ``02-28`` end includes 29 February)."""
+
+    window: tuple[str, str]
+    season_from: str
+    season_to: str
+    severity: str = WARN
+    source_ref: str | None = None
+    verified: bool = True
+
+
+@dataclass(frozen=True)
+class AdolescentRule:
+    """Pack ``night_work.adolescent`` (appendix-a §5.5) for instances whose ``adolescent`` flag is set."""
+
+    forbidden_window: tuple[str, str] | None = None
+    max_hours: Decimal | None = None  # net hours of one instance
+    max_stretch_hours: Decimal | None = None  # continuous work before an interval
+    interval_minutes: int | None = None
+    severity: str = BLOCK
+    source_ref: str | None = None
+    verified: bool = True
+
+
+@dataclass(frozen=True)
+class Waiver:
+    """A pack ``exemptions[]`` entry the establishment holds (appendix-a §3.3, §5.10): ``fields`` (``hours.daily_max``,
+    ``hours.spread_over``, ``night_work.protected_groups.<GROUP>``) are waived for shift dates from ``valid_from`` to
+    ``valid_to``, both inclusive; outside them the field applies again (EC AS-CTY-17)."""
+
+    code: str
+    fields: frozenset[str]
+    valid_from: dt.date
+    valid_to: dt.date | None = None
+
+    def covers(self, field_path: str, day: dt.date) -> bool:
+        return (field_path in self.fields and self.valid_from <= day
+                and (self.valid_to is None or day <= self.valid_to))
+
+
+@dataclass(frozen=True)
+class ReducedHoursWindow:
+    """A pack reduced-hours period such as Ramadan (appendix-a ``seasonal.ramadan_periods[]`` with
+    ``ramadan_reduction_hours``; §6.2 ``RAMADAN_HOURS``): inside ``from_date..to_date`` (both inclusive) the normal day
+    is ``normal_hours`` (AE 8 − 2 = 6 h)."""
+
+    code: str
+    from_date: dt.date
+    to_date: dt.date
+    normal_hours: Decimal
+    source_ref: str = "WORKING_TIME pack seasonal.ramadan_reduction_hours"
+    verified: bool = True
+
+    def covers(self, day: dt.date) -> bool:
+        return self.from_date <= day <= self.to_date
+
+
+@dataclass(frozen=True)
 class OtCap:
     """Pack ``overtime.caps[]`` entry (appendix-a §5.4). ``window`` DAY | WEEK | MONTH | QUARTER | YEAR."""
 
@@ -255,7 +324,14 @@ class EmployeeLimits:
     night_window: tuple[str, str] = rot.DEFAULT_NIGHT_WINDOW  # attendance.night_window (lints)
     night_threshold_hours: Decimal = rot.DEFAULT_NIGHT_THRESHOLD_HOURS
     night_worker: NightWorkerRule | None = None
+    outdoor_midday_ban: OutdoorBan | None = None
+    adolescent: AdolescentRule | None = None
+    reduced_hours: tuple[ReducedHoursWindow, ...] = ()  # pack Ramadan periods (RAMADAN_HOURS, EC X-INT-58)
     rule_severity: Mapping[str, str] = field(default_factory=dict)  # SCHEDULING_POLICY.rule_severity (raise only)
+    waivers: tuple[Waiver, ...] = ()  # pack exemptions the establishment holds (EC AS-CTY-17)
+
+    def waived(self, field_path: str, day: dt.date) -> bool:
+        return any(w.covers(field_path, day) for w in self.waivers)
 
 
 @dataclass(frozen=True)
@@ -566,10 +642,19 @@ def _day_rules(emp: EmployeeSchedule, lim: EmployeeLimits, ctx: RuleContext, out
                                   1, "entries", "SCHEDULING_POLICY", _message(DOUBLE_SHIFT)))
         if day in holidays and lim.holiday_mode in (HOLIDAY_OFF, HOLIDAY_SKELETON):
             if not (lim.holiday_mode == HOLIDAY_SKELETON and all(i.holiday_skeleton for i in items)):
-                out.append(RuleResult(HOLIDAY_WORK, _severity(HOLIDAY_WORK, REQUIRE_REASON, lim), eid, (day,), None,
-                                      None, None, "SCHEDULING_POLICY.holiday_mode", _message(HOLIDAY_WORK)))
+                # §8: holiday work planned by this publication needs a reason; a published entry the holiday arrived
+                # after is shown (WARN) until the planner decides (EC AS-INT-18); an entry published once the
+                # holiday was known was decided then and is not asked again.
+                base = (REQUIRE_REASON if any(i.changed for i in items) else
+                        WARN if any(i.holiday_unreviewed for i in items) else None)
+                if base is not None:
+                    out.append(RuleResult(HOLIDAY_WORK, _severity(HOLIDAY_WORK, base, lim), eid, (day,), None, None,
+                                          None, "SCHEDULING_POLICY.holiday_mode",
+                                          _message(HOLIDAY_WORK, variant=None if base == REQUIRE_REASON
+                                                   else "unreviewed")))
         net = sum(i.net_minutes or 0 for i in items)
-        if lim.daily_max_hours is not None and Decimal(net) > _dec(lim.daily_max_hours.value) * 60:
+        if (lim.daily_max_hours is not None and Decimal(net) > _dec(lim.daily_max_hours.value) * 60
+                and not lim.waived("hours.daily_max", day)):
             lifted = lim.compressed_week_allowed and ctx.consent(eid, COMPRESSED_WEEK, day) is not None
             if not lifted:
                 out.append(RuleResult(DAILY_HOURS_EXCEEDED, _severity(DAILY_HOURS_EXCEEDED, lim.daily_max_hours.severity,
@@ -577,8 +662,13 @@ def _day_rules(emp: EmployeeSchedule, lim: EmployeeLimits, ctx: RuleContext, out
                                       _dec(lim.daily_max_hours.value), "h",
                                       lim.daily_max_hours.source_ref or "hours.daily_max_including_ot_hours",
                                       _message(DAILY_HOURS_EXCEEDED, lim.daily_max_hours.verified)))
+        window = next((w for w in lim.reduced_hours if w.covers(day)), None)
+        if window is not None and Decimal(net) > _dec(window.normal_hours) * 60:
+            out.append(RuleResult(RAMADAN_HOURS, _severity(RAMADAN_HOURS, WARN, lim), eid, (day,), _hours(net),
+                                  _dec(window.normal_hours), "h", window.source_ref,
+                                  _message(RAMADAN_HOURS, window.verified), {"window": window.code}))
         timed = [i for i in items if i.timed]
-        if lim.spread_over_max_hours is not None and timed:
+        if lim.spread_over_max_hours is not None and timed and not lim.waived("hours.spread_over", day):
             spread = int((max(i.end_at for i in timed) - min(i.start_at for i in timed)).total_seconds()) // 60
             if Decimal(spread) > _dec(lim.spread_over_max_hours.value) * 60:
                 out.append(RuleResult(SPREAD_OVER_EXCEEDED, _severity(SPREAD_OVER_EXCEEDED,
@@ -706,7 +796,7 @@ def _night_work(emp: EmployeeSchedule, lim: EmployeeLimits, ctx: RuleContext, ou
         if rule is None or not rule.requires_consent:
             continue
         for i in emp.instances:
-            if not (i.is_work and i.timed):
+            if not (i.is_work and i.timed) or lim.waived(f"night_work.protected_groups.{group}", i.shift_date):
                 continue
             inside = rot.window_overlap_minutes(i.start_at, i.end_at, emp.work_timezone, rule.window)
             if inside > 0 and ctx.consent(eid, NIGHT_WORK, i.shift_date) is None:
@@ -715,6 +805,79 @@ def _night_work(emp: EmployeeSchedule, lim: EmployeeLimits, ctx: RuleContext, ou
                                       _hours(inside), "-".join(rule.window), "h in window",
                                       rule.source_ref or "night_work.protected_groups[]",
                                       _message(NIGHT_WORK_CONSENT_MISSING, rule.verified), {"group": group}))
+
+
+def season_contains(season_from: str, season_to: str, day: dt.date) -> bool:
+    """appendix-a §4.2 season dates: ``MM-DD``, both inclusive; ``from`` later than ``to`` wraps the year end; a ``to``
+    of ``02-28`` includes 29 February in a leap year (EC AS-CTY-08)."""
+    start = tuple(int(x) for x in season_from.split("-"))
+    end = tuple(int(x) for x in season_to.split("-"))
+    if end == (2, 28):
+        end = (2, 29)
+    md = (day.month, day.day)
+    return start <= md <= end if start <= end else (md >= start or md <= end)
+
+
+def season_window_minutes(start_at: dt.datetime, end_at: dt.datetime, zone: str, window: tuple[str, str],
+                          season_from: str, season_to: str) -> int:
+    """Minutes of ``[start_at, end_at)`` inside the daily local ``window`` on the dates of the season only."""
+    total = 0
+    day = rot._local_date(start_at, zone) - _ONE_DAY
+    last = rot._local_date(end_at, zone)
+    while day <= last:
+        if season_contains(season_from, season_to, day):
+            w_start, w_end = rot._window_bounds(day, window, zone)
+            total += se._overlap_seconds(start_at, end_at, w_start, w_end)
+        day += _ONE_DAY
+    return total // 60
+
+
+def _outdoor_ban(emp: EmployeeSchedule, lim: EmployeeLimits, out: list[RuleResult]) -> None:
+    """``OUTDOOR_MIDDAY_BAN``: outdoor work overlapping the pack's midday window on a date of its season (WARN;
+    BLOCK when the pack is VERIFIED)."""
+    ban = lim.outdoor_midday_ban
+    if ban is None:
+        return
+    for i in emp.instances:
+        if not (i.is_work and i.timed and i.outdoor):
+            continue
+        inside = season_window_minutes(i.start_at, i.end_at, emp.work_timezone, ban.window, ban.season_from,
+                                       ban.season_to)
+        if inside > 0:
+            out.append(RuleResult(OUTDOOR_MIDDAY_BAN, _severity(OUTDOOR_MIDDAY_BAN, ban.severity, lim), emp.employee_id,
+                                  (i.shift_date,), _hours(inside), "-".join(ban.window), "h in window",
+                                  ban.source_ref or "seasonal.outdoor_midday_ban",
+                                  _message(OUTDOOR_MIDDAY_BAN, ban.verified),
+                                  {"season": f"{ban.season_from}..{ban.season_to}"}))
+
+
+def _adolescent_limits(emp: EmployeeSchedule, lim: EmployeeLimits, out: list[RuleResult]) -> None:
+    """``ADOLESCENT_LIMITS`` for instances of an under-18 employee (evaluated once per instance by its shift date,
+    so a night that starts the day before the 18th birthday stays under the limits for its whole length). The
+    stretch limit is read from the instance: longer than ``max_stretch_hours`` with an unpaid break shorter than
+    ``interval_minutes``. The message never shows the date of birth ("under 18 on this date")."""
+    rule = lim.adolescent
+    if rule is None:
+        return
+    for i in emp.instances:
+        if not (i.is_work and i.timed and i.adolescent):
+            continue
+        breaches: list[tuple[str, Any, Any, str]] = []
+        if rule.forbidden_window is not None:
+            inside = rot.window_overlap_minutes(i.start_at, i.end_at, emp.work_timezone, rule.forbidden_window)
+            if inside > 0:
+                breaches.append(("FORBIDDEN_WINDOW", _hours(inside), "-".join(rule.forbidden_window), "h in window"))
+        if rule.max_hours is not None and i.net_minutes is not None and Decimal(i.net_minutes) / 60 > rule.max_hours:
+            breaches.append(("MAX_HOURS", _hours(i.net_minutes), rule.max_hours, "h"))
+        gross = i.gross_minutes
+        if rule.max_stretch_hours is not None and gross is not None and Decimal(gross) / 60 > rule.max_stretch_hours:
+            unpaid = gross - (i.net_minutes if i.net_minutes is not None else gross)
+            if rule.interval_minutes is None or unpaid < rule.interval_minutes:
+                breaches.append(("MAX_STRETCH", _hours(gross), rule.max_stretch_hours, "h without an interval"))
+        for kind, measured, limit, unit in breaches:
+            out.append(RuleResult(ADOLESCENT_LIMITS, _severity(ADOLESCENT_LIMITS, rule.severity, lim), emp.employee_id,
+                                  (i.shift_date,), measured, limit, unit, rule.source_ref or "night_work.adolescent",
+                                  _message(ADOLESCENT_LIMITS, rule.verified), {"limit": kind}))
 
 
 def _notice_rules(emp: EmployeeSchedule, lim: EmployeeLimits, ctx: RuleContext, out: list[RuleResult]) -> None:
@@ -892,6 +1055,8 @@ def validate(schedule: ScheduleData, limits: LimitsData | EmployeeLimits, contex
         _rest_rules(emp, lim, context, working)
         _week_rules(emp, lim, working)
         _night_work(emp, lim, context, working)
+        _outdoor_ban(emp, lim, working)
+        _adolescent_limits(emp, lim, working)
         _ot_caps(emp, lim, context, working)
         _lints(emp, lim, working)
         changed_days = [i.shift_date for i in emp.instances if i.changed]
@@ -1002,3 +1167,13 @@ def protected_groups_for(gender: str | None, pack_groups: Collection[str]) -> fr
         if not value or value in FEMALE_VALUES:
             groups.add("WOMEN")
     return frozenset(groups)
+
+
+def entry_approves_holiday_work(published_at: dt.datetime | None, holiday_known_at: dt.datetime | None) -> bool:
+    """JC-AS-08 as amended (§8; AS 05 JC-AS-08 box; EC AS-INT-18): a published WORK entry is the approval of holiday
+    work only when it was published on or after the holiday became known (``holidays.confirmed_at``). For a holiday
+    that arrived after the publication nobody decided holiday work: the entry stays ``holiday_work_unreviewed`` until
+    the planner confirms or withdraws it. No publication instant = not approved; no known instant = known before."""
+    if published_at is None:
+        return False
+    return holiday_known_at is None or published_at >= holiday_known_at

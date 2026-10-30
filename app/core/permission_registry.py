@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, FrozenSet, Iterable, List, Optional, Tuple
 
-REGISTRY_VERSION = "2026.10.12"
+REGISTRY_VERSION = "2026.10.13"
 
 
 class Scope(str, Enum):
@@ -216,10 +216,45 @@ PERMISSIONS: List[PermissionDef] = [
                   "Generate statutory registers (muster roll, attendance register) and per-person attendance "
                   "reports for people in scope. Every export is sealed and recorded.", _TEAM_T, "restricted"),
     # Leave
-    PermissionDef("leave:read", "Leave", "View leave", "View leave requests and balances.", _ALL_T),
+    PermissionDef("leave:read", "Leave", "View leave", "View leave requests and balances.", _ALL_WITH_PG_T),
     PermissionDef("leave:apply", "Leave", "Apply for leave", "Submit and cancel own leave requests.", _SELF),
     PermissionDef("leave:approve", "Leave", "Approve leave", "Act on leave requests routed to you.", _TEAM_T),
-    PermissionDef("leave:manage_policy", "Leave", "Configure leave", "Manage leave types and approval chains.", _COMPANY),
+    PermissionDef("leave:manage_policy", "Leave", "Configure leave",
+                  "Manage leave plans, blackouts and coverage rules for the entities or branches in scope; leave types, "
+                  "approval routes, reason codes and leave settings need company-wide access.", _ORG_UNITS, "restricted"),
+    # LH-M2 (SPINE §9, migration 0064_lh_m2_permissions): the v2 leave codes.
+    PermissionDef("leave:apply_on_behalf", "Leave", "Apply leave for others",
+                  "Apply for, change and withdraw leave for people in scope; the request is still approved as usual.",
+                  _TEAM_T),
+    PermissionDef("leave:record", "Leave", "Record approved leave",
+                  "Record leave that is already approved (HR-recorded and bulk leave) for people in scope.",
+                  (_AG, _LE, _BR, _C), "restricted"),
+    PermissionDef("leave:override", "Leave", "Override leave decisions",
+                  "Decide a request that is blocked or not waiting for you, with a mandatory reason. Never for own "
+                  "leave.", _ORG_UNITS, "restricted", full_access_scopes=_NEVER),
+    PermissionDef("leave:change_any", "Leave", "Change anyone's leave",
+                  "Cancel, shorten, recall or convert approved leave of people in scope, including past dates.",
+                  _ORG_UNITS, "restricted"),
+    PermissionDef("leave:balance_adjust", "Leave", "Adjust leave balances",
+                  "Post manual credits and debits to leave balances of people in scope.", _ORG_UNITS, "restricted"),
+    PermissionDef("leave:import", "Leave", "Import leave data",
+                  "Import opening balances, balance adjustments and leave history.", _ENTITY, "restricted"),
+    PermissionDef("leave:year_end", "Leave", "Run leave year end",
+                  "Preview, post and reverse year-end carry-forward, lapse and encashment, and rerun accruals.",
+                  _ENTITY, "restricted"),
+    PermissionDef("leave:view_documents", "Leave", "View leave documents",
+                  "Open general (non-medical) leave attachments of people in scope.", _TEAM_T, "restricted"),
+    PermissionDef("leave:verify_documents", "Leave", "Verify leave documents",
+                  "Verify or reject leave attachments and request missing documents for people in scope.", _TEAM_T,
+                  "restricted"),
+    PermissionDef("leave:view_medical", "Leave", "View medical leave details",
+                  "Open medical certificates and sensitive leave reasons of people in scope.", _ORG_UNITS,
+                  "confidential", full_access_scopes=_NEVER),
+    PermissionDef("leave:analytics_individual", "Leave", "Individual leave analytics",
+                  "See per-person leave analytics (under-use, patterns, document compliance). Views are audited.",
+                  _ORG_UNITS, "confidential"),
+    PermissionDef("leave:liability_read", "Leave", "View leave liability",
+                  "See leave liability and encashable balances for the entities in scope.", _ENTITY, "restricted"),
     # Holidays
     PermissionDef("holiday:read", "Holidays", "View holidays", "View the company holiday calendar.", _COMPANY),
     PermissionDef("holiday:manage", "Holidays", "Manage holidays",
@@ -597,6 +632,14 @@ def _company_wide(*codes: str) -> Tuple[Tuple[str, Scope], ...]:
     return tuple((code, _C) for code in codes)
 
 
+# LH-M2: the v2 leave codes HR holds (hr_admin COMPANY; hr_manager the same at LE without leave:view_medical).
+HR_LEAVE_CODES = (
+    "leave:apply_on_behalf", "leave:record", "leave:override", "leave:change_any", "leave:balance_adjust",
+    "leave:import", "leave:year_end", "leave:view_documents", "leave:verify_documents", "leave:view_medical",
+    "leave:analytics_individual", "leave:liability_read",
+)
+
+
 _PAYROLL_PROCESSOR = _company_wide(
     "payroll:run:read", "payroll:run:create", "payroll:run:calculate", "payroll:run:review",
     "payroll:inputs:read", "payroll:inputs:edit", "payroll:inputs:import", "payroll:inputs:approve",
@@ -653,7 +696,9 @@ DEFAULT_ROLES: List[DefaultRole] = [
             "attendance:export",
             # Migration 0058: team payroll oversight (no amounts) and integrations.
             "team_pay:read", "team_pay:submit", "integrations:manage",
-        ),
+        )
+        # LH-M2 (migration 0064): the v2 leave codes, medical view included (D-LH-16, removable).
+        + _company_wide(*HR_LEAVE_CODES),
     ),
     DefaultRole(
         "payroll_manager",
@@ -717,6 +762,7 @@ DEFAULT_ROLES: List[DefaultRole] = [
             ("location:review", _DR),
             ("leave:read", _RT),
             ("leave:approve", _RT),
+            ("leave:apply_on_behalf", _DR),  # LH-M2 (migration 0064)
             ("asset:read", _DR),
             ("report:read", _RT),
             ("delegation:manage", _S),
@@ -750,6 +796,45 @@ DEFAULT_ROLES: List[DefaultRole] = [
             ("payroll:bank_details:read_masked", _S), ("payroll:bank_details:edit", _S),
             ("payroll:tax_profile:read", _S), ("payroll:tax_profile:edit", _S),
         ),
+    ),
+    # LH-M2 (SPINE §9 default roles; migration 0064 creates them in existing tenants). Targeted roles (BR / LE) grant
+    # nothing until the assignment names its branches or legal entities.
+    DefaultRole(
+        "department_head",
+        "Department Head",
+        "Heads a department: sees and approves leave of the departments they head.",
+        tuple(SELF_SERVICE) + (("employee:read", _D), ("leave:read", _D), ("leave:approve", _D),
+                               ("attendance:read", _D), ("report:read", _D)),
+    ),
+    DefaultRole(
+        "hr_executive",
+        "HR Executive",
+        "Runs day-to-day leave for the selected branches: applies and records leave and checks documents.",
+        tuple(SELF_SERVICE) + tuple((code, _BR) for code in (
+            "employee:read", "leave:read", "leave:approve", "leave:apply_on_behalf", "leave:record",
+            "leave:view_documents", "leave:verify_documents", "report:read")),
+    ),
+    DefaultRole(
+        "hr_manager",
+        "HR Manager",
+        "Runs leave and holidays for the selected legal entities: plans, balances, year end and approvals. Leave "
+        "settings and medical details stay with the HR Administrator.",
+        tuple(SELF_SERVICE) + tuple((code, _LE) for code in (
+            "employee:read", "leave:read", "leave:approve", "leave:manage_policy", "holiday:manage",
+            "holiday:publish") + tuple(c for c in HR_LEAVE_CODES if c != "leave:view_medical")
+            + ("report:read", "report:export")),
+    ),
+    DefaultRole(
+        "executive",
+        "Executive",
+        "Company-wide view of leave and reports (sensitive leave masked); approves their own reporting tree.",
+        tuple(SELF_SERVICE) + (("leave:read", _C), ("report:read", _C), ("leave:approve", _RT), ("employee:read", _C)),
+    ),
+    DefaultRole(
+        "finance",
+        "Finance",
+        "Sees leave liability and aggregate reports.",
+        tuple(SELF_SERVICE) + (("leave:liability_read", _LE), ("report:read", _C)),
     ),
     DefaultRole(
         "auditor",

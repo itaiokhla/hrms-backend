@@ -1,12 +1,36 @@
 import json
 import logging
 from functools import lru_cache
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
+
+# AI assistant (docs/leave_agent.md §8): AI_MODEL=provider:model-name; the provider decides the key variable.
+AI_PROVIDERS = ("groq", "openai", "anthropic")
+AI_PROVIDER_KEY_FIELDS = {"groq": "groq_api_key", "openai": "openai_api_key", "anthropic": "anthropic_api_key"}
+
+
+class AgentConfigError(RuntimeError):
+    """Invalid AI assistant configuration. Not a ValueError on purpose: pydantic would wrap a ValueError raised in a
+    validator together with the raw input values, and the input of Settings holds the API keys."""
+
+
+def parse_ai_model(value: Optional[str]) -> Tuple[str, str]:
+    """``provider:model-name`` -> (provider, model). Raises AgentConfigError for any other shape or provider."""
+    text = (value or "").strip()
+    if ":" not in text:
+        raise AgentConfigError("AI_MODEL must use the provider:model-name format")
+    provider, model_name = text.split(":", 1)
+    provider, model_name = provider.strip().lower(), model_name.strip()
+    if provider not in AI_PROVIDERS:
+        raise AgentConfigError(f"AI_MODEL provider must be one of {', '.join(AI_PROVIDERS)}")
+    if not model_name or len(model_name) > 120 or any(ch.isspace() for ch in model_name):
+        raise AgentConfigError("AI_MODEL needs a model name after the provider")
+    return provider, model_name
+
 
 _INSECURE_SECRETS = {
     "",
@@ -138,6 +162,50 @@ class Settings(BaseSettings):
     # end-to-end tests and is refused in staging and production.
     location_tracking_min_interval_minutes: int = 15
 
+    # ---------------------------------------------------------------
+    # AI assistant (docs/leave_agent.md §8). Off unless AGENT_ENABLED=true; an agent-disabled deployment needs no
+    # AI key. AI_MODEL=provider:model-name with provider groq | openai | anthropic. The key is AI_API_KEY when set,
+    # else the provider's own variable (GROQ_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY). Keys are SecretStr:
+    # never logged, never sent to the browser or the model.
+    # ---------------------------------------------------------------
+    agent_enabled: bool = False
+    ai_model: str = ""
+    ai_api_key: Optional[SecretStr] = None
+    groq_api_key: Optional[SecretStr] = None
+    openai_api_key: Optional[SecretStr] = None
+    anthropic_api_key: Optional[SecretStr] = None
+    ai_timeout_seconds: float = Field(30.0, ge=1, le=120)
+    ai_max_retries: int = Field(1, ge=0, le=3)
+    agent_max_steps: int = Field(6, ge=2, le=12)
+    agent_action_ttl_minutes: int = Field(10, ge=1, le=30)
+    agent_history_window: int = Field(20, ge=4, le=50)
+    agent_message_max_chars: int = Field(4000, ge=100, le=10000)
+    # Chat turns per user per minute (each turn may call the provider several times); confirmations are separate.
+    agent_turns_per_minute: int = Field(10, ge=1, le=120)
+    agent_company_turns_per_minute: int = Field(120, ge=1, le=5000)
+
+    @property
+    def ai_provider_model(self) -> Tuple[str, str]:
+        return parse_ai_model(self.ai_model)
+
+    def ai_key_for(self, provider: str) -> Optional[SecretStr]:
+        """AI_API_KEY when set, else the provider's own key variable."""
+        if self.ai_api_key is not None and self.ai_api_key.get_secret_value().strip():
+            return self.ai_api_key
+        key = getattr(self, AI_PROVIDER_KEY_FIELDS.get(provider, ""), None)
+        if key is not None and key.get_secret_value().strip():
+            return key
+        return None
+
+    def validate_agent(self) -> None:
+        """Refuse an enabled agent without a valid AI_MODEL or a key for its provider (never shows a key)."""
+        if not self.agent_enabled:
+            return
+        provider, _ = parse_ai_model(self.ai_model)
+        if self.ai_key_for(provider) is None:
+            raise AgentConfigError(f"AI_API_KEY or {AI_PROVIDER_KEY_FIELDS[provider].upper()} is required when "
+                             "AGENT_ENABLED=true")
+
     @field_validator("debug", mode="before")
     @classmethod
     def _parse_debug(cls, v):
@@ -191,6 +259,7 @@ class Settings(BaseSettings):
         if self.platform_base_domain and self.cookie_domain:
             # A shared cookie domain would send one tenant host's session to every other host.
             raise ValueError("COOKIE_DOMAIN must be unset when PLATFORM_BASE_DOMAIN enables tenant hosts")
+        self.validate_agent()
         return self
 
     @property

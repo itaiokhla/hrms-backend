@@ -15,6 +15,9 @@ One helper for every reader (attendance, LH day facts, payroll standard hours, o
 Every resolved shift uses the non-void version valid on D; a shift without versions (inserted outside the catalogue
 service) is read through its legacy columns. The batch form loads placements, rules, shifts and versions for the whole
 range with a fixed number of queries and resolves in memory (spine §5.11).
+
+``criterion_shifts_many`` is the shift the LH holiday-calendar criterion ``shift_ids`` matches on a date: an OFF the
+holiday rule made matches on the shift it replaced, so it never removes its own holiday (03-shifts/02 §8, EC AS-INT-07).
 """
 
 from __future__ import annotations
@@ -241,10 +244,12 @@ def _teams_on(rows: Sequence, day: date) -> Dict[int, str]:
 # ------------------------------------------------------------------------------------------------ resolving
 def shifts_for_many(db: Session, company_id: int, employee_ids: Sequence[int], start: date, end: date, *,
                     with_explain: bool = False, extra_rules: Sequence[ShiftAssignmentRule] = (),
-                    skip_rule_ids: Iterable[int] = ()) -> Dict[Tuple[int, date], Optional[ResolvedShift]]:
+                    skip_rule_ids: Iterable[int] = (), ignore_sources: Iterable[str] = ()
+                    ) -> Dict[Tuple[int, date], Optional[ResolvedShift]]:
     """``{(employee_id, date): ResolvedShift | None}`` for every employee and date of ``start..end``.
 
-    ``extra_rules`` / ``skip_rule_ids`` let simulate and preview resolve with a draft rule (never stored).
+    ``extra_rules`` / ``skip_rule_ids`` let simulate and preview resolve with a draft rule (never stored);
+    ``ignore_sources`` drops roster entries of those sources from step 1 (``criterion_shifts_many``).
     """
     if end < start:
         raise AppError(400, "The end date is before the start date.", "INVALID_RANGE")
@@ -261,6 +266,9 @@ def shifts_for_many(db: Session, company_id: int, employee_ids: Sequence[int], s
     rules = _assignment_rules(rule_rows)
     memberships = _team_memberships(db, company_id, ids, start, end, rules)
     roster = _roster_entries(db, company_id, ids, start, end)
+    ignored = set(ignore_sources)
+    if ignored:
+        roster = {k: kept for k, rows in roster.items() if (kept := [e for e in rows if e.source not in ignored])}
     shift_ids = ({r.shift_id for r in rule_rows} | {a.shift_id for rows in placements.values() for a, _ in rows}
                  | {e.shift_id for entries in roster.values() for e in entries})
     catalogue = _Catalogue(db, company_id, shift_ids)
@@ -368,6 +376,50 @@ def _resolve_day(day, assignment, employment_type, zone, rules, catalogue: _Cata
 
 def shift_for(db: Session, company_id: int, employee_id: int, day: date) -> Optional[ResolvedShift]:
     return shifts_for_many(db, company_id, [employee_id], day, day)[(employee_id, day)]
+
+
+# ------------------------------------------------------------------------------- holiday calendar criterion
+HOLIDAY_RULE = "HOLIDAY_RULE"  # roster entry source of an OFF the holiday mode made (03-shifts/02 §8)
+
+
+def criterion_shift_id(entries: Sequence, fallback_shift_id: Optional[int]) -> Optional[int]:
+    """The shift an LH holiday-calendar criterion ``shift_ids`` matches on one date (03-shifts/02 §8; LH
+    04-holiday/01 §4.4.1; EC AS-INT-07). ``entries``: the date's published entries (``kind``, ``shift_id``,
+    ``source``, ``planned_shift_id``) in ``entry_seq`` order; ``fallback_shift_id``: the shift steps 2–3 resolve
+    (rule, placement) when no roster entry decides.
+
+    * no entry → the fallback (the resolved shift);
+    * a WORK entry → its shift (custom times without a shift → None);
+    * an OFF the holiday rule made (source ``HOLIDAY_RULE``) → ``planned_shift_id``, the shift of the token it
+      replaced, so the night crew's calendar keeps resolving and the day stays HOLIDAY instead of flipping to a
+      rostered weekly off (no circular match); a legacy one without a planned shift reads as if it were not there
+      (the fallback);
+    * any other OFF (``MANUAL``, ``DAY_OVERRIDE``, a rotation ``O`` token) → None: it never matches ``shift_ids``.
+    """
+    if not entries:
+        return fallback_shift_id
+    work = [e for e in entries if e.kind == "WORK"]
+    if work:
+        return work[0].shift_id or None
+    off = entries[0]
+    if getattr(off, "source", None) == HOLIDAY_RULE:
+        return getattr(off, "planned_shift_id", None) or fallback_shift_id
+    return None
+
+
+def criterion_shifts_many(db: Session, company_id: int, employee_ids: Sequence[int], start: date, end: date
+                          ) -> Dict[Tuple[int, date], Optional[int]]:
+    """``{(employee_id, date): shift_id | None}`` for the LH ``shift_ids`` criterion over ``start..end`` (see
+    :func:`criterion_shift_id`): steps 2–3 resolve with the ``HOLIDAY_RULE`` entries left out
+    (``shift_for(..., ignore_sources=[HOLIDAY_RULE])``), then each date's published entries decide. The LH calendar
+    resolver matches ``shift_ids`` on this value instead of the placement's shift."""
+    fallback = shifts_for_many(db, company_id, employee_ids, start, end, ignore_sources=(HOLIDAY_RULE,))
+    roster = _roster_entries(db, company_id, sorted(set(employee_ids)), start, end)
+    out: Dict[Tuple[int, date], Optional[int]] = {}
+    for key, resolved in fallback.items():
+        base = (resolved.shift_id or None) if resolved is not None else None  # 0 = custom times without a shift
+        out[key] = criterion_shift_id(roster.get(key, ()), base)
+    return out
 
 
 def explain(db: Session, company_id: int, employee_id: int, start: date, end: date) -> List[dict]:

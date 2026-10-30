@@ -22,7 +22,9 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, Dict, Mapping, Optional
 
-PACK_VERSION = "2026.10.1"
+PACK_VERSION = "2026.10.3"  # .2: IN night_work.adolescent, AE seasonal.outdoor_midday_ban (appendix-a §5.5, §5.7)
+# .3: IN exemptions[] (appendix-a §8.4, §5.10; EC AS-CTY-17)
+EXPIRY_WARNING_DAYS = 90  # appendix-a §5.10: the Settings overview warns this many days before an exemption ends
 
 PACKS: Dict[str, Dict[str, Any]] = {
     "IN": {
@@ -32,12 +34,27 @@ PACKS: Dict[str, Dict[str, Any]] = {
         "weekly_max_hours": Decimal(48), "daily_max_hours": None, "max_days_per_week": 6,  # 9 h/day: FU (not enforced yet)
         "max_consecutive_days": 10, "weekly_rest_min_hours": Decimal(24), "min_rest_hours": None,
         "night_work_groups": {"WOMEN": ("19:00", "06:00")},
+        # appendix-a §6 IN row (CALPRA 1986 s.7 via OSH s.25(4)): under-18 workers never 19:00–08:00, ≤ 3 h stretches.
+        "adolescent": {"forbidden_window": ("19:00", "08:00"), "max_hours": None, "max_stretch_hours": 3,
+                       "interval_minutes": 60, "ot_allowed": False},
         "breaks": [{"kind": "REST", "after_minutes": 300, "minutes": 30, "paid": False}],
         "overtime": {"multiplier": "2.0", "requires_consent": True, "consent_enforce": False,
                      "caps": [{"window": "QUARTER", "hours": 125}]},
         "privacy": {"location_retention_days_max": 365, "biometric_timekeeping": "CONSENT_REQUIRED",
                     "punch_photo_allowed": True},
         "scheduling": {"notice_hours": None, "late_addition_consent": False},
+        # appendix-a §8.4: time-limited exemptions an establishment may hold (setting
+        # shift.working_time.held_exemptions); they waive fields only in their subdivision and validity (EC AS-CTY-17).
+        # IN-TS is the older ISO code for Telangana, still used by the seed data.
+        "exemptions": [
+            {"code": "TG_IT_ITES_2024", "instrument": "Telangana S&E notification of 7 Jun 2024 (IT/ITES, ss.15, 16, "
+                                                      "23, 31)",
+             "subdivisions": ["IN-TG", "IN-TS"], "valid_from": date(2024, 5, 30), "valid_to": date(2028, 5, 30),
+             "waives": ["hours.daily_max", "hours.spread_over", "night_work.protected_groups.WOMEN"]},
+            {"code": "KA_IT_ITES_IESO_2024", "instrument": "Karnataka IESO Act 1946 exemption (10 Jun 2024)",
+             "subdivisions": ["IN-KA"], "valid_from": date(2024, 6, 10), "valid_to": date(2029, 6, 10),
+             "waives": []},  # not a working-hours exemption: recorded for the expiry warning only
+        ],
     },
     "AE": {
         "name": "United Arab Emirates (Decree-Law 33/2021)", "verified": False,
@@ -55,6 +72,8 @@ PACKS: Dict[str, Dict[str, Any]] = {
         # Ramadan: two hours less a day (dated per Hijri year; tenants publish the window in their calendar).
         "reduced_hours_windows": [{"code": "RAMADAN_2027", "from": date(2027, 2, 8), "to": date(2027, 3, 9),
                                    "daily_max_hours": Decimal(6)}],
+        # spine §13 AE row (MR 44/2022): no outdoor work 12:30–15:00 from 15 June to 15 September (MM-DD, inclusive).
+        "outdoor_midday_ban": {"window": ("12:30", "15:00"), "from": "06-15", "to": "09-15"},
     },
     "US": {
         "name": "United States (FLSA; Fair Workweek opt-in)", "verified": False,
@@ -84,6 +103,28 @@ def daily_max_on(p: Mapping[str, Any], on: date) -> Optional[Decimal]:
         if window["from"] <= on <= window["to"]:
             return window["daily_max_hours"]
     return p.get("daily_max_hours")
+
+
+EXEMPTION_CODES = tuple(e["code"] for p in PACKS.values() for e in p.get("exemptions") or ())
+
+
+def held_exemptions(p: Optional[Mapping[str, Any]], subdivision: Optional[str], held: Any) -> list:
+    """The pack exemptions an establishment holds (codes in ``held``) whose subdivision condition it meets; a branch
+    without a subdivision meets none — an unknown input never exempts (appendix-a §3.2)."""
+    codes = set(held or ())
+    return [e for e in (p or {}).get("exemptions") or () if e["code"] in codes and subdivision
+            and subdivision.upper() in e.get("subdivisions", ())]
+
+
+def expiring_exemptions(p: Optional[Mapping[str, Any]], on: date, held: Any) -> list:
+    """Held exemptions ending within ``EXPIRY_WARNING_DAYS`` of ``on`` (or already ended), for the Settings overview."""
+    out = []
+    for e in (p or {}).get("exemptions") or ():
+        if e["code"] in set(held or ()) and e.get("valid_to") is not None:
+            days = (e["valid_to"] - on).days
+            if days <= EXPIRY_WARNING_DAYS:
+                out.append({"code": e["code"], "valid_to": e["valid_to"].isoformat(), "days_left": days})
+    return out
 
 
 def field(p: Optional[Mapping[str, Any]], name: str) -> Any:

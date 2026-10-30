@@ -144,6 +144,7 @@ def _resolved_holiday_ids(db: Session, company_id: int, employee_id: int, year: 
     if not rows:
         return None
     resolver = WorkWeekResolver(db, company_id)
+    resolver.prime_shift_criterion([employee_id], date(year, 1, 1), date(year, 12, 31))
     by_calendar: Dict[int, List[date]] = defaultdict(list)
     day = date(year, 1, 1)
     while day.year == year:

@@ -66,9 +66,12 @@ def test_every_policy_type_of_3_1_section_3_2():
         "ATTENDANCE_CAPTURE_POLICY",  # AS-M2 (JC-AS-22): attendance-owned, write gate attendance:manage_policy
         "ATTENDANCE_RULES_POLICY",  # AS-M3 (JC-AS-22): read by the day evaluation only
         "ATTENDANCE_REQUEST_POLICY", "SCHEDULING_POLICY",  # AS-M3 types (AS-M4 / AS-M5 consumers)
+        "LEAVE_PLAN",  # LH-M2 (03-leave/01 §5.1): leave-owned, write gate leave:manage_policy, never in snapshots
     }
     assert {c for c, d in POLICY_TYPES.items() if d.module != "payroll"} == {
-        "ATTENDANCE_CAPTURE_POLICY", "ATTENDANCE_RULES_POLICY", "ATTENDANCE_REQUEST_POLICY", "SCHEDULING_POLICY"}
+        "ATTENDANCE_CAPTURE_POLICY", "ATTENDANCE_RULES_POLICY", "ATTENDANCE_REQUEST_POLICY", "SCHEDULING_POLICY",
+        "LEAVE_PLAN"}
+    assert POLICY_TYPES["LEAVE_PLAN"].write_permission == "leave:manage_policy"
     assert POLICY_TYPES["SCHEDULING_POLICY"].write_permission == "shift:manage"
     assert POLICY_TYPES["ATTENDANCE_CAPTURE_POLICY"].write_permission == "attendance:manage_policy"
     assert POLICY_TYPES["ATTENDANCE_RULES_POLICY"].write_permission == "attendance:manage_policy"

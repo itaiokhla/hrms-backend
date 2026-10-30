@@ -1324,6 +1324,373 @@ class SchedulingPolicy(PolicyFields):
 # --------------------------------------------------------------------------- the type catalogue
 
 
+# --------------------------------------------------------------------------- LEAVE_PLAN (LH 03-leave/01 §5)
+# Per-type leave rules (eligibility, entitlement, accrual, carry-forward, encashment units, request rules, documents)
+# as data, versioned and assigned by criteria like every policy. Plans never enter payroll snapshots
+# (``SKIPPED_POLICY_TYPES``); payroll reads leave only through ``leave_days`` and the ledger. Names follow
+# 03-leave/01 §5.2-§5.5 and §8.1; the leave services evaluate them (``app/services/leave_plans.py``).
+
+LeaveUnits = Annotated[Decimal, DecimalRule(minimum=_D0, maximum=Decimal(8784), max_places=2, unit="units")]
+PositiveUnits = Annotated[
+    Decimal, DecimalRule(minimum=_D0, maximum=Decimal(8784), exclusive_minimum=True, max_places=2, unit="units")]
+UnitStep = Annotated[Decimal, DecimalRule(minimum=Decimal("0.01"), maximum=Decimal(1), max_places=2, unit="units")]
+Fte = Annotated[Decimal, DecimalRule(minimum=_D0, maximum=Decimal(1), exclusive_minimum=True, max_places=4)]
+LeaveMonths = Annotated[int, IntRule(minimum=1, maximum=60, unit="months")]
+NoticeValue = Annotated[int, IntRule(minimum=0, maximum=365)]
+BackdateDays = Annotated[int, IntRule(minimum=0, maximum=90, unit="days")]
+FutureDays = Annotated[int, IntRule(minimum=1, maximum=730, unit="days")]
+GapDays = Annotated[int, IntRule(minimum=0, maximum=5, unit="days")]
+DueDays = Annotated[int, IntRule(minimum=0, maximum=90, unit="days")]
+SlabMinutes = Annotated[int, IntRule(minimum=1, maximum=1440, unit="minutes")]
+MaxRequests = Annotated[int, IntRule(minimum=1, maximum=1000)]
+MonthDay = Annotated[str, PatternRule(kind="month_day", max_length=5,
+                                      pattern=re.compile(r"(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])"),
+                                      hint="a day of the year as MM-DD")]
+LEAVE_GENDERS: Final = ("FEMALE", "MALE", "OTHER", "UNSPECIFIED")
+WORKER_CLASS_CHOICES: Final = ("EMPLOYEE", "CONTRACTOR", "INTERN", "APPRENTICE")
+ATTACHMENT_CATEGORIES: Final = ("MEDICAL_CERTIFICATE", "FIT_TO_WORK", "PARENTAL_EVIDENCE", "BEREAVEMENT_EVIDENCE",
+                                "MARRIAGE_EVIDENCE", "OFFICIAL_SUMMONS", "STUDY_EVIDENCE", "TRAVEL_DOCUMENT",
+                                "SUPPORTING_DOCUMENT")
+LEAVE_EVENT_TYPES: Final = ("EXPECTED_DELIVERY", "BIRTH", "ADOPTION_HANDOVER", "SURROGACY_HANDOVER", "PREGNANCY_LOSS",
+                            "REPRODUCTIVE_PROCEDURE", "DEATH", "MARRIAGE", "PILGRIMAGE", "SABBATICAL_ELIGIBILITY",
+                            "LONG_ILLNESS", "OTHER")
+ENCASH_TRIGGERS: Final = ("EXIT", "YEAR_END", "ON_REQUEST")
+GenderSet = Annotated[tuple[str, ...], ChoiceSetRule(choices=LEAVE_GENDERS, min_items=1)]
+WorkerClassSet = Annotated[tuple[str, ...], ChoiceSetRule(choices=WORKER_CLASS_CHOICES, min_items=1)]
+EncashTriggers = Annotated[tuple[str, ...], ChoiceSetRule(choices=ENCASH_TRIGGERS)]
+EventTypeSet = Annotated[tuple[str, ...], ChoiceSetRule(choices=LEAVE_EVENT_TYPES, min_items=1)]
+EarnOn = Annotated[tuple[str, ...], ChoiceSetRule(choices=("HOLIDAY", "WEEKLY_OFF"), min_items=1)]
+
+
+class LeaveCycle(_Strict):
+    kind: Literal["CALENDAR_YEAR", "FISCAL_YEAR", "ANNIVERSARY", "CUSTOM"] = _f(
+        "CALENDAR_YEAR", "The leave year: calendar year, the legal entity's fiscal year, the work anniversary or a "
+        "custom start day.")
+    custom_start: MonthDay | None = _f(None, "First day of a CUSTOM leave year (MM-DD, never 02-29).")
+
+    @model_validator(mode="after")
+    def _rules(self) -> "LeaveCycle":
+        if (self.kind == "CUSTOM") != (self.custom_start is not None):
+            raise ValueError("custom_start is required for a CUSTOM cycle and only for it")
+        if self.custom_start == "02-29":
+            raise ValueError("a leave year cannot start on 29 February")
+        return self
+
+
+class LeavePlanDefaults(_Strict):
+    cycle: LeaveCycle = _f(help_="The leave year of every type without its own cycle.", factory=LeaveCycle)
+
+
+class LeaveBalanceScope(_Strict):
+    kind: Literal["CYCLE", "LOTS", "EVENT"] = _f(
+        "CYCLE", "CYCLE: one balance per leave year. LOTS: expiring credits (comp-off). EVENT: per occurrence.")
+
+
+class LeaveCountingBasis(_Strict):
+    basis: Literal["WORKING_DAYS", "CALENDAR_DAYS", "CALENDAR_EXCL_HOLIDAYS", "FIXED_WEEKDAYS"] = _f(
+        "WORKING_DAYS", "Which dates inside a request are charged.")
+    weekdays: list[Annotated[int, IntRule(minimum=0, maximum=6)]] | None = _f(
+        None, "FIXED_WEEKDAYS only: the charged weekdays (Mon=0..Sun=6).")
+
+    @model_validator(mode="after")
+    def _rules(self) -> "LeaveCountingBasis":
+        if (self.basis == "FIXED_WEEKDAYS") != (self.weekdays is not None):
+            raise ValueError("weekdays are required for FIXED_WEEKDAYS and only for it")
+        if self.weekdays is not None and (not self.weekdays or len(set(self.weekdays)) != len(self.weekdays)):
+            raise ValueError("weekdays must be 1-7 distinct days")
+        return self
+
+
+class LeaveMinTenure(_Strict):
+    value: Annotated[int, IntRule(minimum=1, maximum=600)] = _f(help_="How long.")
+    unit: Literal["DAYS", "MONTHS", "YEARS"] = _f("MONTHS", "Unit of the value.")
+    basis: Literal["SERVICE_START", "HIRE_DATE", "CONFIRMATION"] = _f("SERVICE_START", "Counted from.")
+    mode: Literal["BLOCK_USE", "NO_ENTITLEMENT"] = _f(
+        "BLOCK_USE", "BLOCK_USE: accrues but cannot be used yet. NO_ENTITLEMENT: nothing until reached.")
+
+
+class LeaveEligibility(_Strict):
+    genders: GenderSet | None = _f(None, "Only these (mapped) genders; empty = everyone.")
+    unknown_gender: Literal["ELIGIBLE_VERIFY", "NOT_ELIGIBLE"] = _f(
+        "ELIGIBLE_VERIFY", "Unknown gender: HR verifies, or not eligible.")
+    worker_classes: WorkerClassSet | None = _f(None, "Only these worker classes.")
+    employment_types: CodeList | None = _f(None, "Only these employment type codes.")
+    countries: CodeList | None = _f(None, "Only branches in these countries (ISO codes).")
+    branch_ids: IdList | None = _f(None, "Only these branches.")
+    min_fte: Fte | None = _f(None, "Least full-time equivalent.")
+    min_tenure: LeaveMinTenure | None = _f(None, "Waiting period.")
+
+
+class LeaveTenureSlab(_Strict):
+    from_months: Annotated[int, IntRule(minimum=0, maximum=600, unit="months")]
+    amount: LeaveUnits
+
+
+class LeaveEntitlement(_Strict):
+    method: Literal["FRONT_LOADED", "PERIODIC", "TENURE_SLABS", "PER_DAYS_WORKED", "EVENT_GRANT", "NONE"] = _f(
+        "FRONT_LOADED", "How the yearly amount is credited.")
+    amount: LeaveUnits = _f(Decimal(0), "Yearly amount (days or hours).")
+    frequency: Literal["MONTHLY", "QUARTERLY", "HALF_YEARLY"] | None = _f(None, "PERIODIC: how often.")
+    post_at: Literal["START", "END"] | None = _f(None, "PERIODIC: credit at the start or the end of each period.")
+    per_days_worked: Annotated[int, IntRule(minimum=1, maximum=365)] | None = _f(
+        None, "PER_DAYS_WORKED: one unit per this many days worked.")
+    tenure_slabs: list[LeaveTenureSlab] | None = _f(None, "TENURE_SLABS: yearly amounts by months of service.")
+    credit_expiry_months: LeaveMonths | None = _f(None, "Credits expire this many months after posting.")
+
+    @model_validator(mode="after")
+    def _rules(self) -> "LeaveEntitlement":
+        if (self.method == "PERIODIC") != (self.frequency is not None and self.post_at is not None):
+            raise ValueError("PERIODIC needs frequency and post_at (and only PERIODIC takes them)")
+        if (self.method == "PER_DAYS_WORKED") != (self.per_days_worked is not None):
+            raise ValueError("per_days_worked is required for PER_DAYS_WORKED and only for it")
+        if (self.method == "TENURE_SLABS") != bool(self.tenure_slabs):
+            raise ValueError("tenure_slabs are required for TENURE_SLABS and only for it")
+        if self.tenure_slabs:
+            months = [s.from_months for s in self.tenure_slabs]
+            if months[0] != 0 or any(b <= a for a, b in zip(months, months[1:])):
+                raise ValueError("tenure_slabs must start at 0 months and increase")
+        return self
+
+
+class LeaveProration(_Strict):
+    joiner: Literal["PRORATE", "FULL"] = _f("PRORATE", "Joiners get a share of the year, or the full amount.")
+    leaver: Literal["PRORATE", "FULL"] = _f("PRORATE", "Leavers keep a share of the year, or the full amount.")
+
+
+class LeaveRounding(_Strict):
+    mode: Literal["NONE_2DP", "NEAREST_HALF", "UP_HALF", "DOWN_HALF", "NEAREST_QUARTER", "NEAREST_WHOLE"] = _f(
+        "NONE_2DP", "Rounding of credited amounts (applied to the cumulative amount earned).")
+
+
+class LeaveCarryForward(_Strict):
+    cap: LeaveUnits | None = _f(Decimal(0), "Most units carried into the next year; empty = everything.")
+    expiry_months: LeaveMonths | None = _f(None, "Carried units expire after this many months; empty = never.")
+
+
+class LeaveEncashment(_Strict):
+    eligible: bool = _f(False, "Unused units may be paid out.")
+    triggers: EncashTriggers = _f((), "When: on exit, at year end (the part above the carry cap) or on request.")
+    max_units_per_cycle: PositiveUnits | None = _f(None, "Most units paid out per leave year.")
+    min_balance_after: LeaveUnits | None = _f(None, "Units that must remain after an on-request encashment.")
+    step: UnitStep = _f(Decimal("0.5"), "Encashed units are a multiple of this.")
+
+    @model_validator(mode="after")
+    def _rules(self) -> "LeaveEncashment":
+        if self.triggers and not self.eligible:
+            raise ValueError("triggers need eligible = true")
+        return self
+
+
+class LeaveSandwich(_Strict):
+    mode: Literal["OFF", "WEEKLY_OFFS", "HOLIDAYS", "BOTH"] = _f(
+        "OFF", "Count weekly offs and/or holidays between two leave days as leave.")
+    half_day_edges: Literal["IGNORE", "COUNT"] = _f("IGNORE", "Half-day leave next to the gap closes the sandwich.")
+
+
+class LeaveNoticeStep(_Strict):
+    min_units: PositiveUnits
+    value: NoticeValue
+
+
+class LeaveNotice(_Strict):
+    value: NoticeValue = _f(0, "Notice before the first leave day.")
+    unit: Literal["CALENDAR_DAYS", "WORKING_DAYS"] = _f("CALENDAR_DAYS", "Unit of the notice.")
+    scale: list[LeaveNoticeStep] = _f(help_="Longer requests need longer notice.", factory=list)
+
+
+class LeaveEmergency(_Strict):
+    enabled: bool = _f(True, "Short notice is allowed when the employee marks the request as an emergency.")
+    max_units: PositiveUnits = _f(Decimal(1), "Largest emergency request.")
+    reason_required: bool = _f(True, "Emergency requests need a reason.")
+
+
+class LeaveCap(_Strict):
+    period: Literal["MONTH", "QUARTER", "CYCLE", "ROLLING_12M"]
+    max_units: PositiveUnits
+
+
+class LeaveInstanceCap(_Strict):
+    period: Literal["MONTH", "QUARTER", "CYCLE", "ROLLING_12M", "LIFETIME"]
+    max_requests: MaxRequests
+
+
+class LeaveClubbing(_Strict):
+    not_with: list[LeaveCode] = _f(help_="Types this leave may not be joined to.", factory=list)
+    gap_days: GapDays = _f(0, "Working days allowed between them.")
+
+
+class LeaveRequestRules(_Strict):
+    self_service: bool = _f(True, "Employees apply themselves.")
+    on_behalf: bool = _f(True, "Managers and HR may apply for them.")
+    portions: Literal["INHERIT", "FULL_ONLY", "HOURS_ALLOWED"] = _f(
+        "INHERIT", "INHERIT follows the type's half-day setting; FULL_ONLY refuses half days.")
+    min_units: PositiveUnits | None = _f(None, "Smallest request.")
+    max_units: PositiveUnits | None = _f(None, "Largest request.")
+    max_consecutive_units: PositiveUnits | None = _f(None, "Most consecutive units with adjoining requests.")
+    caps: list[LeaveCap] = _f(help_="Most units per period.", factory=list)
+    max_instances: list[LeaveInstanceCap] = _f(help_="Most requests per period.", factory=list)
+    min_notice: LeaveNotice | None = _f(None, "Advance notice.")
+    emergency_exception: LeaveEmergency | None = _f(None, "Emergency requests may skip the notice.")
+    backdate_limit_days: BackdateDays = _f(0, "How many days back a request may start.")
+    future_limit_days: FutureDays = _f(365, "How far ahead a request may end.")
+    clubbing: LeaveClubbing = _f(help_="Types that may not be joined to this one.", factory=LeaveClubbing)
+    adjacent_non_working: Literal["ALLOW", "WARN", "BLOCK"] = _f(
+        "ALLOW", "Leave next to a weekly off or holiday.")
+    blackouts: Literal["APPLY", "EXEMPT"] = _f("APPLY", "Blackout periods apply to this type.")
+    coverage: Literal["APPLY", "EXEMPT"] = _f("APPLY", "Minimum-staffing rules apply to this type.")
+    reason: Literal["OPTIONAL", "REQUIRED", "HIDDEN"] = _f("OPTIONAL", "The reason field.")
+
+    @model_validator(mode="after")
+    def _rules(self) -> "LeaveRequestRules":
+        if self.min_units is not None and self.max_units is not None and self.min_units > self.max_units:
+            raise ValueError("min_units must not exceed max_units")
+        return self
+
+
+class LeaveDocumentNeed(_Strict):
+    when: Literal["ALWAYS", "MIN_UNITS", "MIN_CALENDAR_DAYS", "BACKDATED", "ADJACENT_NON_WORKING"]
+    min_units: PositiveUnits | None = None
+    category: Literal[ATTACHMENT_CATEGORIES] = "SUPPORTING_DOCUMENT"  # type: ignore[valid-type]
+
+    @model_validator(mode="after")
+    def _rules(self) -> "LeaveDocumentNeed":
+        if (self.when in ("MIN_UNITS", "MIN_CALENDAR_DAYS")) != (self.min_units is not None):
+            raise ValueError("min_units is required for MIN_UNITS / MIN_CALENDAR_DAYS and only for them")
+        return self
+
+
+class LeaveDocuments(_Strict):
+    allowed: bool = _f(True, "Employees may attach documents.")
+    required: list[LeaveDocumentNeed] = _f(help_="When a document is required.", factory=list)
+    due: Literal["AT_SUBMIT", "BEFORE_DECISION", "WITHIN_DAYS_AFTER_RETURN", "WITHIN_DAYS_AFTER_SUBMIT"] = _f(
+        "AT_SUBMIT", "When the document must be there.")
+    due_days: DueDays | None = _f(None, "Days allowed for WITHIN_DAYS_*.")
+    verification: Literal["NONE", "AFTER_APPROVAL", "BEFORE_APPROVAL"] = _f("NONE", "Whether HR verifies it.")
+
+    @model_validator(mode="after")
+    def _rules(self) -> "LeaveDocuments":
+        if self.due.startswith("WITHIN_DAYS") != (self.due_days is not None):
+            raise ValueError("due_days is required for WITHIN_DAYS_* and only for it")
+        if not self.allowed and self.required:
+            raise ValueError("documents cannot be required when uploads are not allowed")
+        return self
+
+
+class LeaveApprovalRules(_Strict):
+    auto_approve_eligible: bool = _f(False, "Requests without warnings are approved automatically.")
+
+
+class LeaveChangeRules(_Strict):
+    cancellation_requires_approval: Literal["INHERIT", "ALWAYS", "NEVER"] = _f(
+        "INHERIT", "INHERIT follows the leave.cancellation.requires_approval setting.")
+    recall_allowed: bool = _f(True, "A manager may recall the employee from approved leave.")
+
+
+class LeaveEventRules(_Strict):
+    event_types: EventTypeSet = _f(help_="Events that give this leave.")
+    entitlement_units: PositiveUnits = _f(help_="Units per event.")
+    duration_unit: Literal["WORKING_DAYS", "CALENDAR_DAYS", "WEEKS"] = _f("CALENDAR_DAYS", "Unit of the units.")
+    earliest_start_offset_days: Annotated[int, IntRule(minimum=-365, maximum=0)] = _f(
+        0, "How many days before the event the leave may start (negative).")
+    take_within_days: Annotated[int, IntRule(minimum=1, maximum=1095)] | None = _f(
+        None, "The leave must end within this many days of the event.")
+    max_occurrences: MaxRequests | None = _f(None, "Events per employment.")
+
+
+class LeaveTypeRule(_Strict):
+    leave_type_code: LeaveCode = _f(help_="The leave type (leave_types.code).")
+    frozen: bool = _f(False, "System-written: kept only so year end can settle an inactive type.")
+    keep_on_plan_exit: bool = _f(False, "The balance stays bookable after moving to a plan without this type.")
+    cycle: LeaveCycle | None = _f(None, "Own leave year; empty = the plan default.")
+    balance_scope: LeaveBalanceScope = _f(help_="How the balance is kept.", factory=LeaveBalanceScope)
+    counting_basis: LeaveCountingBasis = _f(help_="Charged dates.", factory=LeaveCountingBasis)
+    eligibility: LeaveEligibility = _f(help_="Who can take it.", factory=LeaveEligibility)
+    during_probation: Literal["ALLOW", "ACCRUE_ONLY", "BLOCK"] = _f("ALLOW", "During probation.")
+    during_notice: Literal["ALLOW", "BLOCK", "ALLOW_EXTENDS_LWD"] = _f("ALLOW", "During the notice period.")
+    entitlement: LeaveEntitlement = _f(help_="How much and how it is credited.", factory=LeaveEntitlement)
+    accrual_cap: PositiveUnits | None = _f(None, "No accrual while the balance is at least this.")
+    max_balance: PositiveUnits | None = _f(None, "Ceiling of the balance.")
+    proration: LeaveProration = _f(help_="Joiners and leavers.", factory=LeaveProration)
+    rounding: LeaveRounding = _f(help_="Rounding of credits.", factory=LeaveRounding)
+    carry_forward: LeaveCarryForward = _f(help_="Year end.", factory=LeaveCarryForward)
+    encashment: LeaveEncashment = _f(help_="Pay-out of unused units (money is the leave pay policy's).",
+                                     factory=LeaveEncashment)
+    balance_check: Literal["CURRENT", "PROJECTED"] = _f("CURRENT", "Balance compared at booking.")
+    insufficient_balance_action: Literal["BLOCK", "ALLOW_NEGATIVE", "SPLIT_TO_UNPAID"] = _f(
+        "BLOCK", "When the balance is short.")
+    negative_allowance: LeaveUnits = _f(Decimal(0), "How far the balance may go below zero (ALLOW_NEGATIVE).")
+    negative_at_cycle_end: Literal["CARRY_NEGATIVE", "WRITE_OFF"] = _f(
+        "CARRY_NEGATIVE", "A negative balance at year end.")
+    sandwich: LeaveSandwich = _f(help_="Leave sandwich.", factory=LeaveSandwich)
+    request: LeaveRequestRules = _f(help_="Request rules.", factory=LeaveRequestRules)
+    documents: LeaveDocuments = _f(help_="Documents.", factory=LeaveDocuments)
+    approval: LeaveApprovalRules = _f(help_="Approval.", factory=LeaveApprovalRules)
+    change: LeaveChangeRules = _f(help_="Changes to approved leave.", factory=LeaveChangeRules)
+    event: LeaveEventRules | None = _f(None, "Per-event leave (kind EVENT types only).")
+
+    @model_validator(mode="after")
+    def _rules(self) -> "LeaveTypeRule":
+        if (self.insufficient_balance_action == "ALLOW_NEGATIVE") != (self.negative_allowance > 0):
+            raise ValueError("negative_allowance > 0 goes with insufficient_balance_action ALLOW_NEGATIVE only")
+        if self.balance_scope.kind == "EVENT" and self.event is None:
+            raise ValueError("an EVENT balance needs the event block")
+        if self.event is not None and self.request.min_notice is not None and self.request.min_notice.value > 365:
+            raise ValueError("notice of an event leave is at most 365 days")
+        return self
+
+
+class LeaveCreditSlab(_Strict):
+    min_worked_minutes: SlabMinutes
+    units: PositiveUnits
+
+
+def _default_slabs() -> list["LeaveCreditSlab"]:
+    return [LeaveCreditSlab(min_worked_minutes=240, units=Decimal("0.5")),
+            LeaveCreditSlab(min_worked_minutes=480, units=Decimal("1.0"))]
+
+
+class LeaveCompOffRules(_Strict):
+    earn_on: EarnOn = _f(("HOLIDAY", "WEEKLY_OFF"), "Work on these days can be claimed.")
+    claim_window_days: Annotated[int, IntRule(minimum=1, maximum=90, unit="days")] = _f(
+        30, "Days after the worked day within which a claim is filed.")
+    credit_slabs: list[LeaveCreditSlab] = _f(help_="Worked minutes to credited units.", factory=_default_slabs)
+    validity_days: Annotated[int, IntRule(minimum=1, maximum=365, unit="days")] = _f(
+        60, "Days after the worked day the credit can be used.")
+    min_usable_days: Annotated[int, IntRule(minimum=0, maximum=90, unit="days")] = _f(
+        14, "A credit is usable at least this long after it is credited.")
+    max_units_per_month: PositiveUnits | None = _f(None, "Most units credited per month.")
+
+    @model_validator(mode="after")
+    def _rules(self) -> "LeaveCompOffRules":
+        minutes = [s.min_worked_minutes for s in self.credit_slabs]
+        if not minutes or any(b <= a for a, b in zip(minutes, minutes[1:])):
+            raise ValueError("credit_slabs must list increasing minutes")
+        return self
+
+
+class LeavePlan(PolicyFields):
+    """LH 03-leave/01 §5.2: ``defaults``, ``comp_off`` and one rule per leave type (1-60)."""
+
+    schema_version: Literal[1] = _f(1, "Schema version.")
+    defaults: LeavePlanDefaults = _f(help_="Plan defaults.", factory=LeavePlanDefaults)
+    comp_off: LeaveCompOffRules | None = _f(None, "Comp-off claim rules (needed when a COMP_OFF type is in the plan).")
+    types: list[LeaveTypeRule] = _f(help_="One rule per leave type.", factory=list)
+
+    @model_validator(mode="after")
+    def _rules(self) -> "LeavePlan":
+        codes = [t.leave_type_code for t in self.types]
+        if len(codes) > 60:
+            raise ValueError("a plan has at most 60 leave types")
+        if len(set(codes)) != len(codes):
+            raise ValueError("each leave type appears once in a plan")
+        return self
+
+    def activation_problems(self, switches: frozenset[str] | None) -> list[ActivationProblem]:
+        if not self.types:
+            return [ActivationProblem("types", "Add at least one leave type.")]
+        return []
+
+
 @dataclass(frozen=True)
 class PolicyTypeDef:
     """One policy type (3.1 §3.2): its gate switches (empty = always in force), grain and schema."""
@@ -1390,6 +1757,10 @@ POLICY_TYPES: Final[Mapping[str, PolicyTypeDef]] = types.MappingProxyType({
         PolicyTypeDef("SCHEDULING_POLICY", "Shifts & schedules", (), "DAY", SchedulingPolicy,
                       "Shifts & schedules", "AS spine §6.2.4", write_permission="shift:manage",
                       module="attendance"),
+        # LH-M2 (03-leave/01 §5.1): no gate switch, the builder is GLOBAL (13 §2.3); balances read it from the cut-over.
+        PolicyTypeDef("LEAVE_PLAN", "Leave plan", (), "DAY", LeavePlan, "Leave", "LH 03-leave/01 §5",
+                      write_permission="leave:manage_policy", module="leave",
+                      activation_step_up_setting="leave.plan_activation.requires_step_up"),
     )
 })
 

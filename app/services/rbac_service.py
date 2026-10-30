@@ -441,10 +441,13 @@ def set_user_roles(db: Session, principal: Principal, target: User, role_ids: Se
 
 
 def reroute_approvals(db: Session, company_id: int) -> None:
-    """Pending approval requests whose approver lost a role or grant move on (F-29, EC-RUN-21)."""
+    """Pending approval requests whose approver lost a role or grant move on (F-29, EC-RUN-21); rosters left without a
+    second publisher under planner-cannot-publish are flagged (EC AS-ROS-11)."""
     from app.payroll.services import approvals
+    from app.services import shift_rosters
 
     approvals.reroute_after_access_change(db, company_id)
+    shift_rosters.sod_after_access_change(db, company_id)
 
 
 def _audit_payroll_role_changes(

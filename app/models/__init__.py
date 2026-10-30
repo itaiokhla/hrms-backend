@@ -71,6 +71,8 @@ from app.models import attendance_requests  # noqa: E402,F401  (AS-M4, migration
 from app.models import devices  # noqa: E402,F401  (AS-M7, migration 0055)
 from app.models import shift_requests  # noqa: E402,F401  (AS-M6, migration 0057)
 from app.models import integrations, team_payroll  # noqa: E402,F401  (migration 0058)
+from app.models import leave_v2  # noqa: E402,F401  (leave v2, migration 0063)
+from app.models import agent  # noqa: E402,F401  (AI assistant threads / messages / actions, migration 0068)
 
 TENANT_TABLES = sorted(
     m.__tablename__ for base in (BaseModel, BigIdModel) for m in base.__subclasses__() if issubclass(m, TenantMixin)

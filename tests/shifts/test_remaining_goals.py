@@ -299,3 +299,14 @@ def test_calendar_feed_serves_the_published_schedule_until_revoked(app, plant):
     assert anonymous.get(path).status_code == 404 and anonymous.get(rotated).status_code == 200
     assert ravi.request("DELETE", "/api/v1/me/calendar-feed").json()["active"] is False
     assert anonymous.get(rotated).status_code == 404
+
+
+def test_calendar_feed_guessing_from_one_address_is_rate_limited(app):
+    """FU-AS-52: the public feed is limited to 60 requests a minute per client address (429 RATE_LIMITED)."""
+    from app.core.rate_limit import limiter
+
+    limiter.reset()
+    anonymous = ApiClient(app)
+    codes = [anonymous.get(f"/api/v1/calendar/1.guess{n:03d}abcdefghijklmnop.ics").status_code for n in range(61)]
+    assert codes[:60] == [404] * 60 and codes[60] == 429
+    limiter.reset()

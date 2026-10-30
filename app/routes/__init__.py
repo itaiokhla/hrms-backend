@@ -1,4 +1,5 @@
 from app.routes import (
+    agent,
     attendance,
     attendance_capture,
     attendance_cutover,
@@ -24,6 +25,7 @@ from app.routes import (
     holiday_calendars,
     holiday_work_weeks,
     leaves,
+    leave_v2,
     operations,
     org_structure,
     organization,
@@ -66,6 +68,7 @@ ROUTERS = [
     holiday_calendars.assignments_router,
     holiday_calendars.branches_router,
     calendar_days.router,
+    leave_v2.router,  # leave v2 (LH-M2..M8): literal /api/v1/leaves paths before the legacy router
     # AS-M2 capture v2 (before attendance.router: /attendance/kiosk/* and /attendance/review literals win).
     attendance_capture.router,
     attendance_devices.router,
@@ -97,4 +100,5 @@ ROUTERS = [
     dashboard.router,
     branding.router,
     org_structure.router,
+    agent.router,  # AI assistant (docs/leave_agent.md): /api/v1/agent/*, no overlap with other prefixes
 ]

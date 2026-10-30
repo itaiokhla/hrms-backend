@@ -262,7 +262,7 @@ def test_department_transfer_changes_department_scope(org, app):
     dept = admin.post("/api/v1/departments", json={"name": "Finance"}).json()["id"]
     head = create_employee(admin, "Head", "Finance", department_id=dept)
     admin.put(f"/api/v1/departments/{dept}", json={"name": "Finance", "head_employee_id": head["id"]})
-    role = admin.post("/api/v1/roles", json={"name": "Department Head", "grants": [
+    role = admin.post("/api/v1/roles", json={"name": "Finance Department Head", "grants": [
         {"permission": "employee:read", "scope": "DEPARTMENT"}]}).json()["id"]
     head_user = invite_and_activate(app, admin, head, [])
     admin.put(f"/api/v1/users/{head_user.user_id}/roles", json={"role_ids": [role]})

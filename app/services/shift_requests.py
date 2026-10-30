@@ -27,6 +27,7 @@ Services never commit; routes commit.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from sqlalchemy import func, or_
@@ -55,8 +56,7 @@ DEFAULT_REQUESTS = {"swap": {"enabled": False, "cutoff_hours": 24, "approval_req
                     "drop": {"enabled": False, "cutoff_hours": 24, "approval_required": True},
                     "release": {"enabled": False, "cutoff_hours": 48, "approval_required": True},
                     "pickup_approval_required": True, "change_enabled": True, "change_cutoff_hours": 48}
-PEER_SIDE = {"EMPLOYMENT", "BRANCH", "TEAM", "LEAVE", "UNAVAILABLE", "TAG_MISSING", "TAG_EXPIRED", "PRIORITY_WINDOW",
-             "NOT_ROSTERED"}
+PEER_SIDE = {"EMPLOYMENT", "BRANCH", "TEAM", "LEAVE", "UNAVAILABLE", "TAG_MISSING", "TAG_EXPIRED", "PRIORITY_WINDOW"}
 MAX_PICKER = 50
 
 
@@ -232,9 +232,25 @@ def _tags_missing(db: Session, company_id: int, employee_id: int, required: Sequ
     return missing, expired
 
 
+def _in_priority_group(db: Session, company_id: int, party: Employee, day: date, posted_at: Optional[datetime]) -> bool:
+    """§6.4 EXISTING_PART_TIME_FIRST: employed when the open shift was posted and — without a pack
+    ``access_to_hours.eligible_worker_classes`` (no pack carries it yet) — a primary placement FTE below 1 on the
+    shift date."""
+    from app.models.org import EmployeeAssignment
+
+    if posted_at is not None and party.hire_date is not None and party.hire_date > posted_at.date():
+        return False
+    fte = db.query(EmployeeAssignment.fte).filter(
+        EmployeeAssignment.company_id == company_id, EmployeeAssignment.employee_id == party.id,
+        EmployeeAssignment.is_primary.is_(True), EmployeeAssignment.effective_from <= day,
+        or_(EmployeeAssignment.effective_to.is_(None), EmployeeAssignment.effective_to >= day)).scalar()
+    return fte is not None and fte < 1
+
+
 def eligibility(db: Session, company_id: int, *, requester_id: Optional[int], party_id: int, day: date,
                 policy: Mapping[str, Any], branch_id: Optional[int], team_id: Optional[int],
-                required_tags: Sequence[str] = (), priority_until: Optional[datetime] = None) -> dict:
+                required_tags: Sequence[str] = (), priority_until: Optional[datetime] = None,
+                priority: str = "NONE", posted_at: Optional[datetime] = None) -> dict:
     """§4.2 for the second party (peer or claimant): ``{eligible, reasons[], warnings[]}``. Reasons block; warnings
     (availability, tags) are acknowledged like roster WARN results."""
     party = db.get(Employee, party_id)
@@ -254,7 +270,8 @@ def eligibility(db: Session, company_id: int, *, requester_id: Optional[int], pa
             reasons.append("TEAM")
     if _on_leave(db, company_id, party_id, day):
         reasons.append("LEAVE")
-    if priority_until is not None and _now() < priority_until:
+    if priority_until is not None and _now() < priority_until and not (
+            priority == "EXISTING_PART_TIME_FIRST" and _in_priority_group(db, company_id, party, day, posted_at)):
         reasons.append("PRIORITY_WINDOW")
     if _unavailable(db, company_id, party_id, day):
         warnings.append("UNAVAILABLE")
@@ -379,13 +396,15 @@ def _shift_codes(db: Session, company_id: int) -> Dict[int, str]:
     return dict(db.query(Shift.id, Shift.code).filter(Shift.company_id == company_id).all())
 
 
-def _entry_view(row: Optional[RosterEntry], codes: Mapping[int, str]) -> Optional[dict]:
+def _entry_view(row: Optional[RosterEntry], codes: Mapping[int, str], *, peer: bool = False) -> Optional[dict]:
+    """``peer``: another employee's entry, shown as their shift only (06 §7.2 V-10) — not when they acknowledged it."""
     if row is None:
         return None
     return {"id": row.id, "shift_date": row.shift_date.isoformat(), "kind": row.kind, "shift_id": row.shift_id,
             "shift_code": codes.get(row.shift_id) if row.shift_id else None,
             "custom_start_time": row.custom_start_time, "custom_end_time": row.custom_end_time,
-            "version": row.version, "acknowledged_at": row.acknowledged_at.isoformat() if row.acknowledged_at else None}
+            "version": row.version,
+            "acknowledged_at": row.acknowledged_at.isoformat() if row.acknowledged_at and not peer else None}
 
 
 def serialize(db: Session, row: ShiftRequest, viewer: Optional[Principal] = None) -> dict:
@@ -395,16 +414,24 @@ def serialize(db: Session, row: ShiftRequest, viewer: Optional[Principal] = None
     counter = db.get(RosterEntry, row.counter_entry_id) if row.counter_entry_id else None
     me = viewer.employee_id if viewer is not None else None
     is_requester = me == row.requester_employee_id
+    # A party sees the checks of their own schedule only (03-shifts/03 §4.2, §10; GV-AS-SWP-17; FU-AS-54): the other
+    # party's results (hours, consent states, the protected group or age a night-work / adolescent check reveals)
+    # collapse into one neutral PEER_NOT_AVAILABLE item for the requester (EC AS-SWP-06) and are left out for the
+    # coworker. Approvers and planners are never parties and see them all.
+    parties = _parties(db, row) if me is not None else []
+    others = set(parties) - {me} if me in parties else set()
     checks = row.checks or []
-    if is_requester and row.target_employee_id:
-        checks = [c for c in checks if c.get("employee_id") != row.target_employee_id] + (
-            [{"rule_key": "PEER_NOT_AVAILABLE", "message": "Not available for this swap."}]
-            if any(c.get("employee_id") == row.target_employee_id for c in checks) else [])
+    if others:
+        kept = [c for c in checks if c.get("employee_id") not in others]
+        if is_requester and len(kept) != len(checks):
+            kept.append({"rule_key": "PEER_NOT_AVAILABLE", "message": "Not available for this swap."})
+        checks = kept
     out = {"id": row.id, "kind": row.kind, "status": row.status, "shift_date": row.shift_date.isoformat(),
            "counter_date": row.counter_date.isoformat() if row.counter_date else None,
            "requester_employee_id": row.requester_employee_id, "requester_name": names.get(row.requester_employee_id),
            "target_employee_id": row.target_employee_id, "target_name": names.get(row.target_employee_id),
-           "entry": _entry_view(entry, codes), "counter_entry": _entry_view(counter, codes),
+           "entry": _entry_view(entry, codes, peer=entry is not None and entry.employee_id in others),
+           "counter_entry": _entry_view(counter, codes, peer=counter is not None and counter.employee_id in others),
            "open_shift_id": row.open_shift_id, "requested_change": row.requested_change,
            "requested_shift_code": codes.get((row.requested_change or {}).get("shift_id")) if row.requested_change else None,
            "reason": row.reason if viewer is None or is_requester or me == row.target_employee_id
@@ -449,13 +476,28 @@ def _own(db: Session, principal: Principal) -> Employee:
     return employee
 
 
+def _parties(db: Session, row: ShiftRequest) -> List[int]:
+    """Requester, coworker and — for a pickup of a released shift — the releaser (03-shifts/03 §9)."""
+    people = {row.requester_employee_id, row.target_employee_id}
+    if row.open_shift_id:
+        released_by = db.query(OpenShift.released_by_employee_id).filter(
+            OpenShift.company_id == row.company_id, OpenShift.id == row.open_shift_id).scalar()
+        people.add(released_by)
+    return sorted(people - {None})
+
+
+def _covers_parties(db: Session, principal: Principal, row: ShiftRequest) -> bool:
+    """``roster:approve`` at a scope covering **every** party (EC AS-SWP-09): a lead who covers only one of them
+    never opens or decides the request."""
+    return all(authz.can_access_employee(db, principal, APPROVE, e) for e in _parties(db, row))
+
+
 def _can_decide(db: Session, principal: Principal, row: ShiftRequest) -> bool:
     if not principal.has(APPROVE):
         return False
-    parties = {row.requester_employee_id, row.target_employee_id} - {None}
-    if principal.employee_id in parties:
+    if principal.employee_id in _parties(db, row):
         return False  # nobody decides a request they are part of
-    return authz.can_access_employee(db, principal, APPROVE, row.requester_employee_id)
+    return _covers_parties(db, principal, row)
 
 
 def _load(db: Session, company_id: int, request_id: int, *, lock: bool = False) -> ShiftRequest:
@@ -474,7 +516,9 @@ def _expire_if_due(db: Session, row: ShiftRequest, now: datetime) -> None:
         _drop_engine(db, row, "Expired at the cutoff")
         row.status, row.close_reason = "EXPIRED", "CUTOFF"
         row.row_version += 1
-        db.flush()
+        # The request "becomes EXPIRED in that transaction" (§4.4) although the call answers 409: commit first, or the
+        # error rollback undoes it. Every caller reaches this right after its locks, before any other write.
+        db.commit()
         raise AppError(409, "This request expired at its cutoff.", "INVALID_TRANSITION",
                        extra={"details": {"current_status": "EXPIRED", "expired_at": row.expires_at.isoformat()}})
 
@@ -517,6 +561,25 @@ def _limit(db: Session, company_id: int, employee_id: int, kind: str, rules: Map
 
 
 # =============================================================================================== the request's cells
+def _exchange(employee_id: int, day: date, current: Sequence[RosterEntry], wanted: Sequence[Mapping[str, Any]]) -> list:
+    """Cell changes making ``employee_id``'s entries on ``day`` equal to ``wanted`` (in entry order): same position →
+    update when different, extra wanted → new ``entry_seq``, surplus current → withdrawn."""
+    out = []
+    seqs = [e.entry_seq for e in current]
+    for index, content in enumerate(wanted):
+        if index < len(current):
+            if _content(current[index]) != content:
+                out.append(_change(employee_id, day, current[index].entry_seq, content, "SWAP"))
+        else:
+            out.append(_change(employee_id, day, (max(seqs) if seqs else 0) + 1 + (index - len(current)), content,
+                               "SWAP"))
+    for entry in current[len(wanted):]:
+        gone = _change(employee_id, day, entry.entry_seq, {"kind": None}, "SWAP")
+        gone.kind = None
+        out.append(gone)
+    return out
+
+
 def _plan(db: Session, company_id: int, row_or_data: Mapping[str, Any]) -> Tuple[List[Any], List[date], Dict[str, Any]]:
     """(cell changes, affected dates, context) of a SWAP / DROP / CHANGE / PICKUP (RELEASE changes nothing until a
     pickup). ``row_or_data``: kind, requester, entry, target, counter entry, open shift, requested change."""
@@ -532,14 +595,19 @@ def _plan(db: Session, company_id: int, row_or_data: Mapping[str, Any]) -> Tuple
         for day in sorted({d1, d2}):
             mine = _cell(db, company_id, requester, day)
             theirs = _cell(db, company_id, peer, day)
-            if not mine or not theirs:
+            if not mine:  # EC AS-SWP-12 (b): the requester's own day is not published
                 raise _unprocessable("Every day of a swap needs a published shift or day off for both of you.",
-                                     "NOT_ELIGIBLE", details={"reasons": ["NOT_ROSTERED"]})
-            a, b = _content(mine[0]), _content(theirs[0])
+                                     "NOT_ELIGIBLE", details={"reasons": ["ROSTER_UNPUBLISHED"]})
+            if not theirs:  # the coworker's side stays masked (EC AS-SWP-06)
+                raise _unprocessable("Your coworker is not available for this.", "NOT_ELIGIBLE",
+                                     details={"reasons": ["PEER_NOT_AVAILABLE"]})
+            # §5.1: the two cells exchange their whole content — every entry of the day (FU-AS-47 multi-entry
+            # cells); entries are re-used by position, created when the other cell has more, withdrawn when fewer.
+            a, b = [_content(e) for e in mine], [_content(e) for e in theirs]
             if a == b:
                 continue
-            changes.append(_change(requester, day, mine[0].entry_seq, b, "SWAP"))
-            changes.append(_change(peer, day, theirs[0].entry_seq, a, "SWAP"))
+            changes.extend(_exchange(requester, day, mine, b))
+            changes.extend(_exchange(peer, day, theirs, a))
         if not changes:
             raise _unprocessable("The swap would change nothing.", "NOT_ELIGIBLE", details={"reasons": ["NO_CHANGE"]})
         return changes, sorted({d1, d2}), {"peer": peer}
@@ -668,6 +736,43 @@ def _gather(db: Session, principal: Principal, body: Mapping[str, Any]) -> dict:
     return data
 
 
+REFILE_HOURS = 24  # §4.4: re-file within 24 h of the supersede
+REFILE_SUPERSEDED_WITHIN_HOURS = 48  # ... of a request superseded in the 48 h before the instance start
+
+
+def _refile_of(db: Session, principal: Principal, data: Mapping[str, Any], body: Mapping[str, Any]
+               ) -> Optional[ShiftRequest]:
+    """``refile_of_request_id`` (§4.4, EC AS-SWP-11): the requester's own request SUPERSEDED by an EMPLOYER
+    publication, re-filed once with the same kind, coworker and date. Timing is checked with the cutoff."""
+    from app.models.rosters import RosterEntryChange
+
+    ref = body.get("refile_of_request_id")
+    if ref is None:
+        return None
+    if not isinstance(ref, int):
+        raise bad_request("refile_of_request_id must be a request id.", "INVALID_FIELDS")
+    original = db.query(ShiftRequest).filter(ShiftRequest.company_id == principal.company_id,
+                                             ShiftRequest.id == ref).first()
+    if original is None or original.requester_employee_id != data["requester_employee_id"]:
+        raise not_found("Shift request")
+    if original.status != "SUPERSEDED" or original.close_reason != "SCHEDULE_CHANGED":
+        raise AppError(409, "Only a request closed by a schedule change can be filed again.", "INVALID_TRANSITION",
+                       extra={"details": {"current_status": original.status}})
+    if (original.kind, original.target_employee_id, original.shift_date) != (
+            data["kind"], data.get("target_employee_id"), data["entry"].shift_date):
+        raise bad_request("A re-filed request keeps the kind, the coworker and the date.", "VALIDATION_ERROR")
+    chained = original.refile_of_request_id is not None or db.query(ShiftRequest.id).filter(
+        ShiftRequest.company_id == principal.company_id, ShiftRequest.refile_of_request_id == original.id).first()
+    last = (db.query(RosterEntryChange.initiated_by)
+            .filter(RosterEntryChange.company_id == principal.company_id,
+                    RosterEntryChange.entry_id.in_([e for e in (original.entry_id, original.counter_entry_id) if e]))
+            .order_by(RosterEntryChange.id.desc()).first())
+    if chained or last is None or last[0] != "EMPLOYER":
+        raise _unprocessable("This request cannot be filed again past the cutoff.", "SHIFT_REQUEST_CUTOFF",
+                             details={"cutoff_at": original.expires_at.isoformat() if original.expires_at else None})
+    return original
+
+
 def _checks_for(db: Session, principal: Principal, data: Dict[str, Any], body: Mapping[str, Any], *, gate: bool
                 ) -> dict:
     """Preconditions §4.1 (2)–(8) for the requester; returns the policy outcome and the validation results."""
@@ -688,7 +793,12 @@ def _checks_for(db: Session, principal: Principal, data: Dict[str, Any], body: M
         raise _unprocessable("This kind of request is not available for you.", "REQUEST_KIND_DISABLED",
                              details={"employee_id": data["requester_employee_id"]})
     if kind in GIVE_AWAY:
-        effect = rules[0].get("pay_effect") or "LEAVE_REQUIRED"  # interim: period-paid unless a policy says otherwise
+        effect = rules[0].get("pay_effect")
+        if not effect:  # §3.4 default by the giver's pay class on the date (JC-AS-49); NONE counts as period-paid
+            from app.payroll.services import compensation
+
+            pay_class = compensation.pay_basis_class_on(db, cid, data["requester_employee_id"], day)
+            effect = "PAID_OFF" if pay_class == "HOURLY_DAILY" else "LEAVE_REQUIRED"
         if effect == "LEAVE_REQUIRED":
             raise _unprocessable("Giving a shift away is not available for salaried staff: apply for leave instead.",
                                  "NOT_ELIGIBLE", details={"reasons": ["GIVER_SALARIED"]})
@@ -699,6 +809,13 @@ def _checks_for(db: Session, principal: Principal, data: Dict[str, Any], body: M
     start = _earliest_start(db, cid, kind, data, dates)
     cutoff_hours = max(r["cutoff_hours"] for r in rules)
     cutoff_at = start - timedelta(hours=cutoff_hours) if start is not None else None
+    refile = data.get("refile")
+    if refile is not None and start is not None:
+        # §4.4: ignores the cutoff, bounded by the instance start and by 24 h after the supersede (EC AS-SWP-11).
+        superseded_at = refile.updated_at
+        bound = min(start, superseded_at + timedelta(hours=REFILE_HOURS))
+        if superseded_at >= start - timedelta(hours=REFILE_SUPERSEDED_WITHIN_HOURS) and _now() < bound:
+            cutoff_at = start  # outside that window the normal cutoff applies
     if cutoff_at is not None and _now() > cutoff_at:
         raise _unprocessable("It is too late to ask for this change.", "SHIFT_REQUEST_CUTOFF",
                              details={"cutoff_at": cutoff_at.isoformat()})
@@ -733,6 +850,22 @@ def preview(db: Session, principal: Principal, body: Mapping[str, Any]) -> dict:
             "blocking": [r for r in outcome["results"] if r.get("severity") == "BLOCK"]}
 
 
+TEAM_VISIBILITY = "shift.roster.team_visibility"
+
+
+def _team_visibility(db: Session, company_id: int, employee_id: int, on: date) -> str:
+    """``shift.roster.team_visibility`` (04-attendance/02; 03-shifts/03 §2, §4.1; 06 `roster:read` SELF): ``TEAM`` lets
+    the picker show co-workers' published shift codes; ``OFF`` — the documented default — shows name and the
+    eligible flag only. Anything unresolvable is OFF."""
+    from app.payroll.services import settings as settings_engine
+
+    try:
+        value = settings_engine.resolve(db, company_id, TEAM_VISIBILITY, employee_id=employee_id, on=on).value
+    except Exception:  # noqa: BLE001 - the protective default
+        return "OFF"
+    return "TEAM" if value == "TEAM" else "OFF"
+
+
 def coworkers(db: Session, principal: Principal, entry_id: int, kind: Optional[str]) -> List[dict]:
     """The swap / drop picker: coworkers of the entry's team (or the requester's teams / branch) with their cell on
     the date and whether they are eligible (peer reasons are never shown, only the flag)."""
@@ -762,7 +895,7 @@ def coworkers(db: Session, principal: Principal, entry_id: int, kind: Optional[s
             or_(EmployeeAssignment.effective_to.is_(None), EmployeeAssignment.effective_to >= day))
         query = query.filter(Employee.id.in_(placed))
     codes = _shift_codes(db, cid)
-    visible = (policy.get("team_visibility") or "TEAM") != "OFF"
+    visible = _team_visibility(db, cid, me.id, day) == "TEAM"
     out = []
     branch_id = _branch_on(db, me, day)
     for person in query.order_by(Employee.first_name, Employee.last_name).limit(MAX_PICKER):
@@ -771,7 +904,7 @@ def coworkers(db: Session, principal: Principal, entry_id: int, kind: Optional[s
                           branch_id=branch_id, team_id=entry.team_id)
         eligible = ctx["eligible"] and bool(cell)
         out.append({"employee_id": person.id, "name": person.full_name, "eligible": eligible,
-                    "cell": _entry_view(cell[0], codes) if cell and visible else None,
+                    "cell": _entry_view(cell[0], codes, peer=True) if cell and visible else None,
                     "note": None if eligible else "Not available for this swap"})
     return out
 
@@ -794,6 +927,7 @@ def create(db: Session, principal: Principal, body: Mapping[str, Any]) -> ShiftR
                        extra={"details": {"request_id": open_one[0]}})
     policy = scheduling(db, cid, data["requester_employee_id"], entry.shift_date)
     _limit(db, cid, data["requester_employee_id"], data["kind"], _kind_rules(policy, data["kind"]), entry.shift_date)
+    data["refile"] = _refile_of(db, principal, data, body)  # under the employee locks: one re-file per chain
     outcome = _checks_for(db, principal, data, body, gate=True)
     now = _now()
     counter = data.get("counter_entry")
@@ -806,7 +940,8 @@ def create(db: Session, principal: Principal, body: Mapping[str, Any]) -> ShiftR
         requested_change=data.get("requested_change"), reason=(body.get("reason") or "").strip()[:500] or None,
         acknowledged_warnings=list(body.get("acknowledged_warnings") or []), checks=outcome["results"],
         approval_required=outcome["approval_required"] or data["kind"] == "CHANGE",
-        expires_at=outcome["cutoff_at"], submitted_at=now)
+        expires_at=outcome["cutoff_at"], submitted_at=now,
+        refile_of_request_id=data["refile"].id if data.get("refile") is not None else None)
     db.add(row)
     db.flush()
     AuditLogService.log(db, principal, MODULE, "SHIFT_REQUEST_SUBMITTED", f"{row.kind.title()} request submitted",
@@ -927,7 +1062,8 @@ def _route(db: Session, principal: Principal, row: ShiftRequest) -> None:
         db, principal, module=ENGINE_MODULE, subject_type=ENGINE_SUBJECT, subject_id=row.id,
         subject_employee_id=row.requester_employee_id,
         context={"work_date": row.shift_date.isoformat(), "kind": row.kind,
-                 "maker_user_ids": _users_of(db, row.company_id, [row.requester_employee_id, row.target_employee_id])},
+                 "maker_user_ids": _users_of(db, row.company_id, _parties(db, row)),
+                 "party_employee_ids": _parties(db, row)},  # approvers must cover every party (EC AS-SWP-09)
         attributes={"kind": row.kind, "kinds": [row.kind], "work_date": row.shift_date.isoformat(),
                     "notice_hours": notice})
     row.approval_request_id = request.id
@@ -967,6 +1103,21 @@ def _decided_by_engine(db: Session, principal: Optional[Principal], request) -> 
         if principal is None:
             raise conflict("A shift request is approved by a person.", "APPROVER_REQUIRED")
         row.decision_note = note
+        if _giver_on_leave(db, row):
+            # EC AS-SWP-05 in the engine inbox (FU-AS-51 c): raising here would roll the whole engine decision back
+            # and lose the outcome, so the claim is SUPERSEDED in this transaction and the people are told.
+            row.status, row.close_reason, row.decided_at = "SUPERSEDED", "OWN_LEAVE_OF_GIVER", _now()
+            row.decided_by_user_id = principal.user_id
+            row.row_version += 1
+            db.flush()
+            _recount(db, row.company_id, row.open_shift_id)
+            AuditLogService.log(db, principal, MODULE, "SHIFT_REQUEST_DECIDED", "Pickup superseded: giver on leave",
+                                "shift_request", row.id, details={"decision": "SUPERSEDED",
+                                                                 "reason": "OWN_LEAVE_OF_GIVER"})
+            _notify(db, row.company_id, row.requester_employee_id, "Pickup not applied",
+                    f"The person who released the {row.shift_date.strftime('%a %d %b')} shift is on leave that day, "
+                    "so your pickup was not applied.")
+            return
         _apply(db, principal, row)
         AuditLogService.log(db, principal, MODULE, "SHIFT_REQUEST_DECIDED", f"{row.kind.title()} approved",
                             "shift_request", row.id, details={"decision": "APPROVED",
@@ -980,9 +1131,14 @@ def _decided_by_engine(db: Session, principal: Optional[Principal], request) -> 
         db.flush()
         if row.open_shift_id:
             _recount(db, row.company_id, row.open_shift_id)
+        AuditLogService.log(db, principal, MODULE, "SHIFT_REQUEST_DECIDED", f"{row.kind.title()} rejected",
+                            "shift_request", row.id, company_id=row.company_id,
+                            actor_type="user" if principal is not None else "system",
+                            details={"decision": "REJECTED"})  # AS 11 §9, also for engine-routed requests
         for employee_id in {row.requester_employee_id, row.target_employee_id} - {None}:
-            _notify(db, row.company_id, employee_id, f"{row.kind.title()} request rejected",
-                    f"For {row.shift_date.strftime('%a %d %b')}: {note or 'rejected'}. The published schedule stays.")
+            _notify(db, row.company_id, employee_id, f"{row.kind.title()} request rejected",  # no free text (SR-AS-19)
+                    f"For {row.shift_date.strftime('%a %d %b')}: rejected. The published schedule stays; the "
+                    "request shows why.")
     elif request.status == "CANCELLED":
         row.status, row.close_reason = "CANCELLED", "WITHDRAWN"
         row.row_version += 1
@@ -1036,15 +1192,17 @@ def decide(db: Session, principal: Principal, request_id: int, decision: str, no
     row = _load(db, principal.company_id, request_id)
     if not principal.has(APPROVE):
         raise forbidden()
-    if principal.employee_id in {row.requester_employee_id, row.target_employee_id}:
+    if principal.employee_id in _parties(db, row):
         raise forbidden("You cannot decide a request you are part of.")
-    if not authz.can_access_employee(db, principal, APPROVE, row.requester_employee_id):
+    if not _covers_parties(db, principal, row):
         raise not_found("Shift request")
-    people = sorted({row.requester_employee_id} | ({row.target_employee_id} if row.target_employee_id else set()))
+    people = _parties(db, row)
     lock_employees(db, people)
     row = _load(db, principal.company_id, request_id, lock=True)
     _expire_if_due(db, row, _now())
     _transition_guard(row, "PENDING_APPROVAL")
+    if decision == "APPROVE":
+        _supersede_if_giver_on_leave(db, row)
     if decision == "REJECT" and not (note or "").strip():
         raise bad_request("Say why the request is rejected.", "REASON_REQUIRED")
     if row.approval_request_id:
@@ -1065,9 +1223,10 @@ def decide(db: Session, principal: Principal, request_id: int, decision: str, no
             _recount(db, row.company_id, row.open_shift_id)
         AuditLogService.log(db, principal, MODULE, "SHIFT_REQUEST_DECIDED", f"{row.kind.title()} rejected",
                             "shift_request", row.id, details={"decision": "REJECTED"})
-        for employee_id in people:
-            _notify(db, principal.company_id, employee_id, f"{row.kind.title()} request rejected",
-                    f"For {row.shift_date.strftime('%a %d %b')}: {row.decision_note}. The published schedule stays.")
+        for employee_id in sorted({row.requester_employee_id, row.target_employee_id} - {None}):
+            _notify(db, principal.company_id, employee_id, f"{row.kind.title()} request rejected",  # SR-AS-19
+                    f"For {row.shift_date.strftime('%a %d %b')}: rejected. The published schedule stays; the "
+                    "request shows why.")
         return row
     row.decision_note = (note or "").strip()[:500] or None
     row.acknowledged_warnings = sorted(set(row.acknowledged_warnings or []) | set(acknowledged))
@@ -1078,6 +1237,57 @@ def decide(db: Session, principal: Principal, request_id: int, decision: str, no
     return row
 
 
+def extend(db: Session, principal: Principal, request_id: int, expires_at: datetime, reason: str) -> ShiftRequest:
+    """``POST /shift-requests/{id}/extend`` (§4.4, EC AS-SWP-02): an approver covering every party extends a pending
+    request once, when ``requests.<kind>.approver_may_extend`` is on; the new ``expires_at`` is at most the earliest
+    affected instance start. "Once" is read from the audit trail under the request lock."""
+    from app.models.audit_log import AuditLog
+
+    row = _load(db, principal.company_id, request_id)
+    if not principal.has(APPROVE):
+        raise forbidden()
+    if principal.employee_id in _parties(db, row):
+        raise forbidden("You cannot extend a request you are part of.")
+    if not _covers_parties(db, principal, row):
+        raise not_found("Shift request")
+    lock_employees(db, _parties(db, row))
+    row = _load(db, principal.company_id, request_id, lock=True)
+    _expire_if_due(db, row, _now())
+    _transition_guard(row, *OPEN_REQUEST_STATUSES)
+    rules = ((scheduling(db, row.company_id, row.requester_employee_id, row.shift_date).get("requests") or {})
+             .get(row.kind.lower()) or {})
+    if not (isinstance(rules, Mapping) and rules.get("approver_may_extend")):
+        raise _unprocessable("Extending this kind of request is turned off.", "FEATURE_DISABLED")
+    extended = db.query(AuditLog.id).filter(AuditLog.company_id == row.company_id, AuditLog.action == "SHIFT_REQUEST_EXTENDED",
+                                            AuditLog.entity_type == "shift_request",
+                                            AuditLog.entity_id == str(row.id)).first()
+    if extended is not None:
+        raise AppError(409, "This request was already extended once.", "INVALID_TRANSITION",
+                       extra={"details": {"current_status": row.status, "extended": True}})
+    if expires_at.tzinfo is None:
+        raise _unprocessable("Give the new expiry with its time zone.", "VALIDATION_ERROR")
+    data = _data_of(db, row)
+    if data.get("entry") is not None:
+        _, dates, _ = (_plan(db, row.company_id, data) if row.kind != "RELEASE" else ([], [row.shift_date], {}))
+        start = _earliest_start(db, row.company_id, row.kind, data, dates)
+    else:
+        start = None
+    if expires_at <= _now() or (row.expires_at is not None and expires_at <= row.expires_at) or (
+            start is not None and expires_at > start):
+        raise _unprocessable("The new expiry must be later than the current one and no later than the shift start.",
+                             "VALIDATION_ERROR", details={"latest": start.isoformat() if start else None})
+    old = row.expires_at
+    row.expires_at = expires_at
+    row.row_version += 1
+    db.flush()
+    AuditLogService.log(db, principal, MODULE, "SHIFT_REQUEST_EXTENDED", f"{row.kind.title()} request extended",
+                        "shift_request", row.id, details={"request_id": row.id, "reason": reason.strip()[:500],
+                                                          "old_expires_at": old.isoformat() if old else None,
+                                                          "new_expires_at": expires_at.isoformat()})
+    _emit(db, "shift_request.extended", row)
+    return row
+
+
 def _data_of(db: Session, row: ShiftRequest) -> dict:
     return {"kind": row.kind, "requester_employee_id": row.requester_employee_id,
             "entry": db.get(RosterEntry, row.entry_id) if row.entry_id else None,
@@ -1085,6 +1295,59 @@ def _data_of(db: Session, row: ShiftRequest) -> dict:
             "counter_entry": db.get(RosterEntry, row.counter_entry_id) if row.counter_entry_id else None,
             "requested_change": row.requested_change,
             "open_shift": db.get(OpenShift, row.open_shift_id) if row.open_shift_id else None}
+
+
+def _giver_on_leave(db: Session, row: ShiftRequest) -> bool:
+    """A PICKUP of a RELEASED shift whose releaser now has APPROVED or PENDING leave on the date (EC AS-SWP-05)."""
+    if row.kind != "PICKUP" or not row.open_shift_id:
+        return False
+    shift = db.get(OpenShift, row.open_shift_id)
+    return bool(shift is not None and shift.source == "RELEASED" and shift.released_by_employee_id and _on_leave(
+        db, row.company_id, shift.released_by_employee_id, shift.shift_date))
+
+
+def _supersede_if_giver_on_leave(db: Session, row: ShiftRequest) -> None:
+    """§4.2 / EC AS-SWP-05 race: approving a PICKUP of a RELEASED shift whose releaser now has APPROVED or PENDING leave
+    on the date answers 422 NOT_ELIGIBLE ``OWN_LEAVE_OF_GIVER`` and the claim is SUPERSEDED. Called from ``decide``
+    right after the locks and before any write, so the SUPERSEDED row is committed before the error rolls the request
+    back (as ``_expire_if_due``; IG-AS-140). A decision in the engine inbox records the same outcome without raising
+    (``_decided_by_engine``); ``_apply`` keeps the check as the last guard."""
+    if not _giver_on_leave(db, row):
+        return
+    _drop_engine(db, row, "The person who released the shift is on leave")
+    row.status, row.close_reason = "SUPERSEDED", "OWN_LEAVE_OF_GIVER"
+    row.row_version += 1
+    db.commit()
+    raise _unprocessable("The person who released this shift is on leave that day.", "NOT_ELIGIBLE",
+                         details={"reasons": ["OWN_LEAVE_OF_GIVER"]})
+
+
+def _recheck_party(db: Session, row: ShiftRequest, data: Mapping[str, Any]) -> None:
+    """§5.6 / EC AS-SWP-12 (a): at apply the second party's eligibility is evaluated again on the shift date (a transfer,
+    leave or a lapsed membership since submit refuses with 422 NOT_ELIGIBLE; the request stays pending for a decision).
+    Approvers see the reasons unmasked."""
+    cid = row.company_id
+    if row.kind in PEER_KINDS and row.target_employee_id:
+        requester = db.get(Employee, row.requester_employee_id)
+        entry = data.get("entry")
+        ctx = eligibility(db, cid, requester_id=row.requester_employee_id, party_id=row.target_employee_id,
+                          day=row.shift_date, policy=scheduling(db, cid, row.requester_employee_id, row.shift_date),
+                          branch_id=_branch_on(db, requester, row.shift_date),
+                          team_id=entry.team_id if entry is not None else None)
+    elif row.kind == "PICKUP" and data.get("open_shift") is not None:
+        shift = data["open_shift"]
+        policy = scheduling(db, cid, row.requester_employee_id, shift.shift_date)
+        rules = {**policy, "open_shift_eligibility": {
+            **policy["open_shift_eligibility"], "same_team": bool((shift.eligibility or {}).get("same_team", True)),
+            "same_branch": bool((shift.eligibility or {}).get("same_branch", True))}}
+        ctx = eligibility(db, cid, requester_id=None, party_id=row.requester_employee_id, day=shift.shift_date,
+                          policy=rules, branch_id=shift.branch_id, team_id=shift.team_id)
+        ctx["reasons"] = [r for r in ctx["reasons"] if r != "PRIORITY_WINDOW"]  # judged at claim time only
+    else:
+        return
+    if ctx["reasons"]:
+        raise _unprocessable("The other party is no longer eligible for this change.", "NOT_ELIGIBLE",
+                             details={"reasons": ctx["reasons"]})
 
 
 def _apply(db: Session, principal: Principal, row: ShiftRequest) -> None:
@@ -1115,6 +1378,7 @@ def _apply(db: Session, principal: Principal, row: ShiftRequest) -> None:
             db.flush()
             raise _unprocessable("The person who released this shift is on leave that day.", "NOT_ELIGIBLE",
                                  details={"reasons": ["OWN_LEAVE_OF_GIVER"]})
+    _recheck_party(db, row, data)
     changes, dates, _ = _plan(db, cid, data)
     days = [c.shift_date for c in changes]
     candidate, changed = sr._candidate(db, cid, changes, min(days) - timedelta(days=sr.SEAM_DAYS),
@@ -1269,6 +1533,65 @@ def _recount(db: Session, company_id: int, open_shift_id: Optional[int], *, fill
         db.flush()
 
 
+def _open_owners(db: Session, company_id: int, branch_id: Optional[int], team_id: Optional[int], day: date) -> List[int]:
+    """Employees an open shift plans for: placed in its branch on the date, and members of its team when set (the
+    roster-period rule of ``shift_rosters._owner_employees``)."""
+    from types import SimpleNamespace
+
+    from app.services.shift_rosters import _owner_employees
+
+    return _owner_employees(db, SimpleNamespace(company_id=company_id, branch_id=branch_id, team_id=team_id,
+                                                department_ids=None, start_date=day, end_date=day))
+
+
+def _in_scope(db: Session, principal: Principal, code: str, employee_ids: Sequence[int], *, every: bool) -> bool:
+    if not principal.has(code):
+        return False
+    if principal.is_company_admin or principal.has_company_scope(code):
+        return True
+    if not employee_ids:
+        return False  # fail closed: nobody to cover
+    scope = authz.employee_scope(db, principal, code)
+    found = {e for (e,) in db.query(Employee.id).filter(Employee.company_id == principal.company_id,
+                                                         Employee.id.in_(employee_ids), scope.clause(Employee.id))}
+    return found == set(employee_ids) if every else bool(found)
+
+
+def _require_shift_fits_branch(db: Session, shift: Shift, branch_id: int) -> None:
+    """§6.3 Validation: a branch- or entity-owned shift is offered only at its own unit (SP-AS-163)."""
+    from app.models.org import Branch
+
+    branch = db.get(Branch, branch_id)
+    if (shift.branch_id is not None and shift.branch_id != branch_id) or (
+            shift.legal_entity_id is not None and branch is not None and shift.legal_entity_id != branch.legal_entity_id):
+        raise _unprocessable("That shift belongs to another branch or entity.", "NOT_ELIGIBLE",
+                             details={"reasons": ["SHIFT_SCOPE"]})
+
+
+def _require_plans(db: Session, principal: Principal, branch_id: Optional[int], team_id: Optional[int],
+                   day: date) -> None:
+    """``roster:plan`` covering the branch / team (03-shifts/03 §6.3, §11; FU-AS-49): every employee the open shift
+    plans for is in the caller's scope, else 404 (the branch or team is not revealed)."""
+    if not principal.has(PLAN):
+        raise forbidden()
+    owners = _open_owners(db, principal.company_id, branch_id, team_id, day)
+    if not _in_scope(db, principal, PLAN, owners, every=True):
+        raise not_found("Open shift")
+
+
+def _oversees(db: Session, principal: Principal, row: OpenShift, memo: Optional[dict] = None) -> bool:
+    """A planner (``roster:plan``) or approver (``roster:approve``) sees an open shift and its claims when their scope
+    reaches at least one employee it plans for (the roster-period read rule)."""
+    key = (row.branch_id, row.team_id, row.shift_date)
+    if memo is not None and key in memo:
+        owners = memo[key]
+    else:
+        owners = _open_owners(db, principal.company_id, row.branch_id, row.team_id, row.shift_date)
+        if memo is not None:
+            memo[key] = owners
+    return any(_in_scope(db, principal, code, owners, every=False) for code in (PLAN, APPROVE))
+
+
 def post_open_shift(db: Session, principal: Principal, body: Mapping[str, Any]) -> OpenShift:
     """``POST /open-shifts`` (§6.3): ``roster:plan`` covering the branch; the instance is in the future."""
     from app.models.org import Branch
@@ -1285,6 +1608,21 @@ def post_open_shift(db: Session, principal: Principal, body: Mapping[str, Any]) 
         day = date.fromisoformat(str(body.get("shift_date")))
     except ValueError:
         raise bad_request("Choose the date.", "INVALID_FIELDS")
+    team_id, site_id = body.get("team_id"), body.get("site_id")
+    if team_id is not None:
+        from app.models.teams import Team
+
+        team = db.query(Team).filter(Team.company_id == cid, Team.id == team_id).first()
+        if team is None:
+            raise not_found("Team")
+        if team.status != "ACTIVE":
+            raise conflict("The team is archived.", "TEAM_ARCHIVED")
+    if site_id is not None:
+        from app.models.attendance import AttendanceSite
+
+        if db.query(AttendanceSite.id).filter(AttendanceSite.company_id == cid, AttendanceSite.id == site_id).first() is None:
+            raise not_found("Site")
+    _require_plans(db, principal, branch.id, team_id, day)
     if not _setting(db, cid, "shift.open_shifts.enabled", None, day):
         raise _unprocessable("Open shifts are turned off.", "FEATURE_DISABLED")
     shift_id = body.get("shift_id")
@@ -1295,6 +1633,7 @@ def post_open_shift(db: Session, principal: Principal, body: Mapping[str, Any]) 
         shift = db.query(Shift).filter(Shift.company_id == cid, Shift.id == shift_id).first()
         if shift is None or getattr(shift, "status", "ACTIVE") != "ACTIVE":
             raise _unprocessable("That shift is archived or unknown.", "SHIFT_ARCHIVED")
+        _require_shift_fits_branch(db, shift, branch.id)
     required = int(body.get("required_count") or 1)
     if not 1 <= required <= 50:
         raise bad_request("Between 1 and 50 people.", "INVALID_FIELDS")
@@ -1317,15 +1656,17 @@ def post_open_shift(db: Session, principal: Principal, body: Mapping[str, Any]) 
     known = {c for (c,) in db.query(SkillTag.code).filter(SkillTag.company_id == cid, SkillTag.code.in_(tags or [""]))}
     if set(tags) - known:
         raise bad_request(f"Unknown skill tags: {', '.join(sorted(set(tags) - known))}.", "INVALID_FIELDS")
-    policy_rules = {"same_team": True, "same_branch": True, "priority": "NONE", "exclusive_window_hours": 0}
+    window = int(body.get("exclusive_window_hours") or 0)
+    # §6.4: a priority window is the EXISTING_PART_TIME_FIRST window (only the priority group claims until it ends).
+    policy_rules = {"same_team": True, "same_branch": True,
+                    "priority": "EXISTING_PART_TIME_FIRST" if window else "NONE", "exclusive_window_hours": window}
     priority_until = None
     warnings: List[dict] = []
-    window = int(body.get("exclusive_window_hours") or 0)
     if window:
         priority_until = min(now + timedelta(hours=window), now + (expires - now) / 2, expires - timedelta(hours=2))
         if priority_until < now + timedelta(hours=window):
             warnings.append({"code": "PRIORITY_WINDOW_SHORTENED", "requested_hours": window})
-    row = OpenShift(company_id=cid, branch_id=branch.id, team_id=body.get("team_id"), site_id=body.get("site_id"),
+    row = OpenShift(company_id=cid, branch_id=branch.id, team_id=team_id, site_id=site_id,
                     shift_date=day, shift_id=shift_id, custom_start_time=content["custom_start_time"],
                     custom_end_time=content["custom_end_time"], required_count=required,
                     eligibility={**policy_rules, "same_team": bool(body.get("same_team", bool(body.get("team_id")))),
@@ -1353,14 +1694,106 @@ def cancel_open_shift(db: Session, principal: Principal, open_shift_id: int) -> 
     own_release = row.source == "RELEASED" and row.released_by_employee_id == principal.employee_id
     if not (principal.has(PLAN) or own_release):
         raise forbidden()
+    planner = principal.has(PLAN) and _in_scope(
+        db, principal, PLAN, _open_owners(db, row.company_id, row.branch_id, row.team_id, row.shift_date), every=True)
+    if not (planner or own_release):
+        raise not_found("Open shift")
     if row.status != "OPEN":
         raise AppError(409, "Only an open shift can be cancelled.", "INVALID_TRANSITION",
                        extra={"details": {"current_status": row.status}})
-    if own_release and not principal.has(PLAN) and row.filled_count:
+    if not planner and row.filled_count:
         raise AppError(409, "Someone already picked it up.", "INVALID_TRANSITION",
                        extra={"details": {"current_status": row.status}})
     _close_open_shift(db, row, "CANCELLED")
     AuditLogService.log(db, principal, MODULE, "OPEN_SHIFT_CANCELLED", "Open shift cancelled", "open_shift", row.id)
+    return row
+
+
+TERMS = ("shift_id", "custom_start_time", "custom_end_time", "required_tags", "same_team")
+
+
+def edit_open_shift(db: Session, principal: Principal, open_shift_id: int, body: Mapping[str, Any]) -> OpenShift:
+    """``PATCH /open-shifts/{id}`` (§6.3 Edit; FU-AS-50) while OPEN, by a planner covering it: ``required_count`` up, or
+    down to ``filled_count`` (which fills it); ``expires_at`` earlier only; times, tags and eligibility only while
+    nothing is filled or pending (pending claims would be judged on old terms). ``row_version`` guards stale edits."""
+    row = _load_open(db, principal.company_id, open_shift_id, lock=True)
+    _require_plans(db, principal, row.branch_id, row.team_id, row.shift_date)
+    if body.get("row_version") != row.row_version:
+        raise AppError(409, "Someone changed this open shift; reload it.", "ROW_VERSION_CONFLICT",
+                       extra={"details": {"row_version": row.row_version}})
+    now = _now()
+    if row.status == "OPEN" and now >= row.expires_at:
+        _close_open_shift(db, row, "EXPIRED")
+    if row.status != "OPEN":
+        raise AppError(409, "Only an open shift can be edited.", "INVALID_TRANSITION",
+                       extra={"details": {"current_status": row.status}})
+    changed: Dict[str, Any] = {}
+    if any(k in body for k in TERMS):
+        pending = db.query(ShiftRequest.id).filter(ShiftRequest.company_id == row.company_id,
+                                                   ShiftRequest.open_shift_id == row.id,
+                                                   ShiftRequest.status.in_(OPEN_REQUEST_STATUSES)).first()
+        if row.filled_count or pending is not None:
+            raise AppError(409, "Times, tags and eligibility cannot change once someone claimed this shift.",
+                           "INVALID_TRANSITION", extra={"details": {"current_status": row.status}})
+        shift_id = body.get("shift_id", row.shift_id)
+        custom = (body.get("custom_start_time", row.custom_start_time), body.get("custom_end_time", row.custom_end_time))
+        if "shift_id" in body and body["shift_id"] is not None:
+            custom = (None, None)
+            shift = db.query(Shift).filter(Shift.company_id == row.company_id, Shift.id == shift_id).first()
+            if shift is None or getattr(shift, "status", "ACTIVE") != "ACTIVE":
+                raise _unprocessable("That shift is archived or unknown.", "SHIFT_ARCHIVED")
+            _require_shift_fits_branch(db, shift, row.branch_id)
+        elif any(k in body for k in ("custom_start_time", "custom_end_time")):
+            shift_id = None
+        if shift_id is None and not all(custom):
+            raise bad_request("Choose a shift or give start and end times.", "INVALID_FIELDS")
+        from app.services import roster_validation
+        from app.services.shift_rosters import _branch_zone
+
+        content = {"kind": "WORK", "shift_id": shift_id, "custom_start_time": custom[0], "custom_end_time": custom[1],
+                   "custom_segments": None, "site_id": None, "planned_work_mode": None}
+        start = roster_validation.instance_start(db, row.company_id, {**content, "shift_date": row.shift_date,
+                                                                      "employee_id": 0, "entry_seq": 1,
+                                                                      "shift_version_id": None},
+                                                 _branch_zone(db, row.company_id, row.branch_id))
+        if start is None or start <= now:
+            raise _unprocessable("The shift has already started.", "NOT_ELIGIBLE", details={"reasons": ["STARTED"]})
+        row.shift_id, row.custom_start_time, row.custom_end_time = shift_id, custom[0], custom[1]
+        row.expires_at = min(row.expires_at, start)
+        eligibility = dict(row.eligibility or {})
+        if "required_tags" in body:
+            tags = [str(t).strip().upper() for t in (body.get("required_tags") or []) if str(t).strip()]
+            known = {c for (c,) in db.query(SkillTag.code).filter(SkillTag.company_id == row.company_id,
+                                                                  SkillTag.code.in_(tags or [""]))}
+            if set(tags) - known:
+                raise bad_request(f"Unknown skill tags: {', '.join(sorted(set(tags) - known))}.", "INVALID_FIELDS")
+            eligibility["required_tags"] = tags
+        if "same_team" in body:
+            eligibility["same_team"] = bool(body["same_team"])
+        row.eligibility = eligibility
+        changed.update({k: body[k] for k in TERMS if k in body})
+    if body.get("expires_at") is not None:
+        expires = datetime.fromisoformat(str(body["expires_at"]).replace("Z", "+00:00"))
+        if expires.tzinfo is None or expires >= row.expires_at or expires <= now:
+            raise _unprocessable("The expiry can only move earlier, and not into the past.", "VALIDATION_ERROR")
+        row.expires_at = expires
+        changed["expires_at"] = expires.isoformat()
+    if body.get("required_count") is not None:
+        required = int(body["required_count"])
+        if not max(1, row.filled_count) <= required <= 50:
+            raise _unprocessable(f"Between {max(1, row.filled_count)} and 50 people.", "VALIDATION_ERROR")
+        row.required_count = required
+        changed["required_count"] = required
+    if "note" in body:
+        row.note = (body.get("note") or "")[:500] or None
+        changed["note"] = row.note
+    row.row_version += 1
+    if row.filled_count >= row.required_count:
+        row.filled_at = row.filled_at or now
+        _close_open_shift(db, row, "FILLED")
+    db.flush()
+    AuditLogService.log(db, principal, MODULE, "OPEN_SHIFT_EDITED", "Open shift edited", "open_shift", row.id,
+                        details={k: v for k, v in changed.items()})
     return row
 
 
@@ -1395,7 +1828,8 @@ def claim(db: Session, principal: Principal, open_shift_id: int, body: Mapping[s
     ctx = eligibility(db, cid, requester_id=None, party_id=me.id, day=shift.shift_date, policy=rules,
                       branch_id=shift.branch_id, team_id=shift.team_id,
                       required_tags=(shift.eligibility or {}).get("required_tags") or [],
-                      priority_until=shift.priority_until)
+                      priority_until=shift.priority_until,
+                      priority=(shift.eligibility or {}).get("priority", "NONE"), posted_at=shift.posted_at)
     if not ctx["eligible"]:
         raise _unprocessable("You cannot claim this shift.", "NOT_ELIGIBLE", details={"reasons": ctx["reasons"]})
     acknowledged = list(body.get("acknowledged_warnings") or [])
@@ -1427,9 +1861,11 @@ def claim(db: Session, principal: Principal, open_shift_id: int, body: Mapping[s
 
 
 def list_open_shifts(db: Session, principal: Principal, *, start: Optional[date], end: Optional[date],
-                     status: Optional[str]) -> dict:
-    """Planners (``roster:plan``) see every open shift in range; employees (``roster:request``) see OPEN ones they may
-    claim, each with ``can_claim`` and the reasons that concern themselves."""
+                     status: Optional[str], eligible_only: Optional[bool] = None) -> dict:
+    """Planners (``roster:plan``) and approvers see the open shifts their scope reaches (FU-AS-49); employees
+    (``roster:request``) see OPEN ones, each with ``can_claim`` and the reasons that concern themselves — only the
+    claimable ones (and their own claims) unless ``eligible_only`` is false (SP-AS-045)."""
+    eligible_only = True if eligible_only is None else eligible_only
     cid = principal.company_id
     if not (principal.has(PLAN) or principal.has(REQUEST) or principal.has(APPROVE)):
         raise forbidden()
@@ -1455,38 +1891,135 @@ def list_open_shifts(db: Session, principal: Principal, *, start: Optional[date]
                 .filter(ShiftRequest.company_id == cid, ShiftRequest.requester_employee_id == me,
                         ShiftRequest.open_shift_id.in_([r.id for r in rows] or [0]))}
     items = []
+    memo: dict = {}
     for row in rows:
+        oversees = planner and _oversees(db, principal, row, memo)
         item = serialize_open_shift(db, row, codes, claims)
+        if not oversees and row.released_by_employee_id != me:  # who released it is a colleague's request (V-7)
+            item["released_by_employee_id"] = None
         if me is not None and principal.has(REQUEST) and row.status == "OPEN":
-            policy = scheduling(db, cid, me, row.shift_date)
-            rules = {**policy, "open_shift_eligibility": {**policy["open_shift_eligibility"],
-                                                          "same_team": bool((row.eligibility or {}).get("same_team", True)),
-                                                          "same_branch": bool((row.eligibility or {}).get("same_branch", True))}}
-            ctx = eligibility(db, cid, requester_id=None, party_id=me, day=row.shift_date, policy=rules,
-                              branch_id=row.branch_id, team_id=row.team_id,
-                              required_tags=(row.eligibility or {}).get("required_tags") or [],
-                              priority_until=row.priority_until)
-            if row.released_by_employee_id == me:
-                ctx = {"eligible": False, "reasons": ["SELF"], "warnings": []}
             claimed = mine.get(row.id)
-            item.update({"can_claim": ctx["eligible"] and not (claimed and claimed[1] in OPEN_REQUEST_STATUSES),
-                         "reasons": ctx["reasons"], "warnings": ctx["warnings"],
-                         "my_claim": {"id": claimed[0], "status": claimed[1]} if claimed else None})
-        elif not planner:
+            eligible, fields = _claimant_fields(db, me, row, claimed)
+            if not oversees and eligible_only and not eligible and not claimed \
+                    and row.released_by_employee_id != me:  # own releases stay visible to take back (SP-AS-048)
+                continue
+            item.update(fields)
+        elif not oversees:
             continue
         items.append(item)
     return {"items": items, "can_post": principal.has(PLAN), "from": start.isoformat(), "to": end.isoformat()}
 
 
+def _claimant_fields(db: Session, employee_id: int, row: OpenShift, claimed: Optional[Tuple[int, str]]
+                     ) -> Tuple[bool, dict]:
+    """The would-be claimant's own view of an OPEN shift (§6.3; SP-AS-045): whether they may claim it, their reasons
+    and warnings (never a colleague's) and their claim. A shift they released themselves is not theirs to claim."""
+    cid = row.company_id
+    policy = scheduling(db, cid, employee_id, row.shift_date)
+    rules = {**policy, "open_shift_eligibility": {**policy["open_shift_eligibility"],
+                                                  "same_team": bool((row.eligibility or {}).get("same_team", True)),
+                                                  "same_branch": bool((row.eligibility or {}).get("same_branch", True))}}
+    ctx = eligibility(db, cid, requester_id=None, party_id=employee_id, day=row.shift_date, policy=rules,
+                      branch_id=row.branch_id, team_id=row.team_id,
+                      required_tags=(row.eligibility or {}).get("required_tags") or [],
+                      priority_until=row.priority_until,
+                      priority=(row.eligibility or {}).get("priority", "NONE"), posted_at=row.posted_at)
+    if row.released_by_employee_id == employee_id:
+        ctx = {"eligible": False, "reasons": ["SELF"], "warnings": []}
+    return ctx["eligible"], {"can_claim": ctx["eligible"] and not (claimed and claimed[1] in OPEN_REQUEST_STATUSES),
+                             "reasons": ctx["reasons"], "warnings": ctx["warnings"],
+                             "my_claim": {"id": claimed[0], "status": claimed[1]} if claimed else None}
+
+
 def open_shift_detail(db: Session, principal: Principal, open_shift_id: int) -> dict:
-    """The approver's view: the claims ordered by claim time with each claimant's checks (§6.5)."""
+    """Planners and approvers covering the shift: the claims ordered by claim time with each claimant's checks (§6.5).
+    Anyone else who may request (§6.3, A14 detail; FU-AS-51 g): an OPEN shift, one they claimed or one they released,
+    with their own eligibility and claim only — never the other claims or who released it (V-7). A planner without
+    the request right who does not cover the shift gets 404, as before."""
     row = _load_open(db, principal.company_id, open_shift_id)
-    if not (principal.has(PLAN) or principal.has(APPROVE)):
+    manager = principal.has(PLAN) or principal.has(APPROVE)
+    minutes = _open_shift_minutes(db, row)
+    if manager and _oversees(db, principal, row):
+        claims = (db.query(ShiftRequest).filter(ShiftRequest.company_id == principal.company_id,
+                                                ShiftRequest.open_shift_id == row.id)
+                  .order_by(ShiftRequest.submitted_at, ShiftRequest.id).all())
+        return {**serialize_open_shift(db, row), "scheduled_minutes": minutes,
+                "claims": [{**serialize(db, c, principal), "ranking": _claim_ranking(db, row, c, minutes)}
+                           for c in claims]}
+    me = principal.employee_id
+    if me is None or not principal.has(REQUEST):
+        if manager:
+            raise not_found("Open shift")
         raise forbidden()
-    claims = (db.query(ShiftRequest).filter(ShiftRequest.company_id == principal.company_id,
-                                            ShiftRequest.open_shift_id == row.id)
-              .order_by(ShiftRequest.submitted_at, ShiftRequest.id).all())
-    return {**serialize_open_shift(db, row), "claims": [serialize(db, c, principal) for c in claims]}
+    claimed = (db.query(ShiftRequest.id, ShiftRequest.status)
+               .filter(ShiftRequest.company_id == principal.company_id, ShiftRequest.requester_employee_id == me,
+                       ShiftRequest.open_shift_id == row.id)
+               .order_by(ShiftRequest.id.desc()).first())
+    if row.status != "OPEN" and claimed is None and row.released_by_employee_id != me:
+        raise not_found("Open shift")
+    item = {**serialize_open_shift(db, row), "scheduled_minutes": minutes}
+    if row.released_by_employee_id != me:
+        item["released_by_employee_id"] = None
+    if row.status == "OPEN":
+        item.update(_claimant_fields(db, me, row, tuple(claimed) if claimed else None)[1])
+    else:
+        item.update({"can_claim": False, "reasons": [], "warnings": [],
+                     "my_claim": {"id": claimed[0], "status": claimed[1]} if claimed else None})
+    return item
+
+
+SEVERITY_ORDER = ("PASS", "INFO", "WARN", "REQUIRE_REASON", "BLOCK")
+
+
+def _open_shift_minutes(db: Session, shift: OpenShift) -> Optional[int]:
+    """Net scheduled minutes of the open shift's instance (the version valid on the date; custom times: the span)."""
+    from app.models.shifts import ShiftVersion
+    from app.services import shift_engine, shift_resolution
+    from app.services.shift_rosters import _branch_zone
+
+    if shift.shift_id:
+        owner = db.get(Shift, shift.shift_id)
+        version = db.query(ShiftVersion).filter(
+            ShiftVersion.company_id == shift.company_id, ShiftVersion.shift_id == shift.shift_id,
+            ShiftVersion.voided_at.is_(None), ShiftVersion.effective_from <= shift.shift_date,
+            or_(ShiftVersion.effective_to.is_(None), ShiftVersion.effective_to >= shift.shift_date)).first()
+        if owner is None or version is None:
+            return None
+        try:
+            return shift_engine.scheduled_net_minutes(shift_resolution.version_data(version, owner.kind), shift.shift_date,
+                                                      _branch_zone(db, shift.company_id, shift.branch_id))
+        except shift_engine.ShiftEngineError:
+            return None
+    if not (shift.custom_start_time and shift.custom_end_time):
+        return None
+    start = int(shift.custom_start_time[:2]) * 60 + int(shift.custom_start_time[3:])
+    end = int(shift.custom_end_time[:2]) * 60 + int(shift.custom_end_time[3:])
+    return (end - start) % 1440 or 1440
+
+
+def _claim_ranking(db: Session, shift: OpenShift, claim: ShiftRequest, minutes: Optional[int]) -> dict:
+    """§6.5 inputs for the approver (display only, no automatic choice, D-AS-68): scheduled hours in the claimant's
+    Monday-to-Sunday week before → after the pickup, the worst check severity, the claimant's skill tags and whether
+    the claimant is in the EXISTING_PART_TIME_FIRST priority group."""
+    from app.services import shift_resolution
+
+    first = shift.shift_date - timedelta(days=shift.shift_date.weekday())
+    resolved = shift_resolution.shifts_for_many(db, shift.company_id, [claim.requester_employee_id], first,
+                                                first + timedelta(days=6))
+    before = sum((shift_resolution.scheduled_hours(r) or 0) for r in resolved.values())
+    if claim.status == "APPROVED" and minutes:  # the pickup is already in the schedule
+        before -= Decimal(minutes) / Decimal(60)
+    severities = [c.get("severity") for c in (claim.checks or []) if isinstance(c, dict)]
+    worst = max((s for s in severities if s in SEVERITY_ORDER), key=SEVERITY_ORDER.index, default="PASS")
+    tags = sorted(code for (code,) in db.query(SkillTag.code).join(
+        EmployeeSkillTag, (EmployeeSkillTag.company_id == SkillTag.company_id) & (EmployeeSkillTag.tag_id == SkillTag.id))
+        .filter(SkillTag.company_id == shift.company_id, EmployeeSkillTag.employee_id == claim.requester_employee_id))
+    claimant = db.get(Employee, claim.requester_employee_id)
+    return {"week_hours_before": float(round(Decimal(before), 2)),
+            "week_hours_after": float(round(Decimal(before) + Decimal(minutes or 0) / Decimal(60), 2)),
+            "worst_severity": worst, "tags": tags,
+            "in_priority_group": bool(claimant is not None and _in_priority_group(
+                db, shift.company_id, claimant, shift.shift_date, shift.posted_at))}
 
 
 # =============================================================================================== lists
@@ -1517,6 +2050,8 @@ def list_requests(db: Session, principal: Principal, *, box: str, status: Option
     if status:
         query = query.filter(ShiftRequest.status == status)
     rows = query.order_by(ShiftRequest.submitted_at.desc(), ShiftRequest.id.desc()).limit(200).all()
+    if box == "approvals":  # EC AS-SWP-09: only requests whose every party is in my scope
+        rows = [r for r in rows if principal.employee_id not in _parties(db, r) and _covers_parties(db, principal, r)]
     return {"items": [serialize(db, r, principal) for r in rows], "total": len(rows)}
 
 
@@ -1524,7 +2059,7 @@ def get(db: Session, principal: Principal, request_id: int) -> dict:
     row = _load(db, principal.company_id, request_id)
     me = principal.employee_id
     if me not in {row.requester_employee_id, row.target_employee_id} and not (
-            principal.has(APPROVE) and authz.can_access_employee(db, principal, APPROVE, row.requester_employee_id)):
+            principal.has(APPROVE) and _covers_parties(db, principal, row)):
         raise not_found("Shift request")
     return serialize(db, row, principal)
 
@@ -1583,7 +2118,7 @@ def add_availability(db: Session, principal: Principal, body: Mapping[str, Any])
                                decided_at=None if approval else _now())
     db.add(row)
     db.flush()
-    AuditLogService.log(db, principal, MODULE, "AVAILABILITY_SUBMITTED", "Availability submitted",
+    AuditLogService.log(db, principal, MODULE, "AVAILABILITY_SAVED", "Availability submitted",
                         "employee_availability", row.id, details={"kind": kind, "status": row.status})
     return row
 
@@ -1670,6 +2205,7 @@ def create_tag(db: Session, principal: Principal, code: str, name: str) -> Skill
     row = SkillTag(company_id=principal.company_id, code=code, name=(name or code).strip()[:100], status="ACTIVE")
     db.add(row)
     db.flush()
+    AuditLogService.log(db, principal, MODULE, "SKILL_TAG_SAVED", f"Skill tag {code} created", "skill_tag", row.id)
     return row
 
 
@@ -1699,7 +2235,7 @@ def set_employee_tags(db: Session, principal: Principal, employee_id: int, tags:
     db.flush()
     held = [{"code": t.code, "valid_to": wanted[t.id].isoformat() if wanted[t.id] else None}
             for t in by_code.values() if t.id in wanted]
-    AuditLogService.log(db, principal, MODULE, "SKILL_TAGS_SET", "Employee skill tags set", "employee", employee_id,
+    AuditLogService.log(db, principal, MODULE, "SKILL_TAG_SAVED", "Employee skill tags set", "employee", employee_id,
                         details={"tags": sorted(h["code"] for h in held)})
     return held
 
@@ -1721,7 +2257,9 @@ def acknowledge_entry(db: Session, principal: Principal, entry_id: int) -> dict:
 
 
 # =============================================================================================== settings
-SWITCHES = {"requests_enabled": "shift.requests.enabled", "open_shifts_enabled": "shift.open_shifts.enabled"}
+SWITCHES = {"requests_enabled": "shift.requests.enabled", "open_shifts_enabled": "shift.open_shifts.enabled",
+            "planner_cannot_publish": "shift.roster.planner_cannot_publish",  # SoD, EC AS-ROS-11
+            "publish_requires_approval": "shift.roster.publish_requires_approval"}  # §5.2 (IG-AS-150)
 SETTINGS_POLICY_NAME = "Shift requests & open shifts"
 
 
@@ -1787,6 +2325,15 @@ def save_settings(db: Session, principal: Principal, data: Mapping[str, Any], re
         raise forbidden("Changing shift request settings needs company-wide attendance and shift management access.")
     today = clock.company_today(db, cid)
     current = settings_view(db, principal)
+    if data.get("planner_cannot_publish") and not current["planner_cannot_publish"]:
+        from app.models.user import User
+        from app.payroll.services.approvals import _permission_holder_user_ids
+
+        holders = [u for u in _permission_holder_user_ids(db, "roster:publish") if db.query(User.id).filter(
+            User.company_id == cid, User.id == u, User.status == "active").first() is not None]
+        if len(holders) < 2:  # V-AS-05: a second person must exist to publish what a planner drafted
+            raise _unprocessable("Give a second person the Publish schedules permission first.",
+                                 "MAKER_CHECKER_UNAVAILABLE", details={"publishers": len(holders)})
     for name, key in SWITCHES.items():
         if name in data and data[name] is not None and bool(data[name]) != current[name]:
             settings_engine.write_tenant_value(db, principal, key, bool(data[name]), reason=reason)
@@ -1821,6 +2368,43 @@ def save_settings(db: Session, principal: Principal, data: Mapping[str, Any], re
 
 
 # =============================================================================================== jobs
+TAG_EXPIRY_WARNING_DAYS = 30  # spine §9.3 shift.tag_expiring
+
+
+def tag_expiry(db: Session, company_id: int, local_date: date) -> dict:
+    """Job ``shift.tag_expiry`` (DAILY, daily-local; spine §9.3 ``shift.tag_expiring``, 03-shifts/02 §12): planners
+    covering the employee hear once per tag assignment that ends within ``TAG_EXPIRY_WARNING_DAYS`` (dedup
+    ``tagexp:{employee_tag_id}``, carried in the action link). Archived tags and people who have left are skipped."""
+    from app.models.notification import Notification
+    from app.services import shift_rosters
+    from app.services.notification_service import NotificationService
+
+    rows = (db.query(EmployeeSkillTag, SkillTag, Employee)
+            .join(SkillTag, (SkillTag.company_id == EmployeeSkillTag.company_id)
+                  & (SkillTag.id == EmployeeSkillTag.tag_id))
+            .join(Employee, (Employee.company_id == EmployeeSkillTag.company_id)
+                  & (Employee.id == EmployeeSkillTag.employee_id))
+            .filter(EmployeeSkillTag.company_id == company_id, SkillTag.status == "ACTIVE",
+                    EmployeeSkillTag.valid_to >= local_date,
+                    EmployeeSkillTag.valid_to <= local_date + timedelta(days=TAG_EXPIRY_WARNING_DAYS),
+                    or_(Employee.termination_date.is_(None), Employee.termination_date >= local_date))
+            .order_by(EmployeeSkillTag.valid_to, EmployeeSkillTag.id).all())
+    sent = 0
+    for held, tag, employee in rows:
+        link = f"/rosters?tagexp={held.id}"
+        for user_id in shift_rosters._planner_user_ids(db, company_id, [employee.id]):
+            if db.query(Notification.id).filter(Notification.user_id == user_id,
+                                                Notification.action_url == link).first() is not None:
+                continue
+            NotificationService.create(
+                db, user_id, "Skill tag expiring",
+                f"{employee.full_name}: {tag.name} ends on {held.valid_to:%d %b %Y}. Renew it or plan someone else "
+                "for shifts that need it.", "roster", link)
+            sent += 1
+    db.flush()
+    return {"expiring": len(rows), "notified": sent}
+
+
 def expire_due(db: Session, company_id: int, now: Optional[datetime] = None) -> dict:
     """Jobs ``shift_request.expire`` / ``open_shift.expire`` (sweepers only)."""
     now = now or _now()

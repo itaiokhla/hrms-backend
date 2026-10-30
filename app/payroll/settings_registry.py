@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING, Any, Final
 if TYPE_CHECKING:
     from app.payroll.policy_types import AssignmentRule, EmployeeAttributes
 
-REGISTRY_VERSION: Final = "2026.10.12"
+REGISTRY_VERSION: Final = "2026.10.17"
 STARTER_REASON: Final = "Starter configuration"
 LEGACY_REASON: Final = "Legacy payroll migration"
 
@@ -245,6 +245,7 @@ SECTIONS: Final[tuple[Section, ...]] = (
     Section("leave", "Leave pay", "3.1 §5.3", ("LEAVE_PAY_POLICY",)),
     Section("holidays", "Holidays & weekly offs", "3.1 §5.4", ("HOLIDAY_PAY_POLICY",)),
     Section("holiday-policies", "Holidays", "LH 14 WI-1.10"),
+    Section("leave-policies", "Leave", "LH SPINE §10", ("LEAVE_PLAN",)),
     Section("overtime", "Overtime", "3.1 §5.5", ("OVERTIME_POLICY",)),
     Section("tasks", "Task pay", "3.1 §5.6", ("TASK_PAY_POLICY",)),
     Section("late-penalties", "Late & penalties", "3.1 §5.7", ("LATE_PENALTY_POLICY",)),
@@ -351,6 +352,7 @@ S_ATTENDANCE = "Attendance & LOP"
 S_LEAVE = "Leave pay"
 S_HOLIDAYS = "Holidays & weekly offs"
 S_HOLIDAY_POLICIES = "Holidays"
+S_LEAVE_POLICIES = "Leave"
 S_OVERTIME = "Overtime"
 S_TASKS = "Task pay"
 S_LATE = "Late & penalties"
@@ -517,6 +519,13 @@ def _enum(
         key, "enum", default, levels, section, label, help_,
         constraints={"choices": tuple(choices), **(constraints or {})}, **options,
     )
+
+
+def _exemption_codes() -> tuple[str, ...]:
+    """Choices of ``shift.working_time.held_exemptions``: every exemption code of the WORKING_TIME packs."""
+    from app.services.working_time_packs import EXEMPTION_CODES
+
+    return EXEMPTION_CODES
 
 
 def _numbering(doc_type: str, prefix: str) -> SettingDef:
@@ -790,6 +799,143 @@ def _catalogue() -> list[SettingDef]:
             off="Leave is taken in whole days only.",
             default=True, levels=_T, section=S_LEAVE,
         ),
+        # LH SPINE §10 — the Leave section (leave v2). ``leave.v2.enabled`` is written only by the leave cut-over.
+        _flag(
+            "leave.v2.enabled", "Leave v2",
+            on="Balances come from the leave ledger and leave plans decide entitlement, accrual and year end (set by "
+               "the leave cut-over).",
+            off="Legacy leave: each year starts again from the leave type's yearly quota.",
+            default=False, levels=_T, section=S_LEAVE_POLICIES, legacy_v1=False, lockable=False,
+            effective_dated=False, ui={"system_written": True, "policy_type": "LEAVE_PLAN"},
+        ),
+        _setting(
+            "leave.go_live_date", "date", None, _T_LE, S_LEAVE_POLICIES, "Leave go-live date",
+            "The first day the leave plans and the leave ledger apply. Empty: the cut-over date.",
+            constraints={"nullable": True}, legacy_v1=False,
+        ),
+        _setting(
+            "leave.unpaid_type_code", "string", "unpaid", _T_LE, S_LEAVE_POLICIES, "Unpaid leave type",
+            "The leave type used when days above a balance become unpaid leave, and for conversions to unpaid.",
+            constraints={"regex": r"[a-z][a-z0-9_]{1,29}", "max_length": 30}, legacy_v1=False,
+        ),
+        _flag(
+            "leave.hourly.enabled", "Hourly leave",
+            on="Leave types counted in hours can be created and booked by the hour.",
+            off="Leave is counted in days and half days.",
+            default=False, levels=_T_LE, section=S_LEAVE_POLICIES, legacy_v1=False,
+        ),
+        _flag(
+            "leave.apply_on_behalf.enabled", "Apply leave for others",
+            on="Managers and HR with the permission may apply for leave on someone's behalf.",
+            off="Only the employee applies; HR may still record approved leave.",
+            default=True, levels=_T_LE, section=S_LEAVE_POLICIES, legacy_v1=False,
+        ),
+        _flag(
+            "leave.plan.requires_second_person", "Second person activates leave plans",
+            on="Activating a leave plan version needs a second leave administrator; the first only requests it.",
+            off="One leave administrator activates plan versions.",
+            default=False, levels=_T_LE, section=S_LEAVE_POLICIES, legacy_v1=False,
+        ),
+        _flag(
+            "leave.approval.reject_reason_required", "Reason required to reject",
+            on="Rejecting or returning a request needs a reason the employee can read.",
+            off="A reason is optional when rejecting.",
+            default=True, levels=_T, section=S_LEAVE_POLICIES, legacy_v1=False,
+        ),
+        _flag(
+            "leave.approval.return_enabled", "Send back for changes",
+            on="Approvers may return a request to the employee for changes instead of rejecting it.",
+            off="Approvers only approve or reject.",
+            default=True, levels=_T, section=S_LEAVE_POLICIES, legacy_v1=False,
+        ),
+        _setting(
+            "leave.approval.returned_expiry_days", "int", 14, _T, S_LEAVE_POLICIES, "Returned requests expire after",
+            "A request sent back for changes and not resubmitted is withdrawn after this many days.",
+            constraints={"min": 1, "max": 60}, ui={"unit": "days"}, legacy_v1=False,
+        ),
+        _setting(
+            "leave.approval.sla_hours", "int", 48, _T_LE, S_LEAVE_POLICIES, "Approval reminder after",
+            "Hours a request may wait at one approval step before the approver is reminded (or the request "
+            "escalated).",
+            constraints={"min": 1, "max": 720}, ui={"unit": "hours"}, legacy_v1=False,
+        ),
+        _enum(
+            "leave.approval.sla_action", ("REMIND", "ESCALATE"), "REMIND", _T_LE, S_LEAVE_POLICIES,
+            "When an approval waits too long",
+            "REMIND notifies the approver again; ESCALATE also routes the step to the approver's manager.",
+            legacy_v1=False,
+        ),
+        _enum(
+            "leave.cancellation.requires_approval", ("ALWAYS", "IF_STARTED_OR_WITHIN_DAYS", "NEVER"), "ALWAYS",
+            _T_LE, S_LEAVE_POLICIES, "Cancelling approved leave",
+            "ALWAYS: an approver confirms every cancellation. IF_STARTED_OR_WITHIN_DAYS: only once the leave has "
+            "started or starts within the free window. NEVER: cancellations apply at once.",
+            legacy_v1=False,
+        ),
+        _setting(
+            "leave.cancellation.free_window_days", "int", 0, _T_LE, S_LEAVE_POLICIES, "Free cancellation window",
+            "With IF_STARTED_OR_WITHIN_DAYS: leave starting more than this many days ahead is cancelled at once.",
+            constraints={"min": 0, "max": 90}, ui={"unit": "days"}, legacy_v1=False,
+        ),
+        _enum(
+            "leave.team_calendar.visibility", ("OFF", "TEAM", "DEPARTMENT", "BRANCH", "COMPANY"), "TEAM",
+            (T, LE, B), S_LEAVE_POLICIES, "Who sees colleagues' leave",
+            "Colleagues see approved leave as 'Away' with dates only, never the reason or balance. TEAM = people "
+            "with the same manager and that manager.",
+            legacy_v1=False,
+        ),
+        _flag(
+            "leave.team_calendar.show_type", "Show the leave type to colleagues",
+            on="Colleagues see the leave type of standard (not sensitive) leave.",
+            off="Colleagues only see 'Away'.",
+            default=False, levels=_T, section=S_LEAVE_POLICIES, legacy_v1=False,
+        ),
+        _flag(
+            "leave.discussion.enabled", "Leave discussions",
+            on="Employees and approvers can comment on a request.",
+            off="No comments on leave requests.",
+            default=True, levels=_T, section=S_LEAVE_POLICIES, legacy_v1=False,
+        ),
+        _setting(
+            "leave.documents.max_file_mb", "int", 10, _T, S_LEAVE_POLICIES, "Largest leave document",
+            "The largest file that can be attached to a leave request.",
+            constraints={"min": 1, "max": 25}, ui={"unit": "MB"}, legacy_v1=False,
+        ),
+        _setting(
+            "leave.documents.max_files", "int", 5, _T, S_LEAVE_POLICIES, "Documents per request",
+            "How many files can be attached to one leave request.",
+            constraints={"min": 1, "max": 10}, legacy_v1=False,
+        ),
+        _enum(
+            "leave.year_end.mode", ("MANUAL_REVIEW", "AUTO_POST"), "MANUAL_REVIEW", _T_LE, S_LEAVE_POLICIES,
+            "Year-end processing",
+            "MANUAL_REVIEW: HR previews carry-forward, lapse and encashment and a second person posts them. AUTO_POST: "
+            "the year end posts itself after the cycle ends.",
+            legacy_v1=False,
+        ),
+        _flag(
+            "leave.comp_off.claims.enabled", "Comp-off claims",
+            on="Employees who work on a holiday or weekly off can claim compensatory leave.",
+            off="Comp-off is credited only by payroll from overtime.",
+            default=True, levels=(T, LE, B), section=S_LEAVE_POLICIES, legacy_v1=False,
+        ),
+        _setting(
+            "leave.expiry_reminder.days_before", "int", 30, _T_LE, S_LEAVE_POLICIES, "Expiry reminder",
+            "Days before carried-forward or comp-off credit expires that the employee is reminded.",
+            constraints={"min": 1, "max": 120}, ui={"unit": "days"}, legacy_v1=False,
+        ),
+        _setting(
+            "leave.adjustments.step_up_units", "decimal", Decimal("10"), _T, S_LEAVE_POLICIES,
+            "Large balance adjustment",
+            "A manual balance adjustment of more than this many days or hours needs a fresh identity check.",
+            constraints={"min": Decimal("0.5"), "max": Decimal("366")}, legacy_v1=False,
+        ),
+        _flag(
+            "leave.notifications.email.enabled", "Leave emails",
+            on="Leave decisions and approval requests are also emailed.",
+            off="Leave notifications stay in the app.",
+            default=True, levels=_T, section=S_LEAVE_POLICIES, legacy_v1=False,
+        ),
         _switch(
             "payroll.leave.encashment.enabled", "Leave encashment",
             on="Balances are paid out on exit and/or at year end, per the leave pay policy's encashment fields.",
@@ -1016,6 +1162,41 @@ def _catalogue() -> list[SettingDef]:
             on="Planners post open shifts and eligible employees claim them; released shifts go to the open pool.",
             off="No open shifts.",
             default=False, levels=(T, LE), section=S_ATTENDANCE, legacy_v1=False,
+        ),
+        # AS-M5 §5.2 (owner decision IG-AS-150): a roster publication goes to a covering roster:publish approver.
+        _flag(
+            "shift.roster.publish_requires_approval", "Roster publication needs approval",
+            on="A planner sends the roster for approval; a second person with Publish schedules approves and it is "
+               "published as previewed.",
+            off="People with Publish schedules publish rosters directly.",
+            default=False, levels=(T, LE), section=S_ATTENDANCE, legacy_v1=False,
+        ),
+        # AS-M5 SoD (03-shifts/02 §2.4, §5.2; EC AS-ROS-11): the last saver of roster drafts cannot publish them.
+        _flag(
+            "shift.roster.planner_cannot_publish", "Planners cannot publish their own drafts",
+            on="The person who last saved a roster's drafts cannot publish them; a second person with Publish "
+               "schedules does.",
+            off="Anyone with Publish schedules can publish, including the planner who drafted the roster.",
+            default=False, levels=(T, LE), section=S_ATTENDANCE, legacy_v1=False,
+        ),
+        # appendix-a §5.10 / §8.4 (EC AS-CTY-17): the working-time pack exemptions an establishment holds. A held code
+        # waives its pack fields only where its subdivision condition holds and only for dates inside its validity.
+        _setting(
+            "shift.working_time.held_exemptions", "set", (), (T, LE, B), S_ATTENDANCE,
+            "Working-time exemptions held",
+            "Government exemptions this establishment holds (for example Telangana IT/ITES). Each one waives "
+            "the country rules it names, only in its state and only until it expires; the overview warns 90 days "
+            "before the end date.",
+            constraints={"choices": _exemption_codes()}, requires_approval=True, legacy_v1=False,
+        ),
+        # 04-attendance/02 (roster settings), 03-shifts/03 §2, 06 roster:read SELF: co-workers' shift codes in the swap
+        # picker and the period team only when TEAM (name and code, nothing else).
+        _enum(
+            "shift.roster.team_visibility", ("OFF", "TEAM"), "OFF", (T, LE, B), S_ATTENDANCE,
+            "Co-workers' shifts visible",
+            "TEAM: employees see the published shift codes of co-workers in their roster team (name and code only), "
+            "which makes the swap picker useful. OFF: they see only names and whether someone can swap.",
+            legacy_v1=False,
         ),
         # G-22 (owner request 2026-10-29): adopt the legal entity's country WORKING_TIME pack (IN / AE / US):
         # statutory breaks, rest, overtime consent and caps, privacy caps and scheduling notice start to apply.

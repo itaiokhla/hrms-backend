@@ -100,6 +100,7 @@ class RotationAssignmentIn(StrictModel):
     anchor_date: date
     effective_from: date
     effective_to: Optional[date] = None
+    auto_publish: bool = False  # job roster.rotation_generate publishes ahead (03-shifts/02 §3.5)
 
 
 class GenerateIn(StrictModel):

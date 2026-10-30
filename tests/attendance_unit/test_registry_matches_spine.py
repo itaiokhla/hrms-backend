@@ -31,7 +31,8 @@ SPINE = {
     "attendance:read": ("Attendance", ALL_WITH_PG_T, "standard", False),
     "overtime:request": ("Overtime", (S, DR, RT, D, AG, C, TM, TT, AT), "standard", False),
     "overtime:approve": ("Overtime", TEAM_T, "standard", False),
-    "leave:read": ("Leave", ALL_T, "standard", False),
+    # LH-M2 (LH SPINE §9): leave:read gains PAY_GROUP (payroll managers read leave of their pay groups).
+    "leave:read": ("Leave", ALL_WITH_PG_T, "standard", False),
     "leave:approve": ("Leave", TEAM_T, "standard", False),
     "team:read": ("People", ALL_T, "standard", False),
     "team:manage": ("People", ORG_UNITS, "standard", False),

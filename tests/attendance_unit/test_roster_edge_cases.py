@@ -6,6 +6,7 @@ tests/shifts/test_roster_edge_cases.py.
 """
 
 import datetime as dt
+from decimal import Decimal
 
 from app.services import roster_rules as rr
 from app.services import rotation_engine as rot
@@ -107,3 +108,95 @@ def test_as_ros_12_substitution_under_fixed_and_rolling_weeks():
 
 def test_as_ros_13_weekly_rest_of_24_hours_after_a_night_shift():
     trr.test_gv_as_ros_17_weekly_rest_hours_from_end_of_last_night()
+
+
+DUBAI = "Asia/Dubai"
+SUMMER_BAN = rr.OutdoorBan(("12:30", "15:00"), "06-15", "09-15", rr.WARN, "seasonal.outdoor_midday_ban", False)
+
+
+def _outdoor_results(day, start, end, ban=SUMMER_BAN, outdoor=True):
+    from dataclasses import replace
+
+    planned = replace(trr.custom(day, start, end, DUBAI, changed=True), outdoor=outdoor)
+    schedule = rr.ScheduleData((rr.EmployeeSchedule(4101, DUBAI, (planned,)),))
+    return [r for r in rr.validate(schedule, rr.EmployeeLimits(outdoor_midday_ban=ban), rr.RuleContext())
+            if r.rule_key == rr.OUTDOOR_MIDDAY_BAN]
+
+
+def test_as_cty_08_seasonal_windows_inclusive_ends_year_wrap_and_29_february():
+    """GV-AS-CTY-08: (a) 13:00–17:00 on the last day of the season overlaps 12:30–15:00 by 2 h → WARN (not verified);
+    (b) the day after the season → none; (c) a winter season 11-01..02-28 includes 29 February; (d) a night
+    15 Sep 22:00 → 16 Sep 06:00 never meets the midday window; (e) a wrapped season holds 31 Dec and 1 Jan; an
+    indoor shift is never affected."""
+    (a,) = _outdoor_results(D(2026, 9, 15), "13:00", "17:00")
+    assert a.severity == rr.WARN and a.measured == 2 and a.message_key.endswith(".not_verified")
+    assert _outdoor_results(D(2026, 9, 16), "13:00", "17:00") == []
+    winter = rr.OutdoorBan(("12:30", "15:00"), "11-01", "02-28", rr.BLOCK, None, True)
+    (c,) = _outdoor_results(D(2028, 2, 29), "12:00", "16:00", ban=winter)
+    assert c.severity == rr.BLOCK and c.measured == Decimal("2.5")
+    assert _outdoor_results(D(2026, 9, 15), "22:00", "06:00") == []
+    assert len(_outdoor_results(D(2027, 12, 31), "12:00", "16:00", ban=winter)) == 1
+    assert len(_outdoor_results(D(2028, 1, 1), "12:00", "16:00", ban=winter)) == 1
+    assert _outdoor_results(D(2026, 7, 1), "12:00", "16:00", outdoor=False) == []
+    assert rr.season_contains("11-01", "02-28", D(2027, 3, 1)) is False
+
+
+def test_as_cty_07_adolescent_limits_by_shift_date_and_the_18th_birthday():
+    """GV-AS-CTY-04 / EC AS-CTY-07: under 18 on the shift date → the pack's forbidden window 19:00–08:00 and the
+    3-hour stretch without a 60-minute interval apply (WARN while the pack is not verified, BLOCK once verified); the
+    flag is decided once per instance by its shift date, so an adult (the birthday itself) is never limited."""
+    from dataclasses import replace
+
+    rule = rr.AdolescentRule(("19:00", "08:00"), None, Decimal(3), 60, rr.WARN, "night_work.adolescent", False)
+    evening = replace(trr.custom(D(2026, 11, 10), "18:00", "21:00", trr.IST, changed=True), adolescent=True)
+    adult = replace(evening, adolescent=False)
+
+    def results(planned, adolescent_rule=rule):
+        schedule = rr.ScheduleData((rr.EmployeeSchedule(4201, trr.IST, (planned,)),))
+        return [r for r in rr.validate(schedule, rr.EmployeeLimits(adolescent=adolescent_rule), rr.RuleContext())
+                if r.rule_key == rr.ADOLESCENT_LIMITS]
+
+    (window,) = results(evening)
+    assert window.details == {"limit": "FORBIDDEN_WINDOW"} and window.measured == 2 and window.severity == rr.WARN
+    assert results(adult) == []  # 18 on the shift date: an adult from the birthday itself
+    long_day = replace(trr.custom(D(2026, 11, 10), "09:00", "13:30", trr.IST, changed=True), adolescent=True)
+    assert [r.details["limit"] for r in results(long_day)] == ["MAX_STRETCH"]  # 4.5 h, no interval
+    verified = replace(rule, severity=rr.BLOCK, verified=True)
+    assert {r.severity for r in results(evening, verified)} == {rr.BLOCK}
+
+
+def test_as_cty_17_an_exemption_waives_its_fields_only_until_it_expires():
+    """EC AS-CTY-17 (appendix-a §3.3, §5.10, §8.4): TG_IT_ITES_2024 (valid to 2028-05-30) waives the daily-hours,
+    spread and women-at-night fields for an IN-TG establishment holding it. Entries up to 30 May are checked with the
+    waiver, 31 May without it — decided per shift date, nothing retroactive. The pack lists it only for its own
+    subdivisions, and a branch without a subdivision (an unknown input) never gets it."""
+    from app.services import working_time_packs as wtp
+
+    pack = wtp.pack("IN")
+    (tg,) = wtp.held_exemptions(pack, "IN-TG", ["TG_IT_ITES_2024"])
+    assert wtp.held_exemptions(pack, "in-ts", ["TG_IT_ITES_2024"]) == [tg]  # the older ISO code, any case
+    assert wtp.held_exemptions(pack, "IN-MH", ["TG_IT_ITES_2024"]) == []
+    assert wtp.held_exemptions(pack, None, ["TG_IT_ITES_2024"]) == []
+    assert wtp.held_exemptions(pack, "IN-TG", []) == []  # not held
+    waiver = rr.Waiver(tg["code"], frozenset(tg["waives"]), tg["valid_from"], tg["valid_to"])
+    night = rr.NightWorkRule(("19:00", "06:00"), True, rr.REQUIRE_REASON, verified=False)
+    limits = rr.EmployeeLimits(daily_max_hours=rr.Limit(Decimal(9), rr.WARN, "WORKING_TIME pack", False),
+                               night_work_groups={"WOMEN": night}, waivers=(waiver,))
+
+    def keys(day, lim=limits):
+        long_day = trr.custom(day, "10:00", "21:00", trr.IST, changed=True)  # 11 h, 2 h inside 19:00-06:00
+        employee = rr.EmployeeSchedule(4301, trr.IST, (long_day,), protected_groups=frozenset({"WOMEN"}))
+        return sorted(r.rule_key for r in rr.validate(rr.ScheduleData((employee,)), lim, rr.RuleContext())
+                      if r.rule_key in (rr.DAILY_HOURS_EXCEEDED, rr.NIGHT_WORK_CONSENT_MISSING))
+
+    assert keys(D(2028, 5, 30)) == []  # last valid day: both fields waived
+    assert keys(D(2028, 5, 31)) == [rr.DAILY_HOURS_EXCEEDED, rr.NIGHT_WORK_CONSENT_MISSING]  # expired
+    assert keys(D(2024, 5, 29)) == [rr.DAILY_HOURS_EXCEEDED, rr.NIGHT_WORK_CONSENT_MISSING]  # not yet valid
+    from dataclasses import replace
+
+    assert keys(D(2028, 5, 30), replace(limits, waivers=())) == [rr.DAILY_HOURS_EXCEEDED,
+                                                                rr.NIGHT_WORK_CONSENT_MISSING]
+    # the 90-day expiry warning of the Settings overview
+    assert wtp.expiring_exemptions(pack, D(2028, 3, 1), ["TG_IT_ITES_2024"]) == [
+        {"code": "TG_IT_ITES_2024", "valid_to": "2028-05-30", "days_left": 90}]
+    assert wtp.expiring_exemptions(pack, D(2028, 2, 29), ["TG_IT_ITES_2024"]) == []

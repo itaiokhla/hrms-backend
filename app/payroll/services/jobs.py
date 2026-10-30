@@ -161,7 +161,9 @@ HANDLER_MODULES: Tuple[str, ...] = ("app.services.scheduler_fanout", "app.servic
                                    "app.services.payroll_sync",  # G-16: payroll.retro.detect
                                    "app.services.integrations",  # G-24: channels.deliver / .retry, push.tickle
                                    "app.services.team_payroll",  # team batch engine callback
-                                   "app.services.attendance_readiness")  # G-23: attendance.acceptance_run
+                                   "app.services.attendance_readiness",  # G-23: attendance.acceptance_run
+                                   "app.services.leave_accrual",  # leave v2: leave.accrue
+                                   "app.services.leave_sla")  # leave v2: leave.sla_scan
 FUTURE_HANDLER_MODULES: FrozenSet[str] = frozenset({
     "app.services.scheduler_fanout", "app.services.holiday_rollover", "app.services.holiday_assignments",
     "app.services.holiday_calendar_service", "app.services.leave_jobs", "app.services.shift_catalogue",

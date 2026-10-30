@@ -96,6 +96,29 @@ LIST_KEYS: Mapping[str, ListDef] = {
         list_key="audit.logs", endpoint="GET /audit-logs", read_permissions=("audit:read",),
         query_keys=frozenset({"module"}), sort_keys=("created_at",), default_sort="-created_at",
     ),
+    # Shift module (G-04 / G-15; FU-AS-51 g): the shift catalogue and rule lists already offered views; without a
+    # registration every call answered 422 INVALID_LIST_KEY.
+    "shift.shifts": ListDef(
+        list_key="shift.shifts", endpoint="GET /shifts", read_permissions=("shift:read",),
+        query_keys=frozenset({"kind", "status", "branch_id", "legal_entity_id"}),
+        sort_keys=("code", "name", "kind", "status"), default_sort="code", q_fields=("code", "name"),
+        columns=("name", "kind", "times", "net", "breaks", "owner", "version", "status"),
+        system_views=_views(("active", "Active shifts", ("HR", "MANAGER"), {"status": "ACTIVE", "sort": "code"})),
+    ),
+    "shift.rules": ListDef(
+        list_key="shift.rules", endpoint="GET /shift-assignment-rules", read_permissions=("shift:read",),
+        query_keys=frozenset({"shift_id", "status"}), sort_keys=("priority",), default_sort="-priority",
+    ),
+    "roster.open_shifts": ListDef(
+        list_key="roster.open_shifts", endpoint="GET /open-shifts",
+        read_permissions=("roster:request", "roster:plan", "roster:approve"),
+        query_keys=frozenset({"from", "to", "status", "eligible_only"}), sort_keys=("shift_date",),
+        default_sort="shift_date", max_range_days=92,
+        system_views=_views(
+            ("i_can_take", "Shifts I can take", ("EMPLOYEE",), {"eligible_only": True}),
+            ("all_open", "All open shifts", ("TEAM_LEAD", "MANAGER", "HR"), {"status": "OPEN"}),
+        ),
+    ),
 }
 assert set(LIST_KEYS) <= set(LIST_KEY_VALUES), "every registered list key is allowed by the saved_views CHECK"
 

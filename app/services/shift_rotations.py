@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import date, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -140,7 +140,7 @@ def create_pattern(db: Session, principal: Principal, data) -> dict:
     version = None
     if data.version is not None:
         version = _add_version(db, principal, pattern, data.version, template)
-    AuditLogService.log(db, principal, MODULE, "ROTATION_PATTERN_SAVED", f"Created rotation pattern {pattern.code}",
+    AuditLogService.log(db, principal, MODULE, "ROTATION_SAVED", f"Created rotation pattern {pattern.code}",
                         "rotation_pattern", pattern.id)
     return {**serialize_pattern(pattern, [version["row"]] if version else []),
             "lints": version["lints"] if version else []}
@@ -195,7 +195,7 @@ def activate_version(db: Session, principal: Principal, pattern_id: int, version
     pattern.current_version_id = row.id
     pattern.row_version += 1
     db.flush()
-    AuditLogService.log(db, principal, MODULE, "ROTATION_VERSION_ACTIVATED",
+    AuditLogService.log(db, principal, MODULE, "ROTATION_ACTIVATED",
                         f"Rotation {pattern.code}: version {row.version_no} active", "rotation_pattern", pattern.id)
     return serialize_version(row)
 
@@ -229,7 +229,8 @@ def serialize_assignment(row: RotationAssignment) -> dict:
     return {"id": row.id, "pattern_version_id": row.pattern_version_id, "employee_id": row.employee_id,
             "crew_code": row.crew_code, "offset_days": row.offset_days, "anchor_date": row.anchor_date.isoformat(),
             "effective_from": row.effective_from.isoformat(),
-            "effective_to": row.effective_to.isoformat() if row.effective_to else None, "status": row.status}
+            "effective_to": row.effective_to.isoformat() if row.effective_to else None, "status": row.status,
+            "auto_publish": row.auto_publish, "row_version": row.row_version}
 
 
 def assign(db: Session, principal: Principal, data) -> dict:
@@ -257,7 +258,7 @@ def assign(db: Session, principal: Principal, data) -> dict:
     for employee_id in sorted(set(data.employee_ids)):
         clash = db.query(RotationAssignment.id).filter(
             RotationAssignment.company_id == principal.company_id, RotationAssignment.employee_id == employee_id,
-            RotationAssignment.status == "ACTIVE",
+            RotationAssignment.status.in_(DATED_STATUSES),
             or_(RotationAssignment.effective_to.is_(None), RotationAssignment.effective_to >= data.effective_from),
             *([RotationAssignment.effective_from <= data.effective_to] if data.effective_to else [])).first()
         if clash:
@@ -266,7 +267,8 @@ def assign(db: Session, principal: Principal, data) -> dict:
         row = RotationAssignment(company_id=principal.company_id, pattern_version_id=version.id,
                                  target_kind="EMPLOYEE", employee_id=employee_id, crew_code=data.crew_code,
                                  offset_days=data.offset_days, anchor_date=data.anchor_date,
-                                 effective_from=data.effective_from, effective_to=data.effective_to, status="ACTIVE")
+                                 effective_from=data.effective_from, effective_to=data.effective_to, status="ACTIVE",
+                                 auto_publish=bool(getattr(data, "auto_publish", False)))
         db.add(row)
         created.append(row)
     db.flush()
@@ -275,9 +277,100 @@ def assign(db: Session, principal: Principal, data) -> dict:
     return {"items": [serialize_assignment(r) for r in created]}
 
 
+def _assignment_people(db: Session, row: RotationAssignment) -> List[int]:
+    """The employee of an EMPLOYEE assignment, or the members of a TEAM (crew) assignment on any of its dates."""
+    if row.employee_id is not None:
+        return [row.employee_id]
+    from app.models.teams import TeamMembership
+
+    return sorted({e for (e,) in db.query(TeamMembership.employee_id).filter(
+        TeamMembership.company_id == row.company_id, TeamMembership.team_id == row.team_id,
+        or_(TeamMembership.effective_to.is_(None), TeamMembership.effective_to >= row.effective_from),
+        *([TeamMembership.effective_from <= row.effective_to] if row.effective_to else []))})
+
+
+def end_assignment(db: Session, principal: Principal, assignment_id: int, effective_to: date, reason: str,
+                   expected_row_version: Optional[int] = None) -> dict:
+    """``POST /rotation-assignments/{id}/end`` (03-shifts/02 §3.3; spine §4.12; UA-AS-161): ``ACTIVE`` → ``ENDED`` with
+    ``effective_to``; the not-yet-published ``ROTATION`` drafts of its people after that date are deleted, published
+    entries never change. ``shift:assign`` must cover the employee (or every member of the crew team): 404 outside the
+    scope, never revealing the row. A second end is 409 ``INVALID_TRANSITION``; a stale ``row_version`` 409
+    ``ROW_VERSION_CONFLICT``. Audit ``ROTATION_ASSIGNED`` (the create / end action of AS 11 §9)."""
+    from app.core.concurrency import check_row_version
+    from app.models.rosters import RosterPeriod
+
+    query = db.query(RotationAssignment).filter(RotationAssignment.company_id == principal.company_id,
+                                                RotationAssignment.id == assignment_id)
+    row = query.first()
+    if row is None:
+        raise not_found("Rotation assignment")
+    people = _assignment_people(db, row)
+    shift_rosters._covering(db, principal, "shift:assign", people)
+    lock_employees(db, people)
+    row = query.with_for_update().populate_existing().first()
+    if row.status != "ACTIVE":
+        raise AppError(409, "This rotation assignment has already ended.", "INVALID_TRANSITION",
+                       extra={"details": {"current_status": row.status}})
+    check_row_version(row, expected_row_version)
+    if effective_to < row.effective_from:
+        raise AppError(422, f"End the rotation on or after its first day ({row.effective_from.isoformat()}).",
+                       "VALIDATION_ERROR", extra={"details": {"field": "effective_to"}})
+    if row.effective_to is not None and effective_to > row.effective_to:
+        raise AppError(422, f"The rotation already ends on {row.effective_to.isoformat()}; it can only end earlier.",
+                       "VALIDATION_ERROR", extra={"details": {"field": "effective_to"}})
+    drafts = db.query(RosterDraft).filter(RosterDraft.company_id == row.company_id,
+                                          RosterDraft.employee_id.in_(people or [0]),
+                                          RosterDraft.shift_date > effective_to, RosterDraft.source == "ROTATION")
+    period_ids = sorted({p for (p,) in drafts.with_entities(RosterDraft.roster_period_id).distinct()})
+    periods = db.query(RosterPeriod).filter(RosterPeriod.company_id == row.company_id,
+                                            RosterPeriod.id.in_(period_ids or [0])).with_for_update().all()
+    for period in periods:
+        shift_rosters._frozen(db, period)  # a roster waiting for publication approval keeps its drafts
+    removed = drafts.delete(synchronize_session=False)
+    for period in periods:
+        period.row_version += 1  # open planner grids reload (their drafts changed)
+    before = row.effective_to
+    row.effective_to, row.status = effective_to, "ENDED"
+    row.row_version += 1
+    db.flush()
+    AuditLogService.log(db, principal, MODULE, "ROTATION_ASSIGNED", f"Ended rotation assignment on {effective_to}",
+                        "rotation_assignment", row.id,
+                        details={"action": "END", "effective_to": {"before": before.isoformat() if before else None,
+                                                                   "after": effective_to.isoformat()},
+                                 "status": {"before": "ACTIVE", "after": "ENDED"}, "reason": reason,
+                                 "drafts_removed": removed})
+    return {**serialize_assignment(row), "drafts_removed": removed}
+
+
+GENERATED_SOURCES = ("ROTATION", "HOLIDAY_RULE")  # drafts the generator owns and may rewrite
+# An ENDED assignment (POST /rotation-assignments/{id}/end) still covers its dates up to its last day: generation,
+# auto-publish and the overlap check read both statuses and bound them by effective_from / effective_to.
+DATED_STATUSES = ("ACTIVE", "ENDED")
+
+
+def _holiday_inputs(db: Session, company_id: int, employee_ids, start: date, end: date
+                    ) -> Tuple[Dict[int, frozenset], Dict[int, str]]:
+    """§3.5 step 3 / §8 (IG-AS-166): each employee's full non-working holidays (LH day facts) and
+    ``SCHEDULING_POLICY.holiday_mode`` (default HOLIDAY_OFF) for the expansion, so a WORK token on a holiday becomes a
+    ``HOLIDAY_RULE`` OFF that remembers the shift it replaced instead of a WORK entry needing a HOLIDAY_WORK reason."""
+    from app.services import attendance_days, roster_validation
+
+    ids = sorted(set(employee_ids))
+    if not ids:
+        return {}, {}
+    facts = roster_validation.holiday_facts(db, company_id, ids, start, end)
+    fields = attendance_days.scheduling_fields(db, company_id, ids, start)
+    modes = {}
+    for employee_id in ids:
+        mode = (fields.get(employee_id) or {}).get("holiday_mode") or engine.HOLIDAY_OFF
+        modes[employee_id] = mode if mode in engine.HOLIDAY_MODES else engine.HOLIDAY_OFF
+    return {e: frozenset(days) for e, days in facts.items()}, modes
+
+
 def generate_drafts(db: Session, principal: Principal, period_id: int, *, overwrite: bool = False) -> dict:
     """Expand every active assignment of the period's employees into ``ROTATION`` drafts (§3.5)."""
     period = shift_rosters.load_period(db, principal, period_id, lock=True)
+    shift_rosters._frozen(db, period)  # no generation while a publication waits for approval
     employees = shift_rosters._owner_employees(db, period)
     shift_rosters._covering(db, principal, "roster:plan", employees)
     rows = db.query(RotationAssignment, RotationPatternVersion, RotationPattern).join(
@@ -285,23 +378,33 @@ def generate_drafts(db: Session, principal: Principal, period_id: int, *, overwr
         & (RotationPatternVersion.id == RotationAssignment.pattern_version_id)).join(
         RotationPattern, (RotationPattern.company_id == RotationPatternVersion.company_id)
         & (RotationPattern.id == RotationPatternVersion.pattern_id)).filter(
-        RotationAssignment.company_id == period.company_id, RotationAssignment.status == "ACTIVE",
+        RotationAssignment.company_id == period.company_id, RotationAssignment.status.in_(DATED_STATUSES),
         RotationAssignment.employee_id.in_(employees or [0]), RotationAssignment.effective_from <= period.end_date,
         or_(RotationAssignment.effective_to.is_(None), RotationAssignment.effective_to >= period.start_date)).all()
     existing = {(d.employee_id, d.shift_date, d.entry_seq): d for d in db.query(RosterDraft).filter(
         RosterDraft.company_id == period.company_id, RosterDraft.roster_period_id == period.id)}
+    from app.models.employee import Employee
+
+    employment = {e.id: (e.hire_date, e.termination_date) for e in db.query(Employee).filter(
+        Employee.company_id == period.company_id, Employee.id.in_({a.employee_id for a, _, _ in rows} or {0}))}
+    holidays, modes = _holiday_inputs(db, period.company_id, {a.employee_id for a, _, _ in rows}, period.start_date,
+                                      period.end_date)
     written = 0
     for assignment, version, pattern in rows:
+        hired, left = employment.get(assignment.employee_id, (None, None))
         days = engine.expand(_data(version, pattern.code),
                              engine.AssignmentData(anchor_date=assignment.anchor_date, offset_days=assignment.offset_days,
                                                    crew_code=assignment.crew_code,
                                                    effective_from=assignment.effective_from,
                                                    effective_to=assignment.effective_to),
-                             period.start_date, period.end_date)
+                             period.start_date, period.end_date, holidays=holidays.get(assignment.employee_id, ()),
+                             holiday_mode=modes.get(assignment.employee_id, engine.HOLIDAY_OFF))
         for day in days:
+            if (hired is not None and day.date < hired) or (left is not None and day.date > left):
+                continue  # X-INT-51: a rotation is implicitly bounded by employment (no NOT_EMPLOYED drafts)
             key = (assignment.employee_id, day.date, 1)
             draft = existing.get(key)
-            if draft is not None and not overwrite and draft.source != "ROTATION":
+            if draft is not None and not overwrite and draft.source not in GENERATED_SOURCES:
                 continue  # a planner's edit wins over the generator
             if draft is None:
                 draft = RosterDraft(company_id=period.company_id, roster_period_id=period.id,
@@ -311,6 +414,8 @@ def generate_drafts(db: Session, principal: Principal, period_id: int, *, overwr
             draft.action, draft.kind = "UPSERT", day.kind
             draft.shift_id = day.shift if day.kind == "WORK" else None
             draft.source = day.source
+            draft.planned_shift_id = day.planned_shift if day.source == engine.SOURCE_HOLIDAY_RULE else None
+            draft.created_by_user_id = principal.user_id  # the planner who generated it (SoD, EC AS-ROS-11)
             written += 1
     if period.status == "PUBLISHED" and written:
         period.status = "AMENDING"
@@ -372,3 +477,144 @@ def generate_ahead(db: Session, principal: Principal, branch_id: int, *, start: 
                         "end_date": period.end_date.isoformat(), "generated": out["generated"]})
     return {"from": start.isoformat(), "to": end.isoformat(), "days": days, "periods": results,
             "generated": sum(r["generated"] for r in results)}
+
+
+AUTO_PUBLISH_CHUNK = 5000  # entries per ROTATION_AUTO publication (EC AS-REL-06; spine §5.11 caps one at 10 000)
+
+
+def _auto_cells(db: Session, company_id: int, start: date, end: date) -> tuple:
+    """(cells per employee, assignment id per employee) of the auto-publish assignments: rotation days inside
+    employment (X-INT-51) without a published entry or a draft on that date."""
+    from app.models.employee import Employee
+
+    rows = db.query(RotationAssignment, RotationPatternVersion, RotationPattern).join(
+        RotationPatternVersion, (RotationPatternVersion.company_id == RotationAssignment.company_id)
+        & (RotationPatternVersion.id == RotationAssignment.pattern_version_id)).join(
+        RotationPattern, (RotationPattern.company_id == RotationPatternVersion.company_id)
+        & (RotationPattern.id == RotationPatternVersion.pattern_id)).filter(
+        RotationAssignment.company_id == company_id, RotationAssignment.status.in_(DATED_STATUSES),
+        RotationAssignment.auto_publish.is_(True), RotationAssignment.employee_id.isnot(None),
+        RotationAssignment.effective_from <= end,
+        or_(RotationAssignment.effective_to.is_(None), RotationAssignment.effective_to >= start)).all()
+    people = sorted({a.employee_id for a, _, _ in rows})
+    if not people:
+        return {}, {}
+    lock_employees(db, people)
+    employment = {e.id: (e.hire_date, e.termination_date) for e in db.query(Employee).filter(
+        Employee.company_id == company_id, Employee.id.in_(people))}
+    published = shift_rosters.entries_many(db, company_id, people, start, end)
+    drafted = {(e, d) for e, d in db.query(RosterDraft.employee_id, RosterDraft.shift_date).filter(
+        RosterDraft.company_id == company_id, RosterDraft.employee_id.in_(people),
+        RosterDraft.shift_date >= start, RosterDraft.shift_date <= end)}
+    cells: Dict[int, list] = {}
+    assignment_of: Dict[int, int] = {}
+    holidays, modes = _holiday_inputs(db, company_id, people, start, end)
+    for assignment, version, pattern in rows:
+        hired, left = employment.get(assignment.employee_id, (None, None))
+        days = engine.expand(_data(version, pattern.code),
+                             engine.AssignmentData(anchor_date=assignment.anchor_date, offset_days=assignment.offset_days,
+                                                   crew_code=assignment.crew_code,
+                                                   effective_from=assignment.effective_from,
+                                                   effective_to=assignment.effective_to), start, end,
+                             holidays=holidays.get(assignment.employee_id, ()),
+                             holiday_mode=modes.get(assignment.employee_id, engine.HOLIDAY_OFF))
+        for day in days:
+            key = (assignment.employee_id, day.date)
+            if (hired is not None and day.date < hired) or (left is not None and day.date > left) \
+                    or published.get(key) or key in drafted:
+                continue
+            cells.setdefault(assignment.employee_id, []).append(shift_rosters._Cell(
+                assignment.employee_id, day.date, 1, day.kind, day.shift if day.kind == "WORK" else None,
+                source=day.source,
+                planned_shift_id=day.planned_shift if day.source == engine.SOURCE_HOLIDAY_RULE else None))
+            assignment_of[assignment.employee_id] = assignment.id
+    return cells, assignment_of
+
+
+def _notify_blocked(db: Session, company_id: int, employee_id: int, assignment_id: int, local_date: date,
+                    stops: List[str]) -> None:
+    """Notification ``roster.auto_publish_blocked`` to the planners (dedup ``autopub:{assignment}:{local_date}``,
+    carried in the link as for ``roster.publish_due``)."""
+    from app.models.notification import Notification
+    from app.services.notification_service import NotificationService
+
+    link = f"/rosters?autopub={assignment_id}&date={local_date.isoformat()}"
+    for user_id in shift_rosters._planner_user_ids(db, company_id, [employee_id]):
+        if db.query(Notification.id).filter(Notification.user_id == user_id,
+                                            Notification.action_url == link).first() is None:
+            NotificationService.create(db, user_id, "Automatic schedule publishing stopped for one person",
+                                       f"A working-time rule ({', '.join(stops)}) needs a planner decision before "
+                                       "the rotation is published further.", "roster", link)
+
+
+def auto_publish(db: Session, company_id: int, local_date: date,
+                 progress: Optional[Callable[[int, int], None]] = None) -> dict:
+    """Job ``roster.rotation_generate`` (DAILY, daily-local; 03-shifts/02 §3.5): for ACTIVE employee assignments with
+    ``auto_publish``, publish the rotation's days from the local date to ``shift.roster.horizon_days`` ahead that have
+    no entry yet, as publications of kind ``ROTATION_AUTO`` without a publisher. Validation runs per employee as for a
+    manual publish: WARN results are recorded as auto-acknowledged; a REQUIRE_REASON or BLOCK result skips that
+    employee (the others continue) and notifies the planners. Chunks of at most ``AUTO_PUBLISH_CHUNK`` entries built
+    along employees (one employee's days are never split; a horizon is far below the bound), each in its own savepoint,
+    so a failing chunk does not stop the others (EC AS-REL-06). ``progress(done, total)`` hears the chunk count once
+    the chunks are built and again after each chunk, failed or not (the job's ``progress_done`` / ``progress_total``;
+    the result's ``chunks`` / ``failed_chunks`` give "2 of 17 chunks failed")."""
+    from app.services import roster_consents
+
+    end = local_date + timedelta(days=roster_consents.HORIZON_DAYS)
+    cells_of, assignment_of = _auto_cells(db, company_id, local_date, end)
+    accepted: List[tuple] = []
+    blocked: Dict[int, List[str]] = {}
+    for employee_id, cells in sorted(cells_of.items()):
+        days = [c.shift_date for c in cells]
+        seam = timedelta(days=shift_rosters.SEAM_DAYS)
+        candidate, changed = shift_rosters._candidate(db, company_id, cells, min(days) - seam, max(days) + seam)
+        if not changed:
+            continue
+        shift_rosters._resolve_versions(db, company_id, changed)
+        outcome = shift_rosters.validate_cells(db, company_id, candidate, changed, publish_at=clock.utcnow())
+        stops = sorted({getattr(r, "rule_key", None) for r in outcome.blocking + outcome.missing_reasons} - {None})
+        if stops:
+            blocked[employee_id] = stops
+            _notify_blocked(db, company_id, employee_id, assignment_of[employee_id], local_date, stops)
+            continue
+        accepted.append((employee_id, candidate, changed, outcome))
+    chunks: List[List[tuple]] = []
+    size = 0
+    for item in accepted:
+        if chunks and size + len(item[2]) <= AUTO_PUBLISH_CHUNK:
+            chunks[-1].append(item)
+            size += len(item[2])
+        else:
+            chunks.append([item])
+            size = len(item[2])
+    publications, entries, failed = [], 0, 0
+    if progress is not None:
+        progress(0, len(chunks))
+    for done, chunk in enumerate(chunks, start=1):
+        candidate = [c for item in chunk for c in item[1]]
+        changed = [c for item in chunk for c in item[2]]
+        outcome = shift_rosters.ValidationOutcome(results=[r for item in chunk for r in item[3].results])
+        warned = sorted({getattr(r, "rule_key", None) for item in chunk for r in item[3].unacknowledged} - {None})
+        days = [c.shift_date for c in changed]
+        scope = {"employee_ids": sorted({item[0] for item in chunk}), "from": min(days).isoformat(),
+                 "to": max(days).isoformat()}
+        try:
+            with db.begin_nested():
+                publication = shift_rosters._write(
+                    db, None, company_id, kind="ROTATION_AUTO", period=None, candidate=candidate, changed=changed,
+                    scope=scope, outcome=outcome, acknowledged=warned, reasons={}, exemptions={},
+                    reason_code="ROTATION_AUTO")
+        except Exception:  # noqa: BLE001 - one failing chunk never stops the others (§3.5)
+            failed += 1
+        else:
+            publications.append(publication.id)
+            entries += len(changed)
+            AuditLogService.log(db, None, MODULE, "ROSTER_AUTO_PUBLISHED",
+                                f"Rotation auto-publish: {len(changed)} entries", "roster_publication", publication.id,
+                                company_id=company_id, actor_type="system",
+                                details={"employees": len(scope["employee_ids"]), "warnings_acknowledged": warned})
+        if progress is not None:
+            progress(done, len(chunks))
+    db.flush()
+    return {"publications": publications, "entries": entries, "blocked": blocked, "chunks": len(chunks),
+            "failed_chunks": failed}

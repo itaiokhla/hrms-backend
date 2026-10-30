@@ -58,6 +58,8 @@ READERS = {
     # AS-M3: the evaluation batch loader (non-voided sessions of the range; legacy marks only for the LEGACY_V1 port)
     "app/services/attendance_days.py::load_inputs_many": "attendance/test_attendance_days.py",
     # AS-M4 (G-13): request targets refuse voided sessions; form and muster list non-voided sessions only.
+    # Leave v2 comp-off (LH SPINE §8): worked minutes of the claimed date from non-voided closed sessions.
+    "app/services/leave_comp_off.py::worked_minutes": "leave/test_v2_core.py",
     "app/services/attendance_requests.py::_session": "attendance/test_requests.py",
     "app/services/attendance_requests.py::_session_for_missing": "attendance/test_requests.py",
     "app/services/attendance_requests.py::form_context": "attendance/test_requests.py",

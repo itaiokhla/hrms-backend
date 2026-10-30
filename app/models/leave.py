@@ -19,11 +19,35 @@ from sqlalchemy.orm import relationship
 
 from app.models.base import BaseModel, TenantMixin
 
-LEAVE_STATUSES = ("pending", "approved", "rejected", "cancelled")
+# Stored lowercase (every payroll / attendance reader compares these); leave v2 adds draft, returned and withdrawn
+# (migration 0063, IG-LH-33). The v2 API shows them as UPPER_SNAKE (``V2_STATUS``).
+LEAVE_STATUSES = ("pending", "approved", "rejected", "cancelled", "draft", "returned", "withdrawn")
+V2_STATUS = {s: s.upper() for s in LEAVE_STATUSES}
+RESERVING_STATUSES = ("pending",)  # DRAFT and RETURNED reserve nothing (SPINE §5.1)
+TAKEN_STATUSES = ("pending", "approved")
+LEAVE_SOURCES = ("SELF", "ON_BEHALF", "HR_RECORDED", "SYSTEM", "AGENT", "IMPORT", "BULK")
+LEAVE_CATEGORIES = ("ANNUAL", "CASUAL", "SICK", "PARENTAL", "BEREAVEMENT", "MARRIAGE", "STUDY", "CIVIC", "SABBATICAL",
+                    "COMP_OFF", "FLOATING", "UNPAID", "OTHER")
+LEAVE_UNITS = ("DAY", "HOUR")
+LEAVE_SENSITIVITIES = ("STANDARD", "SENSITIVE")
+ABSENCE_CLASSES = ("PLANNED", "UNPLANNED", "STATUTORY", "PROTECTED")
+LEAVE_COLOR_TOKENS = tuple(f"leave-{n}" for n in range(1, 13)) + ("leave-neutral",)
+LEAVE_ICONS = ("sun", "coffee", "heart-pulse", "baby", "flower-2", "gem", "graduation-cap", "landmark", "plane",
+               "rotate-ccw", "calendar-plus", "calendar-x", "tag", "stethoscope", "home", "users", "briefcase")
+# 03-leave/01 §3.3: per category (sensitivity, absence class, icon).
+CATEGORY_DEFAULTS = {
+    "ANNUAL": ("STANDARD", "PLANNED", "sun"), "CASUAL": ("STANDARD", "PLANNED", "coffee"),
+    "SICK": ("SENSITIVE", "PROTECTED", "heart-pulse"), "PARENTAL": ("STANDARD", "STATUTORY", "baby"),
+    "BEREAVEMENT": ("SENSITIVE", "PROTECTED", "flower-2"), "MARRIAGE": ("STANDARD", "PLANNED", "gem"),
+    "STUDY": ("STANDARD", "PLANNED", "graduation-cap"), "CIVIC": ("STANDARD", "STATUTORY", "landmark"),
+    "SABBATICAL": ("STANDARD", "PLANNED", "plane"), "COMP_OFF": ("STANDARD", "PLANNED", "rotate-ccw"),
+    "FLOATING": ("STANDARD", "PLANNED", "calendar-plus"), "UNPAID": ("STANDARD", "UNPLANNED", "calendar-x"),
+    "OTHER": ("STANDARD", "PLANNED", "tag"),
+}
 START_PORTIONS = ("FULL", "SECOND_HALF")
 END_PORTIONS = ("FULL", "FIRST_HALF")
 CANCELLATION_STATUSES = ("pending", "approved", "rejected")
-LEAVE_TYPE_KINDS = ("COMP_OFF",)
+LEAVE_TYPE_KINDS = ("COMP_OFF", "FLOATING_HOLIDAY", "EVENT")
 STEP_STATUSES = ("waiting", "pending", "approved", "rejected", "skipped", "cancelled")
 # Leave chains use the first four (the leave API accepts no others); payroll modules add the last two.
 APPROVER_TYPES = (
@@ -36,6 +60,7 @@ APPROVAL_MODULES = (
     "bank_change", "payment_batch", "off_cycle", "final_settlement", "lop", "attendance", "settings",
     "timesheet",  # JC-AS-21 (AS-M4, migration 0052)
     "shift_request", "team_inputs",  # AS-M6 shift requests and manager-prepared payroll batches (migration 0058)
+    "roster_publish",  # AS-M5 §5.2 roster publication approval (migration 0062; owner decision IG-AS-150)
 )
 
 
@@ -63,11 +88,34 @@ class LeaveType(TenantMixin, BaseModel):
     # Weekly offs and holidays inside a request are leave days of this type (3.4 §7.1, EC-LV-06, EC-LV-10).
     counts_non_working_days = Column(Boolean, nullable=False, default=False)
     allow_half_day = Column(Boolean, nullable=False, default=True)
-    kind = Column(String(20), nullable=True)  # COMP_OFF; NULL for ordinary leave
+    kind = Column(String(20), nullable=True)  # COMP_OFF, FLOATING_HOLIDAY, EVENT; NULL for ordinary leave
+    # Leave v2 catalogue (03-leave/01 §3.1, migration 0063).
+    category = Column(String(20), nullable=False, default="OTHER")
+    unit = Column(String(4), nullable=False, default="DAY")
+    sensitivity = Column(String(10), nullable=False, default="STANDARD")
+    absence_class = Column(String(12), nullable=False, default="PLANNED")
+    counts_toward_absence_score = Column(Boolean, nullable=False, default=False)
+    description = Column(Text, nullable=True)
+    name_i18n = Column(JSONB, nullable=False, default=dict)
+    color_token = Column(String(20), nullable=False, default="leave-1")
+    icon = Column(String(40), nullable=False, default="tag")
+    display_order = Column(Integer, nullable=False, default=100)
+    row_version = Column(Integer, nullable=False, default=1)
 
     __table_args__ = (
         UniqueConstraint("company_id", "code", name="uq_leave_types_company_code"),
-        CheckConstraint("kind IN ('COMP_OFF')", name="ck_leave_types_kind"),
+        CheckConstraint(f"kind IN {LEAVE_TYPE_KINDS}", name="ck_leave_types_kind"),
+        CheckConstraint(f"category IN {LEAVE_CATEGORIES}", name="ck_leave_types_category"),
+        CheckConstraint(f"unit IN {LEAVE_UNITS}", name="ck_leave_types_unit"),
+        CheckConstraint(f"sensitivity IN {LEAVE_SENSITIVITIES}", name="ck_leave_types_sensitivity"),
+        CheckConstraint(f"absence_class IN {ABSENCE_CLASSES}", name="ck_leave_types_absence_class"),
+        CheckConstraint("NOT (absence_class IN ('STATUTORY', 'PROTECTED') AND counts_toward_absence_score)",
+                        name="ck_leave_types_absence_score"),
+        CheckConstraint("(kind IS DISTINCT FROM 'COMP_OFF' OR category = 'COMP_OFF') AND "
+                        "(kind IS DISTINCT FROM 'FLOATING_HOLIDAY' OR category = 'FLOATING')",
+                        name="ck_leave_types_kind_category"),
+        CheckConstraint("category <> 'UNPAID' OR NOT is_paid", name="ck_leave_types_unpaid"),
+        CheckConstraint("display_order BETWEEN 0 AND 10000", name="ck_leave_types_display_order"),
     )
 
 
@@ -155,6 +203,25 @@ class Leave(TenantMixin, BaseModel):
     cancellation_requested_at = Column(DateTime(timezone=True), nullable=True)
     cancellation_decided_at = Column(DateTime(timezone=True), nullable=True)
     cancellation_decided_by_user_id = Column(Integer, nullable=True)
+    # Leave v2 lifecycle (SPINE §4.1, migration 0063).
+    source = Column(String(12), nullable=False, default="SELF")
+    requested_by_user_id = Column(Integer, nullable=True)
+    plan_version_id = Column(Integer, nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+    flags = Column(JSONB, nullable=False, default=list)  # ELIGIBILITY_VERIFY, EMERGENCY, BALANCE_CONFLICT, ...
+    issues = Column(JSONB, nullable=False, default=list)  # WARNING findings shown to approvers
+    sensitivity = Column(String(10), nullable=True)  # snapshot of the type's sensitivity at submit
+    is_emergency = Column(Boolean, nullable=False, default=False)
+    parent_leave_id = Column(Integer, nullable=True)  # the request whose excess this unpaid sibling holds
+    event_id = Column(Integer, nullable=True)
+    reason_code = Column(String(40), nullable=True)
+    contact_note = Column(String(500), nullable=True)
+    handover_employee_id = Column(Integer, nullable=True)
+    submitted_at = Column(DateTime(timezone=True), nullable=True)
+    returned_at = Column(DateTime(timezone=True), nullable=True)
+    withdrawn_at = Column(DateTime(timezone=True), nullable=True)
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    row_version = Column(Integer, nullable=False, default=1)
 
     employee = relationship("Employee", primaryjoin="Leave.employee_id == Employee.id", foreign_keys=[employee_id])
     approvals = relationship(
@@ -180,7 +247,19 @@ class Leave(TenantMixin, BaseModel):
             name="ck_leaves_portions",
         ),
         CheckConstraint(f"cancellation_status IN {CANCELLATION_STATUSES}", name="ck_leaves_cancellation_status"),
+        CheckConstraint(f"source IN {LEAVE_SOURCES}", name="ck_leaves_source"),
+        CheckConstraint(f"sensitivity IN {LEAVE_SENSITIVITIES}", name="ck_leaves_sensitivity"),
+        CheckConstraint("version >= 1", name="ck_leaves_version"),
+        ForeignKeyConstraint(["company_id", "plan_version_id"], ["policy_versions.company_id", "policy_versions.id"],
+                             name="fk_leaves_plan_version"),
+        ForeignKeyConstraint(["company_id", "parent_leave_id"], ["leaves.company_id", "leaves.id"],
+                             name="fk_leaves_parent"),
+        ForeignKeyConstraint(["company_id", "handover_employee_id"], ["employees.company_id", "employees.id"],
+                             name="fk_leaves_handover"),
+        ForeignKeyConstraint(["company_id", "event_id"], ["leave_events.company_id", "leave_events.id"],
+                             name="fk_leaves_event"),
         Index("ix_leaves_company_status", "company_id", "status"),
+        Index("ix_leaves_employee_status", "company_id", "employee_id", "status"),
     )
 
 

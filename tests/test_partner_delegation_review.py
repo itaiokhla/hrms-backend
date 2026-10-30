@@ -92,7 +92,28 @@ OPEN_TO_ANY_SIGNED_IN_PRINCIPAL = {
     "/api/v1/holiday-calendars/{calendar_id:int}/years/{year:int}",
     "/api/v1/holiday-calendars/{calendar_id:int}/years/{year:int}/diff",
     "/api/v1/holiday-calendars/{calendar_id:int}/history",
+    # Leave v2 (IG-LH-33..41): the type catalogue is reference data like /api/v1/leaves/types; the rest are per-user
+    # views that are empty for an operator with no employee record (own requests, inbox, pending changes, own
+    # access facts and home cards). Configuration reads (approval route, reason codes, plans, rules) need a leave code.
+    "/api/v1/leaves/v2/types", "/api/v1/leaves/access", "/api/v1/leaves/dashboard", "/api/v1/leaves/requests",
+    "/api/v1/leaves/approvals/inbox", "/api/v1/leaves/changes/pending",
 }
+
+# Routes a delegate never reaches whatever codes it holds (403 before any lookup): the AI assistant's conversations
+# and prepared actions belong to a tenant user; a partner operator is not one (app/routes/agent.py).
+DENIED_TO_EVERY_DELEGATE = {
+    "/api/v1/agent/status", "/api/v1/agent/threads", "/api/v1/agent/threads/{thread_id}/messages",
+}
+
+
+def _assert_assistant_denied(delegate, results):
+    assert {p: s for p, s in results.items() if p in DENIED_TO_EVERY_DELEGATE} == {
+        p: 403 for p in DENIED_TO_EVERY_DELEGATE}
+    for path, body in (("/api/v1/agent/threads", {"module": "leave"}),
+                       ("/api/v1/agent/threads/1/messages", {"content": "hi", "client_message_id": "delegate-01"}),
+                       ("/api/v1/agent/actions/1/confirm", {"confirmation_token": "x" * 40}),
+                       ("/api/v1/agent/actions/1/cancel", {})):
+        assert delegate.send("POST", path, json=body).status_code == 403, path
 
 
 def test_a_minimal_delegation_reaches_no_route_beyond_its_codes_and_a_delegated_read_writes_only_the_audit_trail(
@@ -117,6 +138,7 @@ def test_a_minimal_delegation_reaches_no_route_beyond_its_codes_and_a_delegated_
     for path in ("/api/v1/payroll/nominees", "/api/v1/payroll/legal-holds", "/api/v1/payroll/legal-holds/summary",
                  "/api/v1/payroll/tax-profiles", "/api/v1/payroll/unclaimed-payments"):
         assert delegate.get(path).status_code == 403, path
+    _assert_assistant_denied(delegate, results)
 
 
 def test_a_broad_delegation_never_writes_beyond_the_audit_trail_and_never_fails_with_a_server_error(world, alpha_staff):
@@ -147,3 +169,4 @@ def test_a_broad_delegation_never_writes_beyond_the_audit_trail_and_never_fails_
          "server_errors": sorted(p for p, s in results.items() if s >= 500), "writes": sorted(set(writes))}, indent=1))
     assert sorted(set(writes)) == []
     assert sorted(p for p, s in results.items() if s >= 500) == []
+    _assert_assistant_denied(delegate, results)

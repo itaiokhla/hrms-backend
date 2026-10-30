@@ -64,9 +64,38 @@ def packs_view(db: Session, principal: Principal) -> dict:
             "daily_max_today": (format(working_time_packs.daily_max_on(pack, today), "f")
                                 if pack and working_time_packs.daily_max_on(pack, today) is not None else None),
             "pack": working_time_packs.describe(entity.country_code)["pack"],
+            "exemptions": _held_exemptions(db, principal.company_id, entity, pack, today),
         })
     return {"version": working_time_packs.PACK_VERSION, "items": items,
             "available": sorted(working_time_packs.PACKS)}
+
+
+def _held_exemptions(db: Session, company_id: int, entity: LegalEntity, pack: Optional[dict], today: date) -> list:
+    """Per branch of the entity: the pack exemptions it holds (``shift.working_time.held_exemptions``), which of them
+    apply there (subdivision condition) and those ending within 90 days — the expiry warning of appendix-a §5.10
+    (EC AS-CTY-17)."""
+    from app.models.org import Branch
+    from app.payroll.services import settings as settings_engine
+    from app.services.roster_validation import HELD_EXEMPTIONS
+
+    if not (pack or {}).get("exemptions"):
+        return []
+    out = []
+    for branch in (db.query(Branch).filter(Branch.company_id == company_id, Branch.legal_entity_id == entity.id,
+                                           Branch.status == "ACTIVE").order_by(Branch.id)):
+        try:
+            held = tuple(settings_engine.resolve(db, company_id, HELD_EXEMPTIONS, branch_id=branch.id,
+                                                 on=today).value or ())
+        except Exception:  # noqa: BLE001 - nothing resolves: nothing is held
+            held = ()
+        if not held:
+            continue
+        out.append({"branch_id": branch.id, "branch": branch.name, "subdivision": branch.subdivision_code,
+                    "held": list(held),
+                    "applies": [e["code"] for e in working_time_packs.held_exemptions(pack, branch.subdivision_code,
+                                                                                      held)],
+                    "expiring": working_time_packs.expiring_exemptions(pack, today, held)})
+    return out
 
 
 def set_adoption(db: Session, principal: Principal, legal_entity_id: int, enabled: bool,

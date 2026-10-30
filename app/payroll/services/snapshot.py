@@ -148,7 +148,8 @@ def _evaluated_shift_dates(builder) -> Optional[set]:
 
 # JC-AS-18: payroll reads evaluations, never the four attendance policy types.
 SKIPPED_POLICY_TYPES = frozenset({"APPROVAL_CHAIN", "PAYSLIP_TEMPLATE", "ATTENDANCE_CAPTURE_POLICY",
-                                  "ATTENDANCE_RULES_POLICY", "ATTENDANCE_REQUEST_POLICY", "SCHEDULING_POLICY"})
+                                  "ATTENDANCE_RULES_POLICY", "ATTENDANCE_REQUEST_POLICY", "SCHEDULING_POLICY",
+                                  "LEAVE_PLAN"})  # LH-M2: plans never enter payroll snapshots (03-leave/01 §5.8)
 NON_SALARIED_STRUCTURES = frozenset({"HOURLY", "DAILY", "TASK_BASED"})
 NON_WORKING_DAY_SWITCHES = ("payroll.holiday_work_premium.enabled", "payroll.weekly_off_pay.enabled",
                             "payroll.overtime.enabled")

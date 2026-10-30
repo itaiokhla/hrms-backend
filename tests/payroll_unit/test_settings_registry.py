@@ -717,6 +717,9 @@ def test_starter_v1_switches_i13():
         # Team attendance: the manager tools stay usable once a tenant switches them on (no pay effect by themselves).
         "attendance.team.proxy_punch.allow_manual_location", "attendance.team.proxy_punch.reason_required",
         "attendance.team.edit_enabled",
+        # Leave v2 workflow defaults (LH SPINE §10): request handling only, no pay effect by themselves.
+        "leave.approval.return_enabled", "leave.approval.reject_reason_required", "leave.apply_on_behalf.enabled",
+        "leave.comp_off.claims.enabled", "leave.discussion.enabled", "leave.notifications.email.enabled",
     }
     assert {k for k, v in values.items() if v is True} == STARTER_ON | safety_and_display
     for key in STARTER_OFF_WITH_DECISION:

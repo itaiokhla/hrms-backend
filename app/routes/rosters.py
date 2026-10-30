@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core import concurrency
-from app.core.principal import Principal, get_principal, require
+from app.core.principal import Principal, get_principal, require, require_any
 from app.database.db import get_db
 from app.payroll.services import idempotency
 from app.schemas.rosters import DirectPublishIn, DraftsIn, PeriodIn, PeriodStatusIn, PublishIn
@@ -23,6 +23,8 @@ router = APIRouter(prefix="/api/v1", tags=["Rosters"])
 READ = require("roster:read")
 PLAN = require("roster:plan")
 PUBLISH = require("roster:publish")
+# §5.2: with publication approval a planner (roster:plan) submits; the service checks which code covers the roster.
+PLAN_OR_PUBLISH = require_any("roster:plan", "roster:publish")
 
 
 @router.get("/rosters")
@@ -80,7 +82,7 @@ def validate(period_id: int, principal: Principal = Depends(PLAN), db: Session =
 
 
 @router.post("/rosters/{period_id:int}/publish")
-def publish(period_id: int, data: PublishIn, request: Request, principal: Principal = Depends(PUBLISH),
+def publish(period_id: int, data: PublishIn, request: Request, principal: Principal = Depends(PLAN_OR_PUBLISH),
             db: Session = Depends(get_db)):
     if data.dry_run:
         result = service.publish(db, principal, period_id, data)

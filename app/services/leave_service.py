@@ -105,6 +105,10 @@ def _local_today(db: Session, employee: Optional[Employee]) -> date:
 
 
 def balances(db: Session, company_id: int, employee_id: int, year: Optional[int] = None) -> Dict[str, dict]:
+    from app.services import leave_access
+
+    if leave_access.v2_enabled(db, company_id):
+        return _v2_balances(db, company_id, employee_id, year)
     if not year:
         subject = db.query(Employee).filter(Employee.company_id == company_id, Employee.id == employee_id).first()
         year = _local_today(db, subject).year if subject else today_for(db.get(Company, company_id)).year
@@ -122,6 +126,27 @@ def balances(db: Session, company_id: int, employee_id: int, year: Optional[int]
             "pending": days_out(t["pending"]),
             "remaining": None if lt.is_unlimited else days_out(max(entitled - t["used"], Decimal(0))),
             "available": None if lt.is_unlimited else days_out(max(entitled - t["used"] - t["pending"], Decimal(0))),
+        }
+    return result
+
+
+def _v2_balances(db: Session, company_id: int, employee_id: int, year: Optional[int]) -> Dict[str, dict]:
+    """The legacy ``/my/balance`` shape from the v2 ledger (single reader after the cut-over)."""
+    from app.services import leave_ledger
+
+    subject = db.query(Employee).filter(Employee.company_id == company_id, Employee.id == employee_id).first()
+    if subject is None:
+        return {}
+    today = _local_today(db, subject)
+    on = today if not year or year == today.year else date(year, 12, 31) if year < today.year else date(year, 1, 1)
+    result = {}
+    for item in leave_ledger.balances_for(db, company_id, subject, on, for_employee=False):
+        result[item["leave_type_code"]] = {
+            "name": item["name"], "is_paid": item["is_paid"], "is_unlimited": item["unlimited"],
+            "total": item["opening"] + item["credited"] + item["adjusted"] if not item["unlimited"] else 0,
+            "used": item["used"], "pending": item["pending"],
+            "remaining": None if item["unlimited"] else item["balance"],
+            "available": None if item["unlimited"] else item["available"],
         }
     return result
 
@@ -192,7 +217,17 @@ def _admin_role(db: Session, company_id: int) -> Role:
     return db.query(Role).filter(Role.company_id == company_id, Role.system_key == "company_admin").one()
 
 
-def _finalize(db: Session, leave: Leave, requester: Employee, status: str, actor_user_id: Optional[int]) -> None:
+def finalize_v2(db: Session, leave: Leave, requester: Employee, status: str, actor_user_id: Optional[int], *,
+                notify: bool = True) -> None:
+    """Approve / reject a request (v2 entry point): the legacy finalization plus its unpaid sibling."""
+    _finalize(db, leave, requester, status, actor_user_id, notify=notify)
+
+
+def _finalize(db: Session, leave: Leave, requester: Employee, status: str, actor_user_id: Optional[int], *,
+              notify: bool = True) -> None:
+    for sibling in db.query(Leave).filter(Leave.company_id == leave.company_id, Leave.parent_leave_id == leave.id,
+                                          Leave.status == "pending").all():
+        _finalize(db, sibling, requester, status, actor_user_id, notify=False)
     leave.status = status
     leave.current_step = None
     leave.decided_at = utcnow()
@@ -201,7 +236,7 @@ def _finalize(db: Session, leave: Leave, requester: Employee, status: str, actor
         from app.payroll.services import time_inputs
 
         time_inputs.generate_leave_days(db, leave, actor_user_id)
-    if requester.user_id:
+    if requester.user_id and notify:
         NotificationService.create(
             db, requester.user_id, f"Leave request {status}",
             f"Your leave from {leave.start_date} to {leave.end_date} was {status}.",
@@ -310,6 +345,8 @@ def can_act(db: Session, principal: Principal, leave: Leave, requester: Employee
                         return "delegate"
     if principal.has_company_scope("leave:approve"):
         return "override"
+    if principal.has("leave:override") and authz.can_access_employee(db, principal, "leave:override", requester.id):
+        return "override"
     return None
 
 
@@ -350,6 +387,12 @@ def apply(db: Session, principal: Principal, data) -> Leave:
 
     if not principal.has("leave:apply"):
         raise forbidden()
+    from app.services import leave_access
+
+    if leave_access.v2_enabled(db, principal.company_id):
+        from app.services import leave_requests
+
+        return leave_requests.submit(db, principal, data)
     employee = authz.own_employee(db, principal)
     # One request at a time per person (LH BUG-03, LCK-02): the overlap and balance checks below then see every
     # earlier request, so parallel or double-clicked applies cannot book the same days twice.
@@ -519,7 +562,12 @@ def _decide_cancellation(db: Session, principal: Principal, leave: Leave, reques
         from app.payroll.services import time_inputs
 
         leave.status = "cancelled"
+        leave.cancelled_at = utcnow()
         time_inputs.void_leave_days(db, leave, "CANCELLED", principal.user_id)
+        for sibling in db.query(Leave).filter(Leave.company_id == leave.company_id, Leave.parent_leave_id == leave.id,
+                                              Leave.status == "approved").all():
+            sibling.status, sibling.cancelled_at = "cancelled", utcnow()
+            time_inputs.void_leave_days(db, sibling, "CANCELLED", principal.user_id)
     outcome = "approved" if approve else "rejected"
     if requester.user_id:
         NotificationService.create(
@@ -567,9 +615,13 @@ def cancel(db: Session, principal: Principal, leave_id: int, reason: Optional[st
         return leave
     leave.status = "cancelled"
     leave.current_step = None
+    leave.cancelled_at = utcnow()
     for step in leave.approvals:
         if step.status in ("waiting", "pending"):
             step.status = "cancelled"
+    for sibling in db.query(Leave).filter(Leave.company_id == leave.company_id, Leave.parent_leave_id == leave.id,
+                                          Leave.status == "pending").all():
+        sibling.status, sibling.cancelled_at = "cancelled", utcnow()
     AuditLogService.log(db, principal, "Leave", "CANCEL", f"Cancelled leave #{leave.id}", "leave", leave.id)
     return leave
 
@@ -638,6 +690,8 @@ def list_leaves(db: Session, principal: Principal, status: Optional[str], employ
     )
     if status:
         query = query.filter(Leave.status == status)
+    else:
+        query = query.filter(Leave.status.in_(("pending", "approved", "rejected", "cancelled")))
     if employee_id:
         query = query.filter(Leave.employee_id == employee_id)
     total = query.order_by(None).count()
@@ -670,7 +724,8 @@ def my_leaves(db: Session, principal: Principal) -> List[dict]:
     rows = (
         db.query(Leave)
         .options(selectinload(Leave.approvals))
-        .filter(Leave.employee_id == employee.id)
+        .filter(Leave.employee_id == employee.id,
+                Leave.status.in_(("pending", "approved", "rejected", "cancelled", "withdrawn")))
         .order_by(Leave.created_at.desc())
         .limit(200)
         .all()
@@ -712,6 +767,8 @@ def upcoming_approved(db: Session, principal: Principal, days: int = 30) -> List
 # Policy configuration
 # ---------------------------------------------------------------------------
 def save_leave_type(db: Session, principal: Principal, data, type_id: Optional[int] = None) -> LeaveType:
+    if not principal.has("leave:manage_policy", "COMPANY"):  # types are a tenant-wide catalogue (V3-075)
+        raise forbidden("Leave types are company-wide: changing them needs company-wide leave configuration access.")
     clash = db.query(LeaveType.id).filter(LeaveType.company_id == principal.company_id, LeaveType.code == data.code)
     if type_id:
         clash = clash.filter(LeaveType.id != type_id)
@@ -738,6 +795,23 @@ def save_leave_type(db: Session, principal: Principal, data, type_id: Optional[i
             values.pop(key)
     for key, value in values.items():
         setattr(lt, key, value)
+    # Leave v2 catalogue fields the legacy editor does not send (03-leave/01 §3.11): keep them coherent.
+    from app.models.leave import CATEGORY_DEFAULTS
+
+    if lt.kind == "COMP_OFF":
+        lt.category = "COMP_OFF"
+    elif lt.kind == "FLOATING_HOLIDAY":
+        lt.category = "FLOATING"
+    elif lt.category in (None, "COMP_OFF", "FLOATING"):
+        lt.category = "UNPAID" if (not lt.is_paid and lt.is_unlimited) else "OTHER"
+    if lt.category == "UNPAID" and lt.is_paid:
+        lt.category = "OTHER"
+    if type_id is None:
+        lt.sensitivity, lt.absence_class, lt.icon = CATEGORY_DEFAULTS[lt.category]
+        lt.counts_toward_absence_score = lt.absence_class == "UNPLANNED"
+    elif lt.absence_class in ("STATUTORY", "PROTECTED"):
+        lt.counts_toward_absence_score = False
+    lt.row_version = (lt.row_version or 0) + 1
     db.flush()
     AuditLogService.log(db, principal, "Leave", "TYPE_SAVED", f"Saved leave type {lt.code}", "leave_type", lt.id)
     return lt
